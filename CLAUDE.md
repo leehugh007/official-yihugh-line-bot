@@ -124,12 +124,43 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 報名頁（未來：自建 + 金流）
 ```
 
+## 部署
+
+- **Vercel**: push main = 自動部署（已接 GitHub Integration）
+- **Vercel Project ID**: prj_EUcS8nb3GTcsgiYgQjdStILTrK9N
+- **Vercel Team**: hughs-projects-1e597e4f (team_TjsHfN2RqcvIwZVqD3gBDHyu)
+- **部署指令（手動）**: `vercel --prod --yes --token <token>`（token 見 memory/deployment-tokens.md）
+- **Cron Job**: 每天 00:00 UTC（08:00 台灣）執行 `/api/cron/drip`
+
+## 協作規則
+
+### 誰做什麼
+- **一休 + AI**：功能開發、架構決策、程式碼 review
+- **婉馨**：內容設定（後台操作）、測試回報、簡單程式修改（透過 Claude Code + PR）
+
+### Branch 規則
+- `main` = 正式版，push = 自動部署。**不要直接在 main 上改東西**
+- 改東西開 branch：`fix/描述` 或 `feature/描述`
+- 改完開 PR → 一休 review → merge → 自動部署
+
+### 改內容 vs 改程式碼
+- 推播模板、排程文章、說明會資訊 → **後台改**（`/admin`），不需要動程式碼
+- 關鍵字規則、回覆邏輯、新功能 → **改程式碼**，走 branch + PR
+
+### 環境變數（在 Vercel 設定）
+- `LINE_CHANNEL_SECRET` — LINE Messaging API
+- `LINE_CHANNEL_ACCESS_TOKEN` — LINE Messaging API
+- `SUPABASE_URL` — 與阿算共用
+- `SUPABASE_KEY` — 與阿算共用
+- `ADMIN_SECRET` — 後台密碼（official-bot-2026）
+- 測試→正式切換：只要換 LINE 的兩個環境變數 + 更新 webhook URL
+
 ## 待做（依優先順序）
 
-1. 一休開通 Messaging API，拿到 credentials
-2. 部署到 Vercel
-3. 在 Supabase 跑 migration.sql
-4. 設定 LINE webhook URL
-5. 改測驗結果頁的 CTA（帶 ref 參數）
-6. 測試完整流程
+1. 開測試用 LINE 帳號的 Messaging API，加環境變數
+2. 在 Supabase 跑 migration.sql
+3. 設定 LINE webhook URL
+4. 改測驗結果頁的 CTA（帶 ref 參數）
+5. 測試完整流程
+6. 婉馨填入排程文章內容和連結
 7. 未來：自建報名頁 + 金流串接
