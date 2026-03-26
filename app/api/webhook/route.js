@@ -85,11 +85,17 @@ async function handleFollow(event, userId) {
     source = 'quiz';
   }
 
+  // 計算排程開始時間：加入後 1 天，台灣時間 08:00
+  const dripNextAt = new Date();
+  dripNextAt.setDate(dripNextAt.getDate() + 1);
+  dripNextAt.setUTCHours(0, 0, 0, 0); // UTC 00:00 = 台灣 08:00
+
   // 儲存用戶
   await upsertUser(userId, {
     displayName,
     metabolismType,
     source,
+    drip_next_at: dripNextAt.toISOString(),
   });
 
   // 發歡迎訊息
