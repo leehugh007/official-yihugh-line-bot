@@ -9,7 +9,7 @@ import {
   getProfile,
 } from '../../../lib/line.js';
 import { matchKeyword } from '../../../lib/keywords.js';
-import { upsertUser, recordInteraction, markBlocked } from '../../../lib/users.js';
+import { getUser, upsertUser, recordInteraction, markBlocked } from '../../../lib/users.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 
 export async function POST(request) {
@@ -118,6 +118,17 @@ async function handleFollow(event, userId) {
 // ============================================================
 async function handleTextMessage(event, userId) {
   const text = event.message.text;
+
+  // 檢查用戶是否已在資料庫（處理 Bot 上線前的舊用戶）
+  const existingUser = await getUser(userId);
+  if (!existingUser) {
+    // 舊用戶第一次傳訊息，自動建檔
+    const profile = await getProfile(userId);
+    await upsertUser(userId, {
+      displayName: profile?.displayName || '',
+      source: 'legacy',
+    });
+  }
 
   // 記錄互動（不管有沒有匹配關鍵字）
   await recordInteraction(userId);

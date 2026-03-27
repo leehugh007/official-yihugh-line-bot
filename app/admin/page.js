@@ -54,8 +54,37 @@ export default function AdminPage() {
   const [pushResult, setPushResult] = useState(null);
   const [queueProgress, setQueueProgress] = useState(null);
   const [showCustom, setShowCustom] = useState(false);
-  const [tab, setTab] = useState('push'); // push | history | drip
+  const [tab, setTab] = useState('push'); // push | history | drip | users
   const [dripStats, setDripStats] = useState(null);
+
+  // 用戶管理
+  const [usersData, setUsersData] = useState(null);
+  const [usersSearch, setUsersSearch] = useState('');
+  const [usersFilter, setUsersFilter] = useState({ segment: '', source: '', tag: '' });
+  const [usersPage, setUsersPage] = useState(1);
+  const [sources, setSources] = useState([]);
+
+  const loadUsers = useCallback(async (page = 1, search = '', filters = {}) => {
+    const params = new URLSearchParams({
+      action: 'users',
+      secret: sessionStorage.getItem('admin_secret') || '',
+      page: String(page),
+    });
+    if (search) params.set('search', search);
+    if (filters.segment) params.set('segment', filters.segment);
+    if (filters.source) params.set('source', filters.source);
+    if (filters.tag) params.set('tag', filters.tag);
+
+    const res = await fetch(`/api/admin?${params}`);
+    const data = await res.json();
+    setUsersData(data);
+  }, []);
+
+  const loadSources = useCallback(async () => {
+    const res = await fetch(apiUrl('sources'));
+    const data = await res.json();
+    setSources(data);
+  }, []);
 
   // 載入資料
   const loadData = useCallback(async () => {
@@ -259,6 +288,16 @@ export default function AdminPage() {
         >
           排程
         </button>
+        <button
+          style={tab === 'users' ? styles.tabActive : styles.tab}
+          onClick={() => {
+            setTab('users');
+            if (!usersData) loadUsers(1, '', usersFilter);
+            if (sources.length === 0) loadSources();
+          }}
+        >
+          用戶
+        </button>
       </div>
 
       {/* 推播 Tab */}
@@ -324,6 +363,49 @@ export default function AdminPage() {
             const refreshed = await fetch(apiUrl('drip_stats')).then(r => r.json());
             setDripStats(refreshed);
           }} />}
+        </div>
+      )}
+
+      {/* 用戶 Tab */}
+      {tab === 'users' && (
+        <div style={styles.section}>
+          <h2 style={styles.sectionTitle}>用戶管理</h2>
+          <p style={styles.sectionDesc}>查看用戶、標記已報名、管理加入來源</p>
+
+          <UsersTab
+            usersData={usersData}
+            search={usersSearch}
+            filters={usersFilter}
+            sources={sources}
+            page={usersPage}
+            onSearch={(s) => {
+              setUsersSearch(s);
+              setUsersPage(1);
+              loadUsers(1, s, usersFilter);
+            }}
+            onFilter={(f) => {
+              setUsersFilter(f);
+              setUsersPage(1);
+              loadUsers(1, usersSearch, f);
+            }}
+            onPageChange={(p) => {
+              setUsersPage(p);
+              loadUsers(p, usersSearch, usersFilter);
+            }}
+            onTagUser={async (userId, tags) => {
+              await apiPost({ action: 'update_user_tags', userId, tags });
+              loadUsers(usersPage, usersSearch, usersFilter);
+              loadData();
+            }}
+            onAddSource={async (source) => {
+              await apiPost({ action: 'add_source', ...source });
+              loadSources();
+            }}
+            onDeleteSource={async (id) => {
+              await apiPost({ action: 'delete_source', id });
+              loadSources();
+            }}
+          />
         </div>
       )}
 
@@ -881,6 +963,321 @@ function PushHistory({ logs }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ============================================================
+// 用戶管理 Tab
+// ============================================================
+function UsersTab({ usersData, search, filters, sources, page, onSearch, onFilter, onPageChange, onTagUser, onAddSource, onDeleteSource }) {
+  const [searchInput, setSearchInput] = useState(search);
+  const [showSourceForm, setShowSourceForm] = useState(false);
+  const [newSource, setNewSource] = useState({ id: '', name: '', url: '' });
+  const [confirmTag, setConfirmTag] = useState(null);
+
+  const SOURCE_NAMES = {};
+  sources.forEach((s) => { SOURCE_NAMES[s.id] = s.name; });
+
+  return (
+    <div>
+      {/* 搜尋和篩選 */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 180, display: 'flex', gap: 4 }}>
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && onSearch(searchInput)}
+            placeholder="搜尋 LINE 名稱..."
+            style={{ ...styles.input, fontSize: 13 }}
+          />
+          <button onClick={() => onSearch(searchInput)} style={styles.btnSmallPrimary}>搜尋</button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        <select
+          value={filters.segment}
+          onChange={(e) => onFilter({ ...filters, segment: e.target.value })}
+          style={{ ...styles.input, width: 'auto', fontSize: 13 }}
+        >
+          <option value="">全部分群</option>
+          {Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
+            <option key={key} value={key}>{icon} {label}</option>
+          ))}
+        </select>
+
+        <select
+          value={filters.source}
+          onChange={(e) => onFilter({ ...filters, source: e.target.value })}
+          style={{ ...styles.input, width: 'auto', fontSize: 13 }}
+        >
+          <option value="">全部來源</option>
+          {sources.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+
+        <select
+          value={filters.tag}
+          onChange={(e) => onFilter({ ...filters, tag: e.target.value })}
+          style={{ ...styles.input, width: 'auto', fontSize: 13 }}
+        >
+          <option value="">全部狀態</option>
+          <option value="interested">有興趣</option>
+          <option value="enrolled">已報名</option>
+          <option value="not_enrolled">未報名</option>
+        </select>
+
+        {(filters.segment || filters.source || filters.tag || search) && (
+          <button
+            onClick={() => {
+              setSearchInput('');
+              onSearch('');
+              onFilter({ segment: '', source: '', tag: '' });
+            }}
+            style={{ ...styles.btnGhost, fontSize: 13, padding: '6px 12px' }}
+          >
+            清除篩選
+          </button>
+        )}
+      </div>
+
+      {/* 用戶列表 */}
+      {usersData && (
+        <>
+          <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>
+            共 {usersData.total} 位用戶
+            {usersData.totalPages > 1 && `（第 ${usersData.page}/${usersData.totalPages} 頁）`}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {usersData.users.map((user) => {
+              const seg = SEGMENT_LABELS[user.segment] || SEGMENT_LABELS.new;
+              const joinDate = new Date(user.joined_at);
+              const dateStr = `${joinDate.getFullYear()}/${joinDate.getMonth() + 1}/${joinDate.getDate()}`;
+              const isEnrolled = user.tags?.includes('已報名減重班');
+              const sourceName = SOURCE_NAMES[user.source] || user.source || '未知';
+
+              return (
+                <div key={user.line_user_id} style={{
+                  ...styles.card,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '10px 14px',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                }}>
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#1a1a1a' }}>
+                      {user.display_name || '（未知）'}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>
+                      {dateStr} 加入
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{
+                      fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                      background: '#f0f4f3', color: '#555',
+                    }}>
+                      {sourceName}
+                    </span>
+                    <span style={{
+                      fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                      background: seg.color + '18', color: seg.color,
+                      fontWeight: 600,
+                    }}>
+                      {seg.icon} {seg.label}
+                    </span>
+                    {user.metabolism_type && (
+                      <span style={{
+                        fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                        background: '#ede9fe', color: '#7c3aed',
+                      }}>
+                        {user.metabolism_type}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 11, color: '#aaa' }}>
+                      互動 {user.interaction_count}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {user.tags?.includes('有興趣') && !isEnrolled && (
+                      <span style={{
+                        fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                        background: '#fef3c7', color: '#92400e', fontWeight: 500,
+                      }}>
+                        有興趣
+                      </span>
+                    )}
+                    {isEnrolled ? (
+                      <span style={{
+                        fontSize: 12, padding: '4px 12px', borderRadius: 6,
+                        background: '#dcfce7', color: '#166534', fontWeight: 500,
+                      }}>
+                        已報名
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmTag(user)}
+                        style={{
+                          fontSize: 12, padding: '4px 12px', borderRadius: 6,
+                          background: '#fff', color: '#2a9d6f', fontWeight: 500,
+                          border: '1px solid #2a9d6f', cursor: 'pointer',
+                        }}
+                      >
+                        標記已報名
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {usersData.users.length === 0 && (
+              <p style={{ color: '#94a3b8', textAlign: 'center', padding: 32 }}>沒有符合條件的用戶</p>
+            )}
+          </div>
+
+          {/* 分頁 */}
+          {usersData.totalPages > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
+              <button
+                onClick={() => onPageChange(page - 1)}
+                disabled={page <= 1}
+                style={{ ...styles.btnSmallGhost, opacity: page <= 1 ? 0.4 : 1 }}
+              >
+                上一頁
+              </button>
+              <span style={{ fontSize: 13, color: '#888', lineHeight: '32px' }}>
+                {page} / {usersData.totalPages}
+              </span>
+              <button
+                onClick={() => onPageChange(page + 1)}
+                disabled={page >= usersData.totalPages}
+                style={{ ...styles.btnSmallGhost, opacity: page >= usersData.totalPages ? 0.4 : 1 }}
+              >
+                下一頁
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* 來源管理 */}
+      <div style={{ marginTop: 32 }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 12px', color: '#1a1a1a' }}>加入來源管理</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {sources.map((s) => (
+            <div key={s.id} style={{
+              ...styles.card,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '10px 14px',
+            }}>
+              <div>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>{s.name}</span>
+                <span style={{ fontSize: 12, color: '#888', marginLeft: 8 }}>({s.id})</span>
+                {s.url && (
+                  <div style={{ fontSize: 12, color: '#2a9d6f', marginTop: 2 }}>{s.url}</div>
+                )}
+              </div>
+              {!['quiz', 'direct', 'legacy'].includes(s.id) && (
+                <button
+                  onClick={() => onDeleteSource(s.id)}
+                  style={{ ...styles.btnGhost, fontSize: 12, color: '#ef4444', padding: '4px 8px' }}
+                >
+                  刪除
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {!showSourceForm ? (
+          <button
+            onClick={() => setShowSourceForm(true)}
+            style={{ ...styles.btnOutline, marginTop: 8, fontSize: 13 }}
+          >
+            + 新增來源
+          </button>
+        ) : (
+          <div style={{ ...styles.card, marginTop: 8 }}>
+            <label style={styles.fieldLabel}>來源 ID（英文，用於系統識別）</label>
+            <input
+              value={newSource.id}
+              onChange={(e) => setNewSource({ ...newSource, id: e.target.value.replace(/[^a-zA-Z0-9_-]/g, '') })}
+              style={styles.input}
+              placeholder="例如：fb_post"
+            />
+            <label style={styles.fieldLabel}>來源名稱</label>
+            <input
+              value={newSource.name}
+              onChange={(e) => setNewSource({ ...newSource, name: e.target.value })}
+              style={styles.input}
+              placeholder="例如：FB 健康貼文"
+            />
+            <label style={styles.fieldLabel}>加入網址（選填）</label>
+            <input
+              value={newSource.url}
+              onChange={(e) => setNewSource({ ...newSource, url: e.target.value })}
+              style={styles.input}
+              placeholder="https://lin.ee/..."
+            />
+            <div style={styles.editActions}>
+              <button onClick={() => { setShowSourceForm(false); setNewSource({ id: '', name: '', url: '' }); }} style={styles.btnGhost}>取消</button>
+              <button
+                onClick={() => {
+                  if (newSource.id && newSource.name) {
+                    onAddSource(newSource);
+                    setNewSource({ id: '', name: '', url: '' });
+                    setShowSourceForm(false);
+                  }
+                }}
+                style={styles.btnPrimary}
+                disabled={!newSource.id || !newSource.name}
+              >
+                新增
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 標記已報名確認 */}
+      {confirmTag && (
+        <div style={styles.overlay} onClick={() => setConfirmTag(null)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h2 style={styles.modalTitle}>確認標記已報名</h2>
+            <p style={{ textAlign: 'center', color: '#666', margin: '0 0 16px' }}>
+              確定要將 <strong>{confirmTag.display_name || '（未知）'}</strong> 標記為「已報名減重班」嗎？
+            </p>
+            <p style={{ textAlign: 'center', fontSize: 13, color: '#888', margin: '0 0 20px' }}>
+              標記後將自動停止推送排程文章
+            </p>
+            <div style={styles.modalActions}>
+              <button onClick={() => setConfirmTag(null)} style={styles.btnGhost}>取消</button>
+              <button
+                onClick={() => {
+                  const newTags = [...(confirmTag.tags || [])];
+                  if (!newTags.includes('已報名減重班')) newTags.push('已報名減重班');
+                  const filtered = newTags.filter((t) => t !== '未報名減重班');
+                  onTagUser(confirmTag.line_user_id, filtered);
+                  setConfirmTag(null);
+                }}
+                style={styles.btnPrimary}
+              >
+                確認標記
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

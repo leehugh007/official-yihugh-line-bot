@@ -33,6 +33,10 @@ export async function GET(request) {
       return handleGetDrip();
     case 'drip_stats':
       return handleGetDripStats();
+    case 'users':
+      return handleGetUsers(searchParams);
+    case 'sources':
+      return handleGetSources();
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -60,6 +64,10 @@ export async function POST(request) {
       return handleUpdateDrip(data);
     case 'update_user_tags':
       return handleUpdateUserTags(data);
+    case 'add_source':
+      return handleAddSource(data);
+    case 'delete_source':
+      return handleDeleteSource(data);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -391,6 +399,98 @@ async function handleUpdateDrip({ step_number, ...updates }) {
     .from('official_drip_schedule')
     .update(updates)
     .eq('step_number', step_number);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
+// ============================================================
+// 用戶管理
+// ============================================================
+
+async function handleGetUsers(searchParams) {
+  const search = searchParams.get('search') || '';
+  const segment = searchParams.get('segment') || '';
+  const source = searchParams.get('source') || '';
+  const tag = searchParams.get('tag') || '';
+  const page = parseInt(searchParams.get('page') || '1');
+  const pageSize = 50;
+
+  let query = supabase
+    .from('official_line_users')
+    .select('line_user_id, display_name, metabolism_type, source, segment, joined_at, last_interaction_at, interaction_count, push_click_count, tags, is_blocked, drip_paused, drip_week', { count: 'exact' });
+
+  if (search) {
+    query = query.ilike('display_name', `%${search}%`);
+  }
+  if (segment) {
+    query = query.eq('segment', segment);
+  }
+  if (source) {
+    query = query.eq('source', source);
+  }
+  if (tag === 'enrolled') {
+    query = query.contains('tags', ['已報名減重班']);
+  } else if (tag === 'not_enrolled') {
+    query = query.not('tags', 'cs', '{"已報名減重班"}');
+  } else if (tag === 'interested') {
+    query = query.contains('tags', ['有興趣']);
+  }
+
+  query = query
+    .order('joined_at', { ascending: false })
+    .range((page - 1) * pageSize, page * pageSize - 1);
+
+  const { data, count, error } = await query;
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  return NextResponse.json({
+    users: data || [],
+    total: count || 0,
+    page,
+    pageSize,
+    totalPages: Math.ceil((count || 0) / pageSize),
+  });
+}
+
+async function handleGetSources() {
+  const { data, error } = await supabase
+    .from('official_sources')
+    .select('*')
+    .order('created_at');
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json(data || []);
+}
+
+async function handleAddSource({ id, name, url }) {
+  if (!id || !name) {
+    return NextResponse.json({ error: '來源 ID 和名稱為必填' }, { status: 400 });
+  }
+
+  const { error } = await supabase
+    .from('official_sources')
+    .insert({ id, name, url: url || null });
+
+  if (error) {
+    if (error.code === '23505') {
+      return NextResponse.json({ error: '此 ID 已存在' }, { status: 400 });
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true });
+}
+
+async function handleDeleteSource({ id }) {
+  if (!id) {
+    return NextResponse.json({ error: '缺少來源 ID' }, { status: 400 });
+  }
+
+  const { error } = await supabase
+    .from('official_sources')
+    .delete()
+    .eq('id', id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
