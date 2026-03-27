@@ -388,6 +388,12 @@ export default function AdminPage() {
               setUsersPage(1);
               loadUsers(1, usersSearch, f);
             }}
+            onClear={() => {
+              setUsersSearch('');
+              setUsersFilter({ segment: '', source: '', tag: '' });
+              setUsersPage(1);
+              loadUsers(1, '', { segment: '', source: '', tag: '' });
+            }}
             onPageChange={(p) => {
               setUsersPage(p);
               loadUsers(p, usersSearch, usersFilter);
@@ -970,7 +976,7 @@ function PushHistory({ logs }) {
 // ============================================================
 // 用戶管理 Tab
 // ============================================================
-function UsersTab({ usersData, search, filters, sources, page, onSearch, onFilter, onPageChange, onTagUser, onAddSource, onDeleteSource }) {
+function UsersTab({ usersData, search, filters, sources, page, onSearch, onFilter, onClear, onPageChange, onTagUser, onAddSource, onDeleteSource }) {
   const [searchInput, setSearchInput] = useState(search);
   const [showSourceForm, setShowSourceForm] = useState(false);
   const [newSource, setNewSource] = useState({ id: '', name: '', url: '' });
@@ -1033,8 +1039,7 @@ function UsersTab({ usersData, search, filters, sources, page, onSearch, onFilte
           <button
             onClick={() => {
               setSearchInput('');
-              onSearch('');
-              onFilter({ segment: '', source: '', tag: '' });
+              onClear();
             }}
             style={{ ...styles.btnGhost, fontSize: 13, padding: '6px 12px' }}
           >

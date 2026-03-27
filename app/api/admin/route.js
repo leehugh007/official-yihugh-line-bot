@@ -148,7 +148,7 @@ async function handleGetDrip() {
   const { data } = await supabase
     .from('official_drip_schedule')
     .select('*')
-    .order('week_number');
+    .order('step_number');
   return NextResponse.json(data || []);
 }
 
@@ -432,7 +432,7 @@ async function handleGetUsers(searchParams) {
   if (tag === 'enrolled') {
     query = query.contains('tags', ['已報名減重班']);
   } else if (tag === 'not_enrolled') {
-    query = query.not('tags', 'cs', '{"已報名減重班"}');
+    query = query.or('tags.is.null,not.tags.cs.{"已報名減重班"}');
   } else if (tag === 'interested') {
     query = query.contains('tags', ['有興趣']);
   }
@@ -482,9 +482,14 @@ async function handleAddSource({ id, name, url }) {
   return NextResponse.json({ ok: true });
 }
 
+const PROTECTED_SOURCES = ['quiz', 'direct', 'legacy', 'live'];
+
 async function handleDeleteSource({ id }) {
   if (!id) {
     return NextResponse.json({ error: '缺少來源 ID' }, { status: 400 });
+  }
+  if (PROTECTED_SOURCES.includes(id)) {
+    return NextResponse.json({ error: '系統預設來源不可刪除' }, { status: 400 });
   }
 
   const { error } = await supabase
@@ -497,20 +502,18 @@ async function handleDeleteSource({ id }) {
 }
 
 async function handleUpdateUserTags({ userId, tags }) {
+  const updateData = { tags };
+
+  // 如果加了「已報名減重班」，同時暫停排程（原子操作）
+  if (tags.includes('已報名減重班')) {
+    updateData.drip_paused = true;
+  }
+
   const { error } = await supabase
     .from('official_line_users')
-    .update({ tags })
+    .update(updateData)
     .eq('line_user_id', userId);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  // 如果加了「已報名減重班」，暫停排程
-  if (tags.includes('已報名減重班')) {
-    await supabase
-      .from('official_line_users')
-      .update({ drip_paused: true })
-      .eq('line_user_id', userId);
-  }
-
   return NextResponse.json({ ok: true });
 }
