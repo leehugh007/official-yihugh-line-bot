@@ -42,9 +42,20 @@ export async function GET() {
   return NextResponse.json({ status: 'ok' });
 }
 
+// 測試模式：只回應白名單裡的人，其他人靜默
+// 準備正式上線時，把 TEST_MODE 改成 false 就好
+const TEST_MODE = true;
+const TEST_ALLOWLIST = [
+  'U51808e2cc195967eba53701518e6f547', // 一休
+  'U3edf3d2114ee03ad81cff1fd35c04600', // 婉馨
+];
+
 async function handleEvent(event) {
   const userId = event.source?.userId;
   if (!userId) return;
+
+  // 測試模式：白名單外的人完全靜默
+  if (TEST_MODE && !TEST_ALLOWLIST.includes(userId)) return;
 
   switch (event.type) {
     case 'follow':
