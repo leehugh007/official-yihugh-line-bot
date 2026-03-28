@@ -233,7 +233,7 @@ const TYPE_DATA = {
     keyPoint: '你需要的不是更努力，而是讓身體學會「切換檔位」。',
     suggestions: ['每餐確保有足夠的好油（酪梨、堅果、橄欖油）', '睡前 1 小時放下手機，讓副交感神經啟動', '嘗試把高強度運動改成 2-3 次/週，其他天走路就好'],
     symptomContext: '這些都是皮質醇長期偏高的典型表現——你的身體在用這些信號告訴你：「我需要休息，不是更努力。」',
-    typeUrl: 'https://metabolism-quiz.vercel.app/?type=高轉速型',
+    typeUrl: 'https://abcmetabolic.com/types/high-rpm',
   },
   rollerCoaster: {
     name: '雲霄飛車型', tagline: '早上精神好到想跑步，下午累到想辭職',
@@ -241,7 +241,7 @@ const TYPE_DATA = {
     keyPoint: '穩定血糖 = 穩定情緒 = 穩定體重。三件事其實是同一件事。',
     suggestions: ['吃飯順序改成：菜 → 肉 → 飯', '把精緻澱粉換成原型澱粉（白飯 → 糙米、地瓜）', '下午想吃甜食時，先吃一把堅果或一顆水煮蛋'],
     symptomContext: '這些症狀跟血糖不穩直接相關——當血糖像雲霄飛車一樣大起大落，你的身體就會用這些方式求救。',
-    typeUrl: 'https://metabolism-quiz.vercel.app/?type=雲霄飛車型',
+    typeUrl: 'https://abcmetabolic.com/types/roller-coaster',
   },
   burnout: {
     name: '燃燒殆盡型', tagline: '不是你偷懶，是身體已經把油燒光了還在硬撐',
@@ -249,7 +249,7 @@ const TYPE_DATA = {
     keyPoint: '現在最重要的不是少吃，而是「吃對」讓身體重新信任你。',
     suggestions: ['先不要減少食量，確保每餐都有蛋白質', '好油不要怕：每天至少 1-2 湯匙的好油脂', '優先處理睡眠，睡不好其他都白費'],
     symptomContext: '這些都是身體長期能量透支的警訊——不是你不夠努力，是身體已經在用最後的力氣撐了。',
-    typeUrl: 'https://metabolism-quiz.vercel.app/?type=燃燒殆盡型',
+    typeUrl: 'https://abcmetabolic.com/types/burnout',
   },
   powerSave: {
     name: '省電模式型', tagline: '吃很少還是瘦不下來？你的身體已經自己降速了',
@@ -257,7 +257,7 @@ const TYPE_DATA = {
     keyPoint: '要讓代謝回來，第一步是「敢吃」。聽起來矛盾，但這是科學。',
     suggestions: ['循序漸進增加食量（每週多加 100-200 大卡）', '蛋白質是重建代謝的關鍵，每餐都要有', '加入阻力訓練（深蹲、硬舉），肌肉量 = 代謝的引擎'],
     symptomContext: '這些都是代謝降速的典型反應——你的身體為了省能量，把很多「非必要功能」關掉了。',
-    typeUrl: 'https://metabolism-quiz.vercel.app/?type=省電模式型',
+    typeUrl: 'https://abcmetabolic.com/types/power-save',
   },
   steady: {
     name: '穩定燃燒型', tagline: '朋友都問你怎麼吃不胖，但你知道自己其實可以更好',
@@ -265,7 +265,7 @@ const TYPE_DATA = {
     keyPoint: '你的起點比多數人好，接下來要做的是精進，不是從頭來過。',
     suggestions: ['嘗試拉長空腹時間（12-14 小時）', '增加蛋白質攝取到每公斤體重 1.2-1.6g', '規律運動 + 充足睡眠，把優勢鞏固住'],
     symptomContext: '雖然你的代謝整體穩定，但這些小信號代表還有優化空間——身體在告訴你哪裡可以更好。',
-    typeUrl: 'https://metabolism-quiz.vercel.app/?type=穩定燃燒型',
+    typeUrl: 'https://abcmetabolic.com/types/steady',
   },
 };
 
