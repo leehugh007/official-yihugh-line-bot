@@ -164,6 +164,31 @@ async function handleTextMessage(event, userId) {
   // 記錄互動（不管有沒有匹配關鍵字）
   await recordInteraction(userId);
 
+  // 代碼領取報告（4 位大寫英數）
+  const codeMatch = text.trim().match(/^[A-Z2-9]{4}$/);
+  if (codeMatch) {
+    const code = codeMatch[0];
+    const { data: session } = await supabase
+      .from('quiz_sessions')
+      .select('metabolism_type, secondary_type, q7_symptoms, body_signal')
+      .eq('claim_code', code)
+      .single();
+
+    if (session) {
+      // 更新用戶的代謝類型
+      await supabase
+        .from('official_line_users')
+        .update({ metabolism_type: session.metabolism_type, source: 'quiz' })
+        .eq('line_user_id', userId);
+
+      const profile = await getProfile(userId);
+      const report = buildPersonalizedReport(session, profile?.displayName || '');
+      await replyMessage(event.replyToken, report);
+      return;
+    }
+    // 代碼不存在 → 不回覆，繼續走關鍵字比對
+  }
+
   // 關鍵字比對
   const rule = matchKeyword(text);
 
