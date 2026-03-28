@@ -937,7 +937,7 @@ function PushHistory({ logs }) {
     <div style={styles.logList}>
       {logs.map((log) => {
         const date = new Date(log.created_at);
-        const dateStr = `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+        const dateStr = date.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
         const clickRate = log.click_count && log.sent_count
           ? `${Math.round((log.click_count / log.sent_count) * 100)}%`
           : null;
@@ -1060,7 +1060,7 @@ function UsersTab({ usersData, search, filters, sources, page, onSearch, onFilte
             {usersData.users.map((user) => {
               const seg = SEGMENT_LABELS[user.segment] || SEGMENT_LABELS.new;
               const joinDate = new Date(user.joined_at);
-              const dateStr = `${joinDate.getFullYear()}/${joinDate.getMonth() + 1}/${joinDate.getDate()}`;
+              const dateStr = joinDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', year: 'numeric', month: 'numeric', day: 'numeric' });
               const isEnrolled = user.tags?.includes('已報名減重班');
               const sourceName = SOURCE_NAMES[user.source] || user.source || '未知';
 
