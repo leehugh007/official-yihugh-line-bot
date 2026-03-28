@@ -188,3 +188,18 @@ INSERT INTO official_drip_schedule (step_number, title, message, link_url, link_
 (4, '節食，是這個世界...', '（待填入訊息內容）', 'https://example.com/article-4', '閱讀文章', 7, 8),
 (5, '慧敏的故事', '（待填入訊息內容）', 'https://example.com/article-5', '閱讀文章', 7, 8),
 (6, '偷偷暴食，你以為...', '（待填入訊息內容）', 'https://example.com/article-6', '閱讀文章', 7, 8);
+
+-- ============================================================
+-- 8. 設定表（關鍵字回覆、歡迎訊息等可從後台編輯的文字）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS official_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
+-- 推播排程欄位（支援預約推播）
+-- ============================================================
+ALTER TABLE official_push_logs
+  ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;

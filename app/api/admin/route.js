@@ -37,6 +37,8 @@ export async function GET(request) {
       return handleGetUsers(searchParams);
     case 'sources':
       return handleGetSources();
+    case 'settings':
+      return handleGetSettings();
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -68,6 +70,10 @@ export async function POST(request) {
       return handleAddSource(data);
     case 'delete_source':
       return handleDeleteSource(data);
+    case 'update_setting':
+      return handleUpdateSetting(data);
+    case 'send_scheduled':
+      return handleSendScheduled(data);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -206,6 +212,18 @@ async function handlePush(data) {
   }
 
   const logId = logData.id;
+
+  // 預約推播：如果有 scheduled_at 且在未來，存起來不發
+  if (data.scheduled_at) {
+    const scheduledTime = new Date(data.scheduled_at);
+    if (scheduledTime > new Date()) {
+      await supabase
+        .from('official_push_logs')
+        .update({ status: 'scheduled', scheduled_at: data.scheduled_at })
+        .eq('id', logId);
+      return NextResponse.json({ mode: 'scheduled', logId, scheduledAt: data.scheduled_at, total: userIds.length });
+    }
+  }
 
   if (mode === 'queued') {
     // 佇列模式：建立 queue entries，前端驅動 process
@@ -516,4 +534,82 @@ async function handleUpdateUserTags({ userId, tags }) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
+}
+
+// ============================================================
+// 設定管理
+// ============================================================
+
+async function handleGetSettings() {
+  const { data } = await supabase
+    .from('official_settings')
+    .select('*')
+    .order('key');
+  return NextResponse.json(data || []);
+}
+
+async function handleUpdateSetting({ key, value }) {
+  if (!key) {
+    return NextResponse.json({ error: '缺少 key' }, { status: 400 });
+  }
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({ key, value, updated_at: new Date().toISOString() });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
+// ============================================================
+// 預約推播：手動觸發發送
+// ============================================================
+
+async function handleSendScheduled({ logId }) {
+  if (!logId) {
+    return NextResponse.json({ error: '缺少 logId' }, { status: 400 });
+  }
+
+  // 取得排程紀錄
+  const { data: log, error: logError } = await supabase
+    .from('official_push_logs')
+    .select('*')
+    .eq('id', logId)
+    .eq('status', 'scheduled')
+    .single();
+
+  if (logError || !log) {
+    return NextResponse.json({ error: '找不到排程紀錄或已發送' }, { status: 404 });
+  }
+
+  // 重新取得目標用戶
+  const userIds = await getUsersBySegment(log.segments);
+  if (userIds.length === 0) {
+    await supabase
+      .from('official_push_logs')
+      .update({ status: 'completed', sent_count: 0, completed_at: new Date().toISOString() })
+      .eq('id', logId);
+    return NextResponse.json({ sent: 0, total: 0, message: '沒有符合條件的用戶' });
+  }
+
+  // 組合訊息
+  let finalMessage = log.message;
+  if (log.link_url && log.link_id) {
+    const trackedUrl = wrapLink(log.link_url, log.link_id);
+    finalMessage += `\n\n👉 點這裡\n${trackedUrl}`;
+  }
+
+  // 發送
+  let sent = 0;
+  for (let i = 0; i < userIds.length; i += 500) {
+    const batch = userIds.slice(i, i + 500);
+    const ok = await multicastMessage(batch, textMessage(finalMessage));
+    if (ok) sent += batch.length;
+  }
+
+  // 更新紀錄
+  await supabase
+    .from('official_push_logs')
+    .update({ sent_count: sent, status: 'completed', completed_at: new Date().toISOString() })
+    .eq('id', logId);
+
+  return NextResponse.json({ mode: 'sent_scheduled', sent, total: userIds.length, logId });
 }

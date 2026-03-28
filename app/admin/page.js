@@ -15,6 +15,7 @@ const SEGMENT_LABELS = {
 const MODE_LABELS = {
   instant: { label: '即時', desc: '幾秒內送達', color: '#ef4444' },
   queued: { label: '佇列', desc: '約 25 分鐘', color: '#3b82f6' },
+  scheduled: { label: '排程', desc: '指定時間送出', color: '#8b5cf6' },
 };
 
 // ============================================================
@@ -56,6 +57,7 @@ export default function AdminPage() {
   const [showCustom, setShowCustom] = useState(false);
   const [tab, setTab] = useState('push'); // push | history | drip | users
   const [dripStats, setDripStats] = useState(null);
+  const [settings, setSettings] = useState({});
 
   // 用戶管理
   const [usersData, setUsersData] = useState(null);
@@ -90,14 +92,16 @@ export default function AdminPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, t, l] = await Promise.all([
+      const [s, t, l, settingsData] = await Promise.all([
         fetch(apiUrl('stats')).then((r) => r.json()),
         fetch(apiUrl('templates')).then((r) => r.json()),
         fetch(apiUrl('logs')).then((r) => r.json()),
+        fetch(apiUrl('settings')).then((r) => r.json()),
       ]);
       setStats(s);
       setTemplates(t);
       setLogs(l);
+      setSettings(Object.fromEntries((settingsData || []).map(s => [s.key, s.value])));
     } catch (e) {
       console.error('Load error:', e);
     }
@@ -298,6 +302,12 @@ export default function AdminPage() {
         >
           用戶
         </button>
+        <button
+          style={tab === 'settings' ? styles.tabActive : styles.tab}
+          onClick={() => setTab('settings')}
+        >
+          設定
+        </button>
       </div>
 
       {/* 推播 Tab */}
@@ -412,6 +422,18 @@ export default function AdminPage() {
               loadSources();
             }}
           />
+        </div>
+      )}
+
+      {/* 設定 Tab */}
+      {tab === 'settings' && (
+        <div style={styles.section}>
+          <h2 style={styles.sectionTitle}>關鍵字回覆設定</h2>
+          <p style={styles.sectionDesc}>用戶傳關鍵字時的自動回覆內容</p>
+          <SettingsTab settings={settings} onSave={async (key, value) => {
+            await apiPost({ action: 'update_setting', key, value });
+            setSettings(prev => ({ ...prev, [key]: value }));
+          }} />
         </div>
       )}
 
@@ -613,6 +635,7 @@ function CustomPushForm({ stats, onSend, onCancel }) {
     mode: 'queued',
     label: '自訂推播',
   });
+  const [scheduledAt, setScheduledAt] = useState('');
 
   const targetCount = data.segments.reduce(
     (sum, seg) => sum + (stats?.segments[seg] || 0),
@@ -690,14 +713,31 @@ function CustomPushForm({ stats, onSend, onCancel }) {
         ))}
       </div>
 
+      {data.mode === 'scheduled' && (
+        <>
+          <label style={styles.fieldLabel}>排程時間</label>
+          <input
+            type="datetime-local"
+            value={scheduledAt}
+            onChange={(e) => setScheduledAt(e.target.value)}
+            style={styles.input}
+          />
+          {scheduledAt && (
+            <div style={{ fontSize: 12, color: '#8b5cf6', marginTop: 4 }}>
+              將於 {new Date(scheduledAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })} 送出
+            </div>
+          )}
+        </>
+      )}
+
       <div style={styles.editActions}>
         <span style={styles.targetInfo}>推給 {targetCount} 人</span>
         <button
-          onClick={() => onSend(data)}
+          onClick={() => onSend({ ...data, scheduled_at: scheduledAt || undefined })}
           style={styles.btnPrimary}
-          disabled={!data.message.trim() || data.segments.length === 0}
+          disabled={!data.message.trim() || data.segments.length === 0 || (data.mode === 'scheduled' && !scheduledAt)}
         >
-          送出
+          {data.mode === 'scheduled' ? '排程送出' : '送出'}
         </button>
       </div>
     </div>
@@ -1283,6 +1323,66 @@ function UsersTab({ usersData, search, filters, sources, page, onSearch, onFilte
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// 設定 Tab
+// ============================================================
+const SETTING_LABELS = {
+  seminar_info: { label: '說明會資訊', desc: '用戶傳「說明會」「直播」「講座」時的回覆' },
+  pricing_info: { label: '課程方案', desc: '用戶傳「方案」「價格」「費用」時的回覆' },
+  abc_info: { label: 'ABC 簡介', desc: '用戶傳「ABC」「怎麼瘦」「瘦身」時的回覆' },
+  welcome_message: { label: '歡迎訊息', desc: '新用戶加入時的歡迎訊息（非測驗用戶）' },
+};
+
+function SettingsTab({ settings, onSave }) {
+  const [editing, setEditing] = useState({});
+  const [saving, setSaving] = useState(null);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {Object.entries(SETTING_LABELS).map(([key, { label, desc }]) => {
+        const isEditing = editing[key] !== undefined;
+        const value = isEditing ? editing[key] : (settings[key] || '');
+
+        return (
+          <div key={key} style={{ ...styles.card, padding: 16 }}>
+            <div style={{ marginBottom: 8 }}>
+              <strong style={{ fontSize: 15 }}>{label}</strong>
+              <p style={{ color: '#94a3b8', fontSize: 13, margin: '4px 0 0' }}>{desc}</p>
+            </div>
+            <textarea
+              value={value}
+              onChange={(e) => setEditing(prev => ({ ...prev, [key]: e.target.value }))}
+              style={{ ...styles.input, minHeight: 120, resize: 'vertical', fontFamily: 'system-ui', lineHeight: 1.5 }}
+            />
+            {isEditing && (
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button
+                  onClick={async () => {
+                    setSaving(key);
+                    await onSave(key, editing[key]);
+                    setEditing(prev => { const n = { ...prev }; delete n[key]; return n; });
+                    setSaving(null);
+                  }}
+                  style={{ ...styles.btnPrimary, padding: '6px 16px', fontSize: 13 }}
+                  disabled={saving === key}
+                >
+                  {saving === key ? '儲存中...' : '儲存'}
+                </button>
+                <button
+                  onClick={() => setEditing(prev => { const n = { ...prev }; delete n[key]; return n; })}
+                  style={{ ...styles.btnOutline, padding: '6px 16px', fontSize: 13, width: 'auto', border: '1px solid #d1d5db', color: '#666' }}
+                >
+                  取消
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
