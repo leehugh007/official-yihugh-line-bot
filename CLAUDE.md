@@ -41,20 +41,25 @@ official-yihugh-line-bot/
 ├── app/
 │   ├── page.js                    # 首頁（健康檢查）
 │   ├── layout.js                  # Layout
+│   ├── admin/page.js              # 管理後台（推播/紀錄/排程/用戶/設定 五個 Tab）
 │   └── api/
-│       ├── webhook/route.js       # LINE Webhook（follow/unfollow/message）
+│       ├── webhook/route.js       # LINE Webhook（follow/unfollow/message/代碼領取）
+│       ├── admin/route.js         # 管理 API（stats/templates/push/settings/users/sources）
+│       ├── cron/drip/route.js     # 排程推播 Cron（每日 08:00 台灣時間）
 │       ├── push/route.js          # 推播 API（管理用）
 │       ├── track/r/route.js       # 連結追蹤轉址
 │       └── stats/route.js         # 統計 API
 ├── lib/
 │   ├── line.js                    # LINE API 工具（reply/push/multicast/verify）
-│   ├── keywords.js                # 關鍵字規則 + 代謝報告模板
+│   ├── keywords.js                # 關鍵字規則（先讀 DB settings，fallback 到預設值）
 │   ├── users.js                   # 用戶 CRUD + 分層邏輯
 │   ├── tracking.js                # 連結追蹤（wrapLink/logClick）
-│   ├── config.js                  # 可編輯設定（說明會、歡迎訊息）
+│   ├── config.js                  # 預設設定（說明會、歡迎訊息）
 │   └── supabase.js                # Supabase client
 └── supabase/
-    └── migration.sql              # 建表 SQL
+    ├── migration.sql              # 建表 SQL（001 基礎）
+    ├── migration_002_sources.sql  # 來源管理表
+    └── migration_003_settings.sql # 設定表 + 排程欄位
 ```
 
 ## 關鍵字規則
@@ -63,7 +68,7 @@ official-yihugh-line-bot/
 |--------|------|
 | 報告、代謝報告、我的類型 | 個人化代謝報告（根據 metabolism_type） |
 | 方案、價格、費用、多少錢 | 課程方案介紹 |
-| 說明會、直播、講座 | 說明會資訊（從 config.js 讀取） |
+| 說明會、直播、講座 | 說明會資訊（從 DB settings 讀取，後台可編輯） |
 | 文章、推薦、想看 | 根據代謝類型推薦文章 |
 | ABC、怎麼瘦、瘦身、減肥 | ABC 簡介 + 測驗連結 |
 | 不匹配任何關鍵字 | **不回覆**（一休手動處理） |
@@ -101,6 +106,14 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 
 - `official_line_users` — 用戶（line_user_id, metabolism_type, segment, interaction_count...）
 - `official_line_clicks` — 點擊紀錄（line_user_id, link_id, clicked_at）
+- `official_push_templates` — 推播模板
+- `official_push_logs` — 推播紀錄（含 scheduled_at 排程欄位）
+- `official_push_queue` — 佇列推播待發送項目
+- `official_drip_schedule` — 文章排程內容
+- `official_drip_logs` — 排程推送紀錄
+- `official_sources` — 來源管理（quiz/direct/legacy/live + 自訂）
+- `official_settings` — 可編輯設定（seminar_info/pricing_info/abc_info/welcome_message）
+- `quiz_sessions` — 代謝測驗結果（共用，含 claim_code 供代碼領取）
 
 ## 設計決策
 
@@ -108,7 +121,10 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 2. **不回覆 = 功能** — 沒匹配關鍵字就靜默，不干擾一休的手動回覆
 3. **每人獨立追蹤連結** — 推播時每人的 URL 帶各自的 userId，追蹤到個人
 4. **分層存 Supabase** — 不用 Redis（量小、不需要快取、需要持久化）
-5. **config.js 集中管理** — 說明會資訊、歡迎訊息等一休常改的東西，都在一個檔案
+5. **關鍵字回覆 DB 優先** — keywords.js 先讀 official_settings 表，fallback 到 code 裡的預設值。後台「設定」Tab 可直接編輯
+6. **代碼領取繞過測試模式** — 做完測驗的用戶傳代碼就能拿報告，不受 TEST_MODE 限制
+7. **推播三種模式** — instant（即時 multicast 500 人一批）/ queued（逐筆發送）/ scheduled（指定時間）
+8. **TEST_MODE** — webhook/route.js 第 47 行，`true` = 只有白名單收到回覆（代碼領取除外），改 `false` 全開
 
 ## 漏斗流程
 
