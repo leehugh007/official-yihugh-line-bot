@@ -171,12 +171,15 @@ export default function AdminPage() {
   // ============================================================
   // 推播操作
   // ============================================================
-  const handleConfirmPush = async (template) => {
+  const handleConfirmPush = async (template, overrides = {}) => {
+    const mergedTemplate = { ...template, ...overrides };
     const result = await apiPost({
       action: 'count_targets',
-      segments: template.segments,
+      segments: mergedTemplate.segments,
+      allUsers: mergedTemplate.allUsers || false,
+      excludeEnrolled: mergedTemplate.excludeEnrolled || false,
     });
-    setConfirmPush({ template, targetCount: result.count });
+    setConfirmPush({ template: mergedTemplate, targetCount: result.count });
   };
 
   const handleSendPush = async () => {
@@ -193,6 +196,9 @@ export default function AdminPage() {
       linkText: template.link_text,
       segments: template.segments,
       mode: template.mode,
+      allUsers: template.allUsers || false,
+      excludeEnrolled: template.excludeEnrolled || false,
+      scheduled_at: template.scheduled_at,
     });
 
     if (result.mode === 'queued') {
@@ -241,6 +247,8 @@ export default function AdminPage() {
     const result = await apiPost({
       action: 'count_targets',
       segments: data.segments,
+      allUsers: data.allUsers || false,
+      excludeEnrolled: data.excludeEnrolled || false,
     });
     setConfirmPush({
       template: {
@@ -327,7 +335,7 @@ export default function AdminPage() {
                 isEditing={editingId === t.id}
                 onEdit={() => setEditingId(editingId === t.id ? null : t.id)}
                 onSave={(updates) => handleSaveTemplate(t.id, updates)}
-                onSend={() => handleConfirmPush(t)}
+                onSend={(overrides) => handleConfirmPush(t, overrides)}
                 onCancel={() => setEditingId(null)}
               />
             ))}
@@ -491,6 +499,8 @@ function StatsBar({ stats }) {
 // ============================================================
 function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCancel }) {
   const [editData, setEditData] = useState({});
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [excludeEnrolled, setExcludeEnrolled] = useState(false);
 
   useEffect(() => {
     if (isEditing) {
@@ -615,9 +625,44 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
         </div>
       )}
 
+      {template.mode === 'scheduled' && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={styles.fieldLabel}>排程時間</div>
+          <input
+            type="datetime-local"
+            value={scheduledAt}
+            onChange={(e) => setScheduledAt(e.target.value)}
+            style={{ ...styles.input, marginBottom: 4 }}
+          />
+          {scheduledAt && (
+            <div style={{ fontSize: 12, color: '#8b5cf6' }}>
+              將於 {new Date(scheduledAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })} 送出
+            </div>
+          )}
+        </div>
+      )}
+
+      <label style={{ ...styles.checkbox, marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={excludeEnrolled}
+          onChange={(e) => setExcludeEnrolled(e.target.checked)}
+        />
+        <span style={{ fontSize: 13, color: '#64748b' }}>排除已報名減重班</span>
+      </label>
+
       <div style={styles.cardActions}>
         <button onClick={onEdit} style={styles.btnSmallGhost}>✏️ 編輯</button>
-        <button onClick={onSend} style={styles.btnSmallPrimary}>送出 →</button>
+        <button
+          onClick={() => onSend({
+            scheduled_at: scheduledAt || undefined,
+            excludeEnrolled,
+          })}
+          style={styles.btnSmallPrimary}
+          disabled={template.mode === 'scheduled' && !scheduledAt}
+        >
+          送出 →
+        </button>
       </div>
     </div>
   );
@@ -634,13 +679,15 @@ function CustomPushForm({ stats, onSend, onCancel }) {
     segments: ['active', 'warm'],
     mode: 'queued',
     label: '自訂推播',
+    allUsers: false,
+    excludeEnrolled: false,
   });
   const [scheduledAt, setScheduledAt] = useState('');
 
-  const targetCount = data.segments.reduce(
-    (sum, seg) => sum + (stats?.segments[seg] || 0),
-    0
-  );
+  const totalUsers = Object.values(stats?.segments || {}).reduce((a, b) => a + b, 0);
+  const targetCount = data.allUsers
+    ? totalUsers
+    : data.segments.reduce((sum, seg) => sum + (stats?.segments[seg] || 0), 0);
 
   return (
     <div style={styles.customForm}>
@@ -680,7 +727,15 @@ function CustomPushForm({ stats, onSend, onCancel }) {
 
       <label style={styles.fieldLabel}>推給誰</label>
       <div style={styles.segmentCheckboxes}>
-        {Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
+        <label style={{ ...styles.checkbox, fontWeight: 600 }}>
+          <input
+            type="checkbox"
+            checked={data.allUsers}
+            onChange={(e) => setData({ ...data, allUsers: e.target.checked })}
+          />
+          <span>👥 所有人</span>
+        </label>
+        {!data.allUsers && Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
           <label key={key} style={styles.checkbox}>
             <input
               type="checkbox"
@@ -698,6 +753,15 @@ function CustomPushForm({ stats, onSend, onCancel }) {
           </label>
         ))}
       </div>
+
+      <label style={{ ...styles.checkbox, marginTop: 4 }}>
+        <input
+          type="checkbox"
+          checked={data.excludeEnrolled}
+          onChange={(e) => setData({ ...data, excludeEnrolled: e.target.checked })}
+        />
+        <span style={{ fontSize: 13, color: '#64748b' }}>排除已報名減重班</span>
+      </label>
 
       <label style={styles.fieldLabel}>模式</label>
       <div style={styles.modeToggle}>
@@ -735,7 +799,7 @@ function CustomPushForm({ stats, onSend, onCancel }) {
         <button
           onClick={() => onSend({ ...data, scheduled_at: scheduledAt || undefined })}
           style={styles.btnPrimary}
-          disabled={!data.message.trim() || data.segments.length === 0 || (data.mode === 'scheduled' && !scheduledAt)}
+          disabled={!data.message.trim() || (!data.allUsers && data.segments.length === 0) || (data.mode === 'scheduled' && !scheduledAt)}
         >
           {data.mode === 'scheduled' ? '排程送出' : '送出'}
         </button>
@@ -908,6 +972,19 @@ function DripTab({ dripStats, onUpdate }) {
                   onChange={(e) => setEditData({ ...editData, link_text: e.target.value })}
                   style={styles.input}
                 />
+                <label style={styles.fieldLabel}>
+                  發送間隔（天）
+                  <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>
+                    {step.step_number === 1 ? '加入後幾天發送' : '距上一篇幾天後發送'}
+                  </span>
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={editData.delay_days ?? step.delay_days}
+                  onChange={(e) => setEditData({ ...editData, delay_days: parseInt(e.target.value, 10) })}
+                  style={{ ...styles.input, width: 80 }}
+                />
                 <div style={styles.editActions}>
                   <button onClick={() => setEditingStep(null)} style={styles.btnGhost}>取消</button>
                   <button onClick={() => {
@@ -924,7 +1001,7 @@ function DripTab({ dripStats, onUpdate }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
                   <div style={{ fontSize: 13, color: '#888', marginBottom: 2 }}>
-                    {step.step_number === 1 ? '加入後 1 天' : `第 ${step.step_number} 週`}
+                    {step.step_number === 1 ? `加入後 ${step.delay_days} 天` : `上一篇後 ${step.delay_days} 天`}
                   </div>
                   <div style={{ fontSize: 15, fontWeight: 600, color: '#1a1a1a' }}>
                     {step.title}
@@ -1003,6 +1080,19 @@ function PushHistory({ logs }) {
                 </span>
               )}
             </div>
+            {log.segments && log.segments.length > 0 && (
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ color: '#94a3b8' }}>推給：</span>
+                {log.segments.map((seg) => {
+                  const s = SEGMENT_LABELS[seg];
+                  return s ? (
+                    <span key={seg}>{s.icon} {s.label}</span>
+                  ) : (
+                    <span key={seg}>{seg}</span>
+                  );
+                })}
+              </div>
+            )}
             <div style={styles.logPreview}>
               {log.message.slice(0, 60)}{log.message.length > 60 ? '...' : ''}
             </div>

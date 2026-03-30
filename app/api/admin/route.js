@@ -5,7 +5,7 @@
 import { NextResponse } from 'next/server';
 import supabase from '../../../lib/supabase.js';
 import { multicastMessage, pushMessage, textMessage } from '../../../lib/line.js';
-import { getUsersBySegment } from '../../../lib/users.js';
+import { getUsersBySegment, getAllActiveUsers } from '../../../lib/users.js';
 import { wrapLink } from '../../../lib/tracking.js';
 
 function unauthorized() {
@@ -171,16 +171,32 @@ async function handleUpdateTemplate(data) {
   return NextResponse.json({ ok: true });
 }
 
-async function handleCountTargets({ segments }) {
-  const userIds = await getUsersBySegment(segments);
+// 取得推播目標用戶（支援所有人 / 分群 / 排除已報名）
+async function getUsersForPush({ segments, allUsers, excludeEnrolled }) {
+  let userIds = allUsers ? await getAllActiveUsers() : await getUsersBySegment(segments);
+
+  if (excludeEnrolled && userIds.length > 0) {
+    const { data: enrolled } = await supabase
+      .from('official_line_users')
+      .select('line_user_id')
+      .contains('tags', ['已報名減重班']);
+    const enrolledSet = new Set((enrolled || []).map((u) => u.line_user_id));
+    userIds = userIds.filter((id) => !enrolledSet.has(id));
+  }
+
+  return userIds;
+}
+
+async function handleCountTargets({ segments, allUsers, excludeEnrolled }) {
+  const userIds = await getUsersForPush({ segments, allUsers, excludeEnrolled });
   return NextResponse.json({ count: userIds.length });
 }
 
 async function handlePush(data) {
-  const { templateId, message, linkUrl, linkText, segments, mode } = data;
+  const { templateId, message, linkUrl, linkText, segments, mode, allUsers, excludeEnrolled } = data;
 
   // 取得目標用戶
-  const userIds = await getUsersBySegment(segments);
+  const userIds = await getUsersForPush({ segments, allUsers, excludeEnrolled });
   if (userIds.length === 0) {
     return NextResponse.json({ sent: 0, total: 0, message: '沒有符合條件的用戶' });
   }
@@ -198,11 +214,12 @@ async function handlePush(data) {
       message,
       link_url: linkUrl || null,
       link_id: linkUrl ? linkId : null,
-      segments,
+      segments: allUsers ? ['active', 'warm', 'new', 'silent'] : segments,
       mode: mode || 'instant',
       target_count: userIds.length,
       sent_count: 0,
       status: 'sending',
+      exclude_enrolled: excludeEnrolled || false,
     })
     .select()
     .single();
