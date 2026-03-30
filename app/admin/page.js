@@ -10,7 +10,55 @@ const SEGMENT_LABELS = {
   warm: { label: '溫熱', icon: '🟡', color: '#f59e0b' },
   new: { label: '新加入', icon: '🆕', color: '#3b82f6' },
   silent: { label: '沉默', icon: '🧊', color: '#94a3b8' },
+  admin: { label: '管理者', icon: '👨‍💼', color: '#8b5cf6' },
 };
+
+// 訊息預覽元件：模擬 LINE Flex Message 樣式
+function FlexPreview({ message, buttons }) {
+  const cleanButtons = (buttons || []).filter((b) => b.label && b.url);
+  if (!message && cleanButtons.length === 0) return null;
+
+  const lines = (message || '').split('\n').filter((l) => l.trim());
+  const title = lines[0] || '';
+  const body = lines.slice(1).join('\n').trim();
+
+  const hasFlex = cleanButtons.length > 0;
+
+  return (
+    <div style={{
+      marginTop: 12, borderRadius: 12, overflow: 'hidden',
+      border: '1px solid #e5e7eb', maxWidth: 280,
+    }}>
+      <div style={{ fontSize: 11, color: '#94a3b8', padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e5e7eb' }}>
+        LINE 預覽
+      </div>
+      {hasFlex ? (
+        <div style={{ background: '#fff' }}>
+          <div style={{ padding: '14px 16px' }}>
+            {title && <div style={{ fontWeight: 700, fontSize: 15, marginBottom: body ? 6 : 0, whiteSpace: 'pre-wrap' }}>{title}</div>}
+            {body && <div style={{ fontSize: 13, color: '#666', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{body}</div>}
+          </div>
+          <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {cleanButtons.map((btn, i) => (
+              <div key={i} style={{
+                padding: '10px 12px', borderRadius: 8, fontSize: 14, textAlign: 'center', fontWeight: 600,
+                background: i === 0 ? '#2a9d6f' : '#f1f5f9',
+                color: i === 0 ? '#fff' : '#334155',
+                cursor: 'default',
+              }}>
+                {btn.label}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding: '12px 16px', fontSize: 14, whiteSpace: 'pre-wrap', background: '#fff', lineHeight: 1.5 }}>
+          {message}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const MODE_LABELS = {
   instant: { label: '即時', desc: '幾秒內送達', color: '#ef4444' },
@@ -178,6 +226,7 @@ export default function AdminPage() {
       segments: mergedTemplate.segments,
       allUsers: mergedTemplate.allUsers || false,
       excludeEnrolled: mergedTemplate.excludeEnrolled || false,
+      adminOnly: mergedTemplate.adminOnly || false,
     });
     setConfirmPush({ template: mergedTemplate, targetCount: result.count });
   };
@@ -199,6 +248,7 @@ export default function AdminPage() {
       mode: template.mode,
       allUsers: template.allUsers || false,
       excludeEnrolled: template.excludeEnrolled || false,
+      adminOnly: template.adminOnly || false,
       scheduled_at: template.scheduled_at,
     });
 
@@ -250,6 +300,7 @@ export default function AdminPage() {
       segments: data.segments,
       allUsers: data.allUsers || false,
       excludeEnrolled: data.excludeEnrolled || false,
+      adminOnly: data.adminOnly || false,
     });
     setConfirmPush({
       template: {
@@ -574,34 +625,48 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
           </div>
         ))}
 
+        <FlexPreview message={editData.message} buttons={editData.buttons} />
+
         <label style={styles.fieldLabel}>推給誰</label>
         <div style={styles.segmentCheckboxes}>
-          <label style={{ ...styles.checkbox, fontWeight: 600 }}>
+          <label style={{ ...styles.checkbox, fontWeight: 600, color: '#8b5cf6' }}>
             <input
               type="checkbox"
-              checked={editData.allUsers || false}
-              onChange={(e) => setEditData({ ...editData, allUsers: e.target.checked })}
+              checked={editData.adminOnly || false}
+              onChange={(e) => setEditData({ ...editData, adminOnly: e.target.checked, allUsers: false })}
             />
-            <span>👥 所有人</span>
+            <span>👨‍💼 僅管理者（測試用）</span>
           </label>
-          {!editData.allUsers && Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
-            <label key={key} style={styles.checkbox}>
-              <input
-                type="checkbox"
-                checked={editData.segments?.includes(key)}
-                onChange={(e) => {
-                  const segs = editData.segments || [];
-                  setEditData({
-                    ...editData,
-                    segments: e.target.checked
-                      ? [...segs, key]
-                      : segs.filter((s) => s !== key),
-                  });
-                }}
-              />
-              <span>{icon} {label}</span>
-            </label>
-          ))}
+          {!editData.adminOnly && (
+            <>
+              <label style={{ ...styles.checkbox, fontWeight: 600 }}>
+                <input
+                  type="checkbox"
+                  checked={editData.allUsers || false}
+                  onChange={(e) => setEditData({ ...editData, allUsers: e.target.checked })}
+                />
+                <span>👥 所有人</span>
+              </label>
+              {!editData.allUsers && Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
+                <label key={key} style={styles.checkbox}>
+                  <input
+                    type="checkbox"
+                    checked={editData.segments?.includes(key)}
+                    onChange={(e) => {
+                      const segs = editData.segments || [];
+                      setEditData({
+                        ...editData,
+                        segments: e.target.checked
+                          ? [...segs, key]
+                          : segs.filter((s) => s !== key),
+                      });
+                    }}
+                  />
+                  <span>{icon} {label}</span>
+                </label>
+              ))}
+            </>
+          )}
         </div>
 
         <label style={styles.fieldLabel}>模式</label>
@@ -619,6 +684,14 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
         </div>
 
         <div style={styles.editActions}>
+          <span style={styles.targetInfo}>
+            推給 {editData.adminOnly
+              ? '管理者'
+              : editData.allUsers
+              ? Object.values(stats?.segments || {}).reduce((a, b) => a + b, 0)
+              : (editData.segments || []).reduce((sum, seg) => sum + (stats?.segments[seg] || 0), 0)
+            } 人
+          </span>
           <button onClick={onCancel} style={styles.btnGhost}>取消</button>
           <button
             onClick={() => {
@@ -704,6 +777,7 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
           onClick={() => onSend({
             scheduled_at: scheduledAt || undefined,
             excludeEnrolled,
+            adminOnly: false,
           })}
           style={styles.btnSmallPrimary}
           disabled={template.mode === 'scheduled' && !scheduledAt}
@@ -777,33 +851,47 @@ function CustomPushForm({ stats, onSend, onCancel }) {
         </div>
       ))}
 
+      <FlexPreview message={data.message} buttons={data.buttons} />
+
       <label style={styles.fieldLabel}>推給誰</label>
       <div style={styles.segmentCheckboxes}>
-        <label style={{ ...styles.checkbox, fontWeight: 600 }}>
+        <label style={{ ...styles.checkbox, fontWeight: 600, color: '#8b5cf6' }}>
           <input
             type="checkbox"
-            checked={data.allUsers}
-            onChange={(e) => setData({ ...data, allUsers: e.target.checked })}
+            checked={data.adminOnly || false}
+            onChange={(e) => setData({ ...data, adminOnly: e.target.checked, allUsers: false })}
           />
-          <span>👥 所有人</span>
+          <span>👨‍💼 僅管理者（測試用）</span>
         </label>
-        {!data.allUsers && Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
-          <label key={key} style={styles.checkbox}>
-            <input
-              type="checkbox"
-              checked={data.segments.includes(key)}
-              onChange={(e) => {
-                setData({
-                  ...data,
-                  segments: e.target.checked
-                    ? [...data.segments, key]
-                    : data.segments.filter((s) => s !== key),
-                });
-              }}
-            />
-            <span>{icon} {label}</span>
-          </label>
-        ))}
+        {!data.adminOnly && (
+          <>
+            <label style={{ ...styles.checkbox, fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={data.allUsers}
+                onChange={(e) => setData({ ...data, allUsers: e.target.checked })}
+              />
+              <span>👥 所有人</span>
+            </label>
+            {!data.allUsers && Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
+              <label key={key} style={styles.checkbox}>
+                <input
+                  type="checkbox"
+                  checked={data.segments.includes(key)}
+                  onChange={(e) => {
+                    setData({
+                      ...data,
+                      segments: e.target.checked
+                        ? [...data.segments, key]
+                        : data.segments.filter((s) => s !== key),
+                    });
+                  }}
+                />
+                <span>{icon} {label}</span>
+              </label>
+            ))}
+          </>
+        )}
       </div>
 
       <label style={{ ...styles.checkbox, marginTop: 4 }}>

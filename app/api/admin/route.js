@@ -171,8 +171,18 @@ async function handleUpdateTemplate(data) {
   return NextResponse.json({ ok: true });
 }
 
-// 取得推播目標用戶（支援所有人 / 分群 / 排除已報名）
-async function getUsersForPush({ segments, allUsers, excludeEnrolled }) {
+// 取得推播目標用戶（支援所有人 / 分群 / 排除已報名 / 僅管理者）
+async function getUsersForPush({ segments, allUsers, excludeEnrolled, adminOnly }) {
+  // 僅管理者：只推給有「管理者」tag 的人
+  if (adminOnly) {
+    const { data: admins } = await supabase
+      .from('official_line_users')
+      .select('line_user_id')
+      .contains('tags', ['管理者'])
+      .eq('is_blocked', false);
+    return (admins || []).map((u) => u.line_user_id);
+  }
+
   let userIds = allUsers ? await getAllActiveUsers() : await getUsersBySegment(segments);
 
   if (excludeEnrolled && userIds.length > 0) {
@@ -187,16 +197,16 @@ async function getUsersForPush({ segments, allUsers, excludeEnrolled }) {
   return userIds;
 }
 
-async function handleCountTargets({ segments, allUsers, excludeEnrolled }) {
-  const userIds = await getUsersForPush({ segments, allUsers, excludeEnrolled });
+async function handleCountTargets({ segments, allUsers, excludeEnrolled, adminOnly }) {
+  const userIds = await getUsersForPush({ segments, allUsers, excludeEnrolled, adminOnly });
   return NextResponse.json({ count: userIds.length });
 }
 
 async function handlePush(data) {
-  const { templateId, message, linkUrl, linkText, buttons, segments, mode, allUsers, excludeEnrolled } = data;
+  const { templateId, message, linkUrl, linkText, buttons, segments, mode, allUsers, excludeEnrolled, adminOnly } = data;
 
   // 取得目標用戶
-  const userIds = await getUsersForPush({ segments, allUsers, excludeEnrolled });
+  const userIds = await getUsersForPush({ segments, allUsers, excludeEnrolled, adminOnly });
   if (userIds.length === 0) {
     return NextResponse.json({ sent: 0, total: 0, message: '沒有符合條件的用戶' });
   }
@@ -217,7 +227,7 @@ async function handlePush(data) {
       link_url: useFlexMsg ? null : (linkUrl || null),
       link_id: (useFlexMsg || linkUrl) ? linkId : null,
       buttons: useFlexMsg ? buttons : [],
-      segments: allUsers ? ['active', 'warm', 'new', 'silent'] : segments,
+      segments: adminOnly ? ['admin'] : allUsers ? ['active', 'warm', 'new', 'silent'] : segments,
       mode: mode || 'instant',
       target_count: userIds.length,
       sent_count: 0,
