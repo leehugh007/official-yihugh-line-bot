@@ -4,7 +4,7 @@
 
 import { NextResponse } from 'next/server';
 import supabase from '../../../lib/supabase.js';
-import { multicastMessage, pushMessage, textMessage } from '../../../lib/line.js';
+import { multicastMessage, pushMessage, textMessage, pushFlexMessage } from '../../../lib/line.js';
 import { getUsersBySegment, getAllActiveUsers } from '../../../lib/users.js';
 import { wrapLink } from '../../../lib/tracking.js';
 
@@ -134,14 +134,14 @@ async function handleGetLogs() {
     .order('created_at', { ascending: false })
     .limit(20);
 
-  // 為每筆 log 計算點擊數
+  // 為每筆 log 計算點擊數（用 prefix match 支援 Flex 多按鈕）
   if (data) {
     for (const log of data) {
       if (log.link_id) {
         const { count } = await supabase
           .from('official_line_clicks')
           .select('*', { count: 'exact', head: true })
-          .eq('link_id', log.link_id);
+          .like('link_id', `${log.link_id}%`);
         log.click_count = count || 0;
       }
     }
@@ -193,7 +193,7 @@ async function handleCountTargets({ segments, allUsers, excludeEnrolled }) {
 }
 
 async function handlePush(data) {
-  const { templateId, message, linkUrl, linkText, segments, mode, allUsers, excludeEnrolled } = data;
+  const { templateId, message, linkUrl, linkText, buttons, segments, mode, allUsers, excludeEnrolled } = data;
 
   // 取得目標用戶
   const userIds = await getUsersForPush({ segments, allUsers, excludeEnrolled });
@@ -205,6 +205,8 @@ async function handlePush(data) {
     ? `${templateId}_${Date.now()}`
     : `custom_${Date.now()}`;
 
+  const useFlexMsg = Array.isArray(buttons) && buttons.length > 0;
+
   // 建立推播紀錄
   const { data: logData, error: logError } = await supabase
     .from('official_push_logs')
@@ -212,8 +214,9 @@ async function handlePush(data) {
       template_id: templateId || null,
       label: data.label || '自訂推播',
       message,
-      link_url: linkUrl || null,
-      link_id: linkUrl ? linkId : null,
+      link_url: useFlexMsg ? null : (linkUrl || null),
+      link_id: (useFlexMsg || linkUrl) ? linkId : null,
+      buttons: useFlexMsg ? buttons : [],
       segments: allUsers ? ['active', 'warm', 'new', 'silent'] : segments,
       mode: mode || 'instant',
       target_count: userIds.length,
@@ -240,6 +243,32 @@ async function handlePush(data) {
         .eq('id', logId);
       return NextResponse.json({ mode: 'scheduled', logId, scheduledAt: data.scheduled_at, total: userIds.length });
     }
+  }
+
+  // Flex Message 固定使用 multicast（不支援佇列模式的個人化追蹤連結）
+  if (useFlexMsg) {
+    const trackedButtons = buttons.map((btn, i) => ({
+      ...btn,
+      url: wrapLink(btn.url, `${linkId}_b${i}`),
+    }));
+    const lines = message.split('\n').filter((l) => l.trim());
+    const title = lines[0] || message;
+    const body = lines.slice(1).join('\n').trim();
+    const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons });
+
+    let sent = 0;
+    for (let i = 0; i < userIds.length; i += 500) {
+      const batch = userIds.slice(i, i + 500);
+      const ok = await multicastMessage(batch, lineMsg);
+      if (ok) sent += batch.length;
+    }
+
+    await supabase
+      .from('official_push_logs')
+      .update({ sent_count: sent, status: 'completed', completed_at: new Date().toISOString() })
+      .eq('id', logId);
+
+    return NextResponse.json({ mode: 'instant', sent, total: userIds.length, logId });
   }
 
   if (mode === 'queued') {
@@ -607,18 +636,33 @@ async function handleSendScheduled({ logId }) {
     return NextResponse.json({ sent: 0, total: 0, message: '沒有符合條件的用戶' });
   }
 
-  // 組合訊息
-  let finalMessage = log.message;
-  if (log.link_url && log.link_id) {
-    const trackedUrl = wrapLink(log.link_url, log.link_id);
-    finalMessage += `\n\n👉 點這裡\n${trackedUrl}`;
+  // 組合訊息（支援 Flex Message）
+  const useFlexMsg = Array.isArray(log.buttons) && log.buttons.length > 0;
+  let lineMsg;
+
+  if (useFlexMsg) {
+    const trackedButtons = log.buttons.map((btn, i) => ({
+      ...btn,
+      url: wrapLink(btn.url, `${log.link_id}_b${i}`),
+    }));
+    const lines = log.message.split('\n').filter((l) => l.trim());
+    const title = lines[0] || log.message;
+    const body = lines.slice(1).join('\n').trim();
+    lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons });
+  } else {
+    let finalMessage = log.message;
+    if (log.link_url && log.link_id) {
+      const trackedUrl = wrapLink(log.link_url, log.link_id);
+      finalMessage += `\n\n👉 點這裡\n${trackedUrl}`;
+    }
+    lineMsg = textMessage(finalMessage);
   }
 
   // 發送
   let sent = 0;
   for (let i = 0; i < userIds.length; i += 500) {
     const batch = userIds.slice(i, i + 500);
-    const ok = await multicastMessage(batch, textMessage(finalMessage));
+    const ok = await multicastMessage(batch, lineMsg);
     if (ok) sent += batch.length;
   }
 

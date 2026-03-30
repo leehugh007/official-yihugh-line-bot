@@ -192,6 +192,7 @@ export default function AdminPage() {
       templateId: template.id,
       label: template.name,
       message: template.message,
+      buttons: template.buttons || [],
       linkUrl: template.link_url,
       linkText: template.link_text,
       segments: template.segments,
@@ -504,12 +505,20 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
 
   useEffect(() => {
     if (isEditing) {
+      // 從 template.buttons 取；若空則從舊 link_url/link_text 轉換
+      const initialButtons =
+        template.buttons && template.buttons.length > 0
+          ? [...template.buttons, { label: '', url: '' }].slice(0, 2)
+          : template.link_url
+          ? [{ label: template.link_text || '點這裡', url: template.link_url }, { label: '', url: '' }]
+          : [{ label: '', url: '' }, { label: '', url: '' }];
+
       setEditData({
         message: template.message,
-        link_url: template.link_url || '',
-        link_text: template.link_text || '',
+        buttons: initialButtons,
         segments: [...template.segments],
         mode: template.mode,
+        allUsers: false,
       });
     }
   }, [isEditing, template]);
@@ -537,25 +546,45 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
           rows={6}
         />
 
-        <label style={styles.fieldLabel}>連結 URL</label>
-        <input
-          value={editData.link_url || ''}
-          onChange={(e) => setEditData({ ...editData, link_url: e.target.value })}
-          style={styles.input}
-          placeholder="https://..."
-        />
-
-        <label style={styles.fieldLabel}>連結文字</label>
-        <input
-          value={editData.link_text || ''}
-          onChange={(e) => setEditData({ ...editData, link_text: e.target.value })}
-          style={styles.input}
-          placeholder="例如：立即報名"
-        />
+        {[0, 1].map((i) => (
+          <div key={i}>
+            <label style={styles.fieldLabel}>
+              按鈕 {i + 1}{i === 1 && <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>（選填）</span>}
+            </label>
+            <input
+              value={editData.buttons?.[i]?.label || ''}
+              onChange={(e) => {
+                const btns = [...(editData.buttons || [{}, {}])];
+                btns[i] = { ...btns[i], label: e.target.value };
+                setEditData({ ...editData, buttons: btns });
+              }}
+              style={{ ...styles.input, marginBottom: 4 }}
+              placeholder={i === 0 ? '例如：🎥 觀看說明會回放' : '例如：👇 立即報名'}
+            />
+            <input
+              value={editData.buttons?.[i]?.url || ''}
+              onChange={(e) => {
+                const btns = [...(editData.buttons || [{}, {}])];
+                btns[i] = { ...btns[i], url: e.target.value };
+                setEditData({ ...editData, buttons: btns });
+              }}
+              style={styles.input}
+              placeholder="https://..."
+            />
+          </div>
+        ))}
 
         <label style={styles.fieldLabel}>推給誰</label>
         <div style={styles.segmentCheckboxes}>
-          {Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
+          <label style={{ ...styles.checkbox, fontWeight: 600 }}>
+            <input
+              type="checkbox"
+              checked={editData.allUsers || false}
+              onChange={(e) => setEditData({ ...editData, allUsers: e.target.checked })}
+            />
+            <span>👥 所有人</span>
+          </label>
+          {!editData.allUsers && Object.entries(SEGMENT_LABELS).map(([key, { label, icon }]) => (
             <label key={key} style={styles.checkbox}>
               <input
                 type="checkbox"
@@ -591,7 +620,13 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
 
         <div style={styles.editActions}>
           <button onClick={onCancel} style={styles.btnGhost}>取消</button>
-          <button onClick={() => onSave(editData)} style={styles.btnPrimary}>
+          <button
+            onClick={() => {
+              const cleanButtons = (editData.buttons || []).filter((b) => b.label && b.url);
+              onSave({ ...editData, buttons: cleanButtons });
+            }}
+            style={styles.btnPrimary}
+          >
             儲存
           </button>
         </div>
@@ -619,11 +654,23 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
         {template.message.split('\n').length > 3 && '...'}
       </div>
 
-      {template.link_url && (
+      {template.buttons?.length > 0 ? (
+        <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {template.buttons.map((btn, i) => (
+            <div key={i} style={{
+              padding: '6px 12px', borderRadius: 6, fontSize: 13, textAlign: 'center',
+              background: i === 0 ? '#2a9d6f' : '#f1f5f9',
+              color: i === 0 ? '#fff' : '#334155',
+            }}>
+              {btn.label}
+            </div>
+          ))}
+        </div>
+      ) : template.link_url ? (
         <div style={styles.cardLink}>
           🔗 {template.link_text || '連結'}
         </div>
-      )}
+      ) : null}
 
       {template.mode === 'scheduled' && (
         <div style={{ marginBottom: 8 }}>
@@ -674,8 +721,7 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
 function CustomPushForm({ stats, onSend, onCancel }) {
   const [data, setData] = useState({
     message: '',
-    link_url: '',
-    link_text: '',
+    buttons: [{ label: '', url: '' }, { label: '', url: '' }],
     segments: ['active', 'warm'],
     mode: 'queued',
     label: '自訂推播',
@@ -688,6 +734,12 @@ function CustomPushForm({ stats, onSend, onCancel }) {
   const targetCount = data.allUsers
     ? totalUsers
     : data.segments.reduce((sum, seg) => sum + (stats?.segments[seg] || 0), 0);
+
+  const updateButton = (i, field, value) => {
+    const btns = [...data.buttons];
+    btns[i] = { ...btns[i], [field]: value };
+    setData({ ...data, buttons: btns });
+  };
 
   return (
     <div style={styles.customForm}>
@@ -705,25 +757,25 @@ function CustomPushForm({ stats, onSend, onCancel }) {
         placeholder="輸入推播訊息..."
       />
 
-      <label style={styles.fieldLabel}>連結 URL（選填）</label>
-      <input
-        value={data.link_url}
-        onChange={(e) => setData({ ...data, link_url: e.target.value })}
-        style={styles.input}
-        placeholder="https://..."
-      />
-
-      {data.link_url && (
-        <>
-          <label style={styles.fieldLabel}>連結文字</label>
+      {[0, 1].map((i) => (
+        <div key={i}>
+          <label style={styles.fieldLabel}>
+            按鈕 {i + 1}{i === 1 && <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>（選填）</span>}
+          </label>
           <input
-            value={data.link_text}
-            onChange={(e) => setData({ ...data, link_text: e.target.value })}
-            style={styles.input}
-            placeholder="例如：點這裡"
+            value={data.buttons[i]?.label || ''}
+            onChange={(e) => updateButton(i, 'label', e.target.value)}
+            style={{ ...styles.input, marginBottom: 4 }}
+            placeholder={i === 0 ? '例如：🎥 觀看說明會回放' : '例如：👇 立即報名'}
           />
-        </>
-      )}
+          <input
+            value={data.buttons[i]?.url || ''}
+            onChange={(e) => updateButton(i, 'url', e.target.value)}
+            style={styles.input}
+            placeholder="https://..."
+          />
+        </div>
+      ))}
 
       <label style={styles.fieldLabel}>推給誰</label>
       <div style={styles.segmentCheckboxes}>
@@ -797,7 +849,10 @@ function CustomPushForm({ stats, onSend, onCancel }) {
       <div style={styles.editActions}>
         <span style={styles.targetInfo}>推給 {targetCount} 人</span>
         <button
-          onClick={() => onSend({ ...data, scheduled_at: scheduledAt || undefined })}
+          onClick={() => {
+            const cleanButtons = data.buttons.filter((b) => b.label && b.url);
+            onSend({ ...data, buttons: cleanButtons, scheduled_at: scheduledAt || undefined });
+          }}
           style={styles.btnPrimary}
           disabled={!data.message.trim() || (!data.allUsers && data.segments.length === 0) || (data.mode === 'scheduled' && !scheduledAt)}
         >
@@ -834,15 +889,39 @@ function ConfirmModal({ template, targetCount, onConfirm, onCancel }) {
 
         <div style={styles.previewBox}>
           <div style={styles.previewLabel}>訊息預覽</div>
-          <div style={styles.previewContent}>
-            {template.message}
-            {template.link_url && (
-              <>
-                {'\n\n'}👉 {template.link_text || '點這裡'}
-                {'\n'}(追蹤連結)
-              </>
-            )}
-          </div>
+          {template.buttons?.length > 0 ? (
+            <div style={{ padding: '10px 12px' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6, whiteSpace: 'pre-wrap' }}>
+                {template.message.split('\n')[0]}
+              </div>
+              {template.message.split('\n').slice(1).join('\n').trim() && (
+                <div style={{ fontSize: 13, color: '#666', marginBottom: 10, whiteSpace: 'pre-wrap' }}>
+                  {template.message.split('\n').slice(1).join('\n').trim()}
+                </div>
+              )}
+              {template.buttons.map((btn, i) => (
+                <div key={i} style={{
+                  padding: '8px 12px', borderRadius: 6, fontSize: 13, textAlign: 'center',
+                  marginBottom: 4,
+                  background: i === 0 ? '#2a9d6f' : '#f1f5f9',
+                  color: i === 0 ? '#fff' : '#334155',
+                }}>
+                  {btn.label}
+                </div>
+              ))}
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Flex Message — URL 不顯示給用戶</div>
+            </div>
+          ) : (
+            <div style={styles.previewContent}>
+              {template.message}
+              {template.link_url && (
+                <>
+                  {'\n\n'}👉 {template.link_text || '點這裡'}
+                  {'\n'}(追蹤連結)
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={styles.modalActions}>
