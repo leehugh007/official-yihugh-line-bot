@@ -175,10 +175,19 @@ async function handleCodeClaim(event, userId, code) {
     });
   }
 
-  // 更新用戶的代謝類型
+  // 計算排程開始時間：1 天後，台灣時間 08:00
+  const dripNextAt = new Date();
+  dripNextAt.setDate(dripNextAt.getDate() + 1);
+  dripNextAt.setUTCHours(0, 0, 0, 0); // UTC 00:00 = 台灣 08:00
+
+  // 更新用戶的代謝類型 + 啟動 Drip 排程
   await supabase
     .from('official_line_users')
-    .update({ metabolism_type: session.metabolism_type, source: 'quiz' })
+    .update({
+      metabolism_type: session.metabolism_type,
+      source: 'quiz',
+      drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(), // 已有排程的不覆蓋
+    })
     .eq('line_user_id', userId);
 
   // 記錄互動

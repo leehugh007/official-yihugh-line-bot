@@ -27,8 +27,9 @@ export async function GET(request) {
   }
 
   try {
-    const result = await processDrip();
-    return NextResponse.json(result);
+    const dripResult = await processDrip();
+    const pushResult = await processScheduledPushes();
+    return NextResponse.json({ drip: dripResult, scheduledPush: pushResult });
   } catch (error) {
     console.error('[Drip] Error:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -129,4 +130,48 @@ async function processDrip() {
   }
 
   return { processed: users.length, sent, skipped };
+}
+
+// ============================================================
+// 排程推播：掃描到期的 scheduled push 並執行
+// ============================================================
+async function processScheduledPushes() {
+  const now = new Date().toISOString();
+
+  const { data: scheduled } = await supabase
+    .from('official_push_logs')
+    .select('id')
+    .eq('status', 'scheduled')
+    .lte('scheduled_at', now);
+
+  if (!scheduled || scheduled.length === 0) {
+    return { processed: 0, message: '沒有到期的排程推播' };
+  }
+
+  let sent = 0;
+  let failed = 0;
+
+  for (const log of scheduled) {
+    try {
+      // 呼叫 admin API 的 send_scheduled 邏輯
+      const res = await fetch(
+        `${process.env.VERCEL_URL ? 'https://' + process.env.VERCEL_URL : 'http://localhost:3000'}/api/admin`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            secret: process.env.ADMIN_SECRET,
+            action: 'send_scheduled',
+            logId: log.id,
+          }),
+        }
+      );
+      if (res.ok) sent++;
+      else failed++;
+    } catch {
+      failed++;
+    }
+  }
+
+  return { processed: scheduled.length, sent, failed };
 }
