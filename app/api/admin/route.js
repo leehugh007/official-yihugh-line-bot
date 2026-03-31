@@ -162,9 +162,16 @@ async function handleUpdateTemplate(data) {
   const { id, ...updates } = data;
   updates.updated_at = new Date().toISOString();
 
+  // 只更新資料庫欄位，過濾掉前端狀態（allUsers, adminOnly, excludeEnrolled）
+  const validColumns = { message: 1, link_url: 1, link_text: 1, buttons: 1, segments: 1, mode: 1, updated_at: 1 };
+  const dbUpdates = {};
+  Object.keys(updates).forEach((key) => {
+    if (validColumns[key]) dbUpdates[key] = updates[key];
+  });
+
   const { error } = await supabase
     .from('official_push_templates')
-    .update(updates)
+    .update(dbUpdates)
     .eq('id', id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
