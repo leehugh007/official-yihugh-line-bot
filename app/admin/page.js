@@ -794,7 +794,8 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
           onClick={() => onSend({
             scheduled_at: scheduledAt || undefined,
             excludeEnrolled,
-            adminOnly: false,
+            adminOnly: editData.adminOnly || false,
+            allUsers: editData.allUsers || false,
           })}
           style={styles.btnSmallPrimary}
           disabled={template.mode === 'scheduled' && !scheduledAt}
@@ -973,7 +974,7 @@ function CustomPushForm({ stats, onSend, onCancel }) {
             onSend({ ...data, buttons: cleanButtons, scheduled_at: scheduledAt || undefined });
           }}
           style={styles.btnPrimary}
-          disabled={!data.message.trim() || (!data.allUsers && data.segments.length === 0) || (data.mode === 'scheduled' && !scheduledAt)}
+          disabled={!data.message.trim() || (!data.adminOnly && !data.allUsers && data.segments.length === 0) || (data.mode === 'scheduled' && !scheduledAt)}
         >
           {data.mode === 'scheduled' ? '排程送出' : '送出'}
         </button>
