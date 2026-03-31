@@ -553,6 +553,7 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
   const [editData, setEditData] = useState({});
   const [scheduledAt, setScheduledAt] = useState('');
   const [excludeEnrolled, setExcludeEnrolled] = useState(false);
+  const [adminTargetCount, setAdminTargetCount] = useState(0);
 
   useEffect(() => {
     if (isEditing) {
@@ -571,8 +572,22 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
         mode: template.mode,
         allUsers: false,
       });
+      loadAdminCount();
     }
   }, [isEditing, template]);
+
+  // 載入管理者人數
+  const loadAdminCount = async () => {
+    try {
+      const res = await apiPost({
+        action: 'count_targets',
+        adminOnly: true,
+      });
+      setAdminTargetCount(res.count || 0);
+    } catch {
+      setAdminTargetCount(0);
+    }
+  };
 
   const targetCount = template.segments.reduce(
     (sum, seg) => sum + (stats?.segments[seg] || 0),
@@ -686,7 +701,7 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
         <div style={styles.editActions}>
           <span style={styles.targetInfo}>
             推給 {editData.adminOnly
-              ? '管理者'
+              ? adminTargetCount
               : editData.allUsers
               ? Object.values(stats?.segments || {}).reduce((a, b) => a + b, 0)
               : (editData.segments || []).reduce((sum, seg) => sum + (stats?.segments[seg] || 0), 0)
@@ -696,7 +711,9 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
           <button
             onClick={() => {
               const cleanButtons = (editData.buttons || []).filter((b) => b.label && b.url);
-              onSave({ ...editData, buttons: cleanButtons });
+              // 只保存資料庫欄位，過濾掉前端狀態
+              const { adminOnly, allUsers, excludeEnrolled, ...dbData } = editData;
+              onSave({ ...dbData, buttons: cleanButtons });
             }}
             style={styles.btnPrimary}
           >
@@ -800,14 +817,28 @@ function CustomPushForm({ stats, onSend, onCancel }) {
     mode: 'queued',
     label: '自訂推播',
     allUsers: false,
+    adminOnly: false,
     excludeEnrolled: false,
   });
   const [scheduledAt, setScheduledAt] = useState('');
+  const [adminTargetCount, setAdminTargetCount] = useState(0);
 
   const totalUsers = Object.values(stats?.segments || {}).reduce((a, b) => a + b, 0);
-  const targetCount = data.allUsers
+  const targetCount = data.adminOnly
+    ? adminTargetCount
+    : data.allUsers
     ? totalUsers
     : data.segments.reduce((sum, seg) => sum + (stats?.segments[seg] || 0), 0);
+
+  // 當 adminOnly 改變時更新管理者人數
+  useEffect(() => {
+    if (data.adminOnly) {
+      apiPost({
+        action: 'count_targets',
+        adminOnly: true,
+      }).then((res) => setAdminTargetCount(res.count || 0)).catch(() => setAdminTargetCount(0));
+    }
+  }, [data.adminOnly]);
 
   const updateButton = (i, field, value) => {
     const btns = [...data.buttons];
@@ -1408,6 +1439,14 @@ function UsersTab({ usersData, search, filters, sources, page, onSearch, onFilte
                   </div>
 
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {user.tags?.includes('管理者') && (
+                      <span style={{
+                        fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                        background: '#ede9fe', color: '#8b5cf6', fontWeight: 600,
+                      }}>
+                        👨‍💼 管理者
+                      </span>
+                    )}
                     {user.tags?.includes('有興趣') && !isEnrolled && (
                       <span style={{
                         fontSize: 11, padding: '2px 8px', borderRadius: 4,
