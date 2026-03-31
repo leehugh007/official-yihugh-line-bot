@@ -643,8 +643,15 @@ async function handleSendScheduled({ logId }) {
     return NextResponse.json({ error: '找不到排程紀錄或已發送' }, { status: 404 });
   }
 
-  // 重新取得目標用戶
-  const userIds = await getUsersBySegment(log.segments);
+  // 重新取得目標用戶（根據 segments 推斷原始推播條件）
+  const isAdminOnly = log.segments?.includes('admin') && log.segments.length === 1;
+  const isAllUsers = !isAdminOnly && log.segments?.length >= 4;
+  const userIds = await getUsersForPush({
+    segments: log.segments,
+    adminOnly: isAdminOnly,
+    allUsers: isAllUsers,
+    excludeEnrolled: log.exclude_enrolled || false,
+  });
   if (userIds.length === 0) {
     await supabase
       .from('official_push_logs')

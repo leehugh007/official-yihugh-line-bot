@@ -596,12 +596,29 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
 
   const modeInfo = MODE_LABELS[template.mode];
 
+  // 編輯中的即時人數計算
+  const editTargetCount = editData.adminOnly
+    ? adminTargetCount
+    : editData.allUsers
+    ? Object.values(stats?.segments || {}).reduce((a, b) => a + b, 0)
+    : (editData.segments || []).reduce((sum, seg) => sum + (stats?.segments[seg] || 0), 0);
+
+  const editModeInfo = MODE_LABELS[editData.mode || template.mode];
+
   if (isEditing) {
     return (
       <div style={styles.cardEditing}>
         <div style={styles.cardHeader}>
           <span style={styles.cardIcon}>{template.icon}</span>
-          <span style={styles.cardName}>{template.name}</span>
+          <div>
+            <div style={styles.cardName}>{template.name}</div>
+            <div style={styles.cardMeta}>
+              <span style={{ ...styles.modeBadge, background: (editModeInfo?.color || '#888') + '18', color: editModeInfo?.color || '#888' }}>
+                {editModeInfo?.label || '即時'}
+              </span>
+              <span style={styles.cardTarget}>→ {editTargetCount} 人</span>
+            </div>
+          </div>
         </div>
 
         <label style={styles.fieldLabel}>訊息內容</label>
@@ -796,6 +813,7 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
             excludeEnrolled,
             adminOnly: editData.adminOnly || false,
             allUsers: editData.allUsers || false,
+            segments: editData.segments || template.segments,
           })}
           style={styles.btnSmallPrimary}
           disabled={template.mode === 'scheduled' && !scheduledAt}
