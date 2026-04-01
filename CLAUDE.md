@@ -45,12 +45,13 @@ official-yihugh-line-bot/
 │   └── api/
 │       ├── webhook/route.js       # LINE Webhook（follow/unfollow/message/代碼領取）
 │       ├── admin/route.js         # 管理 API（stats/templates/push/settings/users/sources）
-│       ├── cron/drip/route.js     # Cron（每小時）：Drip 排程文章 + 到期 scheduled push
+│       ├── cron/drip/route.js     # Cron（每 10 分鐘）：Drip 排程 + 到期 scheduled push
 │       ├── push/route.js          # 推播 API（管理用）
 │       ├── track/r/route.js       # 連結追蹤轉址
 │       └── stats/route.js         # 統計 API
 ├── lib/
-│   ├── line.js                    # LINE API 工具（reply/push/multicast/verify/pushFlexMessage）
+│   ├── line.js                    # LINE API（reply/push/multicast/verify/pushFlexMessage + hero image）
+│   ├── push.js                    # 排程推播發送邏輯（sendScheduledPush，cron 和 admin 共用）
 │   ├── keywords.js                # 關鍵字規則（先讀 DB settings，fallback 到預設值）
 │   ├── users.js                   # 用戶 CRUD + 分層邏輯
 │   ├── tracking.js                # 連結追蹤（wrapLink/logClick）
@@ -61,7 +62,8 @@ official-yihugh-line-bot/
     ├── migration_002_sources.sql  # 來源管理表
     ├── migration_003_settings.sql # 設定表 + 排程欄位
     ├── migration_004_push_logs_extra.sql # push_logs 加 exclude_enrolled
-    └── migration_005_flex_message.sql    # templates + push_logs 加 buttons JSONB
+    ├── migration_005_flex_message.sql    # templates + push_logs 加 buttons JSONB
+    └── migration_006_image_support.sql  # Storage bucket + 三張表加 image_url
 ```
 
 ## 關鍵字規則
