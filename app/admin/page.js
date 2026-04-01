@@ -155,6 +155,71 @@ const MODE_LABELS = {
 };
 
 // ============================================================
+// 24 小時制日期時間選擇器
+// ============================================================
+function DateTimePicker24({ value, onChange, style }) {
+  const [date, setDate] = useState('');
+  const [hour, setHour] = useState('');
+  const [minute, setMinute] = useState('');
+
+  useEffect(() => {
+    if (value) {
+      const [d, t] = value.split('T');
+      if (d) setDate(d);
+      if (t) {
+        const [h, m] = t.split(':');
+        setHour(h || '');
+        setMinute(m || '');
+      }
+    }
+  }, []);
+
+  const update = (newDate, newHour, newMinute) => {
+    setDate(newDate);
+    setHour(newHour);
+    setMinute(newMinute);
+    if (newDate && newHour !== '' && newMinute !== '') {
+      // 加上 +08:00 確保 Vercel (UTC) 伺服器正確解析為台灣時間
+      onChange(`${newDate}T${newHour.padStart(2, '0')}:${newMinute.padStart(2, '0')}:00+08:00`);
+    } else {
+      onChange('');
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', ...style }}>
+      <input
+        type="date"
+        value={date}
+        onChange={(e) => update(e.target.value, hour, minute)}
+        style={{ ...styles.input, flex: 1, minWidth: 140, marginBottom: 0 }}
+      />
+      <select
+        value={hour}
+        onChange={(e) => update(date, e.target.value, minute || '00')}
+        style={{ ...styles.input, width: 70, marginBottom: 0 }}
+      >
+        <option value="">時</option>
+        {Array.from({ length: 24 }, (_, i) => (
+          <option key={i} value={String(i).padStart(2, '0')}>{String(i).padStart(2, '0')}</option>
+        ))}
+      </select>
+      <span style={{ color: '#64748b', fontWeight: 600 }}>:</span>
+      <select
+        value={minute}
+        onChange={(e) => update(date, hour || '00', e.target.value)}
+        style={{ ...styles.input, width: 70, marginBottom: 0 }}
+      >
+        <option value="">分</option>
+        {['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'].map((m) => (
+          <option key={m} value={m}>{m}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ============================================================
 // API 工具
 // ============================================================
 function apiUrl(action) {
@@ -506,7 +571,10 @@ export default function AdminPage() {
       {tab === 'history' && (
         <div style={styles.section}>
           <h2 style={styles.sectionTitle}>推播紀錄</h2>
-          <PushHistory logs={logs} />
+          <PushHistory logs={logs} onReload={async () => {
+            const l = await fetch(apiUrl('logs')).then(r => r.json());
+            setLogs(l);
+          }} />
         </div>
       )}
 
@@ -874,15 +942,14 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
       {template.mode === 'scheduled' && (
         <div style={{ marginBottom: 8 }}>
           <div style={styles.fieldLabel}>排程時間</div>
-          <input
-            type="datetime-local"
+          <DateTimePicker24
             value={scheduledAt}
-            onChange={(e) => setScheduledAt(e.target.value)}
-            style={{ ...styles.input, marginBottom: 4 }}
+            onChange={setScheduledAt}
+            style={{ marginBottom: 4 }}
           />
           {scheduledAt && (
-            <div style={{ fontSize: 12, color: '#8b5cf6' }}>
-              將於 {new Date(scheduledAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })} 送出
+            <div style={{ fontSize: 12, color: '#8b5cf6', marginTop: 4 }}>
+              將於 {scheduledAt.replace('T', ' ').replace(/:\d{2}\+.*$/, '')} 送出
             </div>
           )}
         </div>
@@ -1066,15 +1133,13 @@ function CustomPushForm({ stats, onSend, onCancel }) {
       {data.mode === 'scheduled' && (
         <>
           <label style={styles.fieldLabel}>排程時間</label>
-          <input
-            type="datetime-local"
+          <DateTimePicker24
             value={scheduledAt}
-            onChange={(e) => setScheduledAt(e.target.value)}
-            style={styles.input}
+            onChange={setScheduledAt}
           />
           {scheduledAt && (
             <div style={{ fontSize: 12, color: '#8b5cf6', marginTop: 4 }}>
-              將於 {new Date(scheduledAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })} 送出
+              將於 {scheduledAt.replace('T', ' ').replace(/:\d{2}\+.*$/, '')} 送出
             </div>
           )}
         </>
@@ -1361,10 +1426,74 @@ function DripTab({ dripStats, onUpdate }) {
 // ============================================================
 // 推播紀錄
 // ============================================================
-function PushHistory({ logs }) {
+function PushHistory({ logs, onReload }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editMsg, setEditMsg] = useState('');
+  const [editScheduledAt, setEditScheduledAt] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
   if (!logs.length) {
     return <p style={{ color: '#94a3b8', textAlign: 'center', padding: 32 }}>尚無推播紀錄</p>;
   }
+
+  const statusMap = {
+    completed: { label: '已完成', bg: '#dcfce7', color: '#166534' },
+    sending: { label: '發送中', bg: '#dbeafe', color: '#1e40af' },
+    scheduled: { label: '待發送', bg: '#fef3c7', color: '#92400e' },
+    failed: { label: '失敗', bg: '#fee2e2', color: '#991b1b' },
+  };
+
+  const handleEdit = (log) => {
+    setEditingId(log.id);
+    setEditMsg(log.message);
+    const sa = log.scheduled_at ? new Date(log.scheduled_at) : null;
+    if (sa) {
+      const y = sa.getFullYear();
+      const mo = String(sa.getMonth() + 1).padStart(2, '0');
+      const d = String(sa.getDate()).padStart(2, '0');
+      const h = String(sa.getHours()).padStart(2, '0');
+      const mi = String(sa.getMinutes()).padStart(2, '0');
+      setEditScheduledAt(`${y}-${mo}-${d}T${h}:${mi}`);
+    } else {
+      setEditScheduledAt('');
+    }
+  };
+
+  const handleSave = async (id) => {
+    setSaving(true);
+    try {
+      const body = { id, message: editMsg };
+      if (editScheduledAt) body.scheduled_at = new Date(editScheduledAt).toISOString();
+      await fetch(apiUrl('update_log'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      setEditingId(null);
+      if (onReload) await onReload();
+    } catch (e) {
+      alert('儲存失敗：' + e.message);
+    }
+    setSaving(false);
+  };
+
+  const handleDelete = async (id) => {
+    setSaving(true);
+    try {
+      await fetch(apiUrl('delete_log'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      setConfirmDeleteId(null);
+      if (onReload) await onReload();
+    } catch (e) {
+      alert('刪除失敗：' + e.message);
+    }
+    setSaving(false);
+  };
 
   return (
     <div style={styles.logList}>
@@ -1374,22 +1503,44 @@ function PushHistory({ logs }) {
         const clickRate = log.click_count && log.sent_count
           ? `${Math.round((log.click_count / log.sent_count) * 100)}%`
           : null;
+        const scheduledDate = log.scheduled_at ? new Date(log.scheduled_at) : null;
+        const scheduledStr = scheduledDate
+          ? scheduledDate.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+          : null;
+        const st = statusMap[log.status] || { label: log.status, bg: '#f1f5f9', color: '#475569' };
+        const isExpanded = expandedId === log.id;
+        const isEditing = editingId === log.id;
+        const isScheduled = log.status === 'scheduled';
 
         return (
-          <div key={log.id} style={styles.logItem}>
+          <div key={log.id} style={{ ...styles.logItem, cursor: 'pointer' }} onClick={() => {
+            if (!isEditing) setExpandedId(isExpanded ? null : log.id);
+          }}>
             <div style={styles.logTop}>
               <span style={styles.logDate}>{dateStr}</span>
               <span style={styles.logLabel}>{log.label}</span>
               <span style={{
                 ...styles.statusBadge,
-                background: log.status === 'completed' ? '#dcfce7' : '#fef3c7',
-                color: log.status === 'completed' ? '#166534' : '#92400e',
+                background: st.bg,
+                color: st.color,
               }}>
-                {log.status === 'completed' ? '已完成' : log.status === 'sending' ? '發送中' : log.status}
+                {st.label}
+              </span>
+              {scheduledStr && (
+                <span style={{ fontSize: 12, color: '#92400e', marginLeft: 4 }}>
+                  ⏰ 預計 {scheduledStr} 發送
+                </span>
+              )}
+              <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 'auto' }}>
+                {isExpanded ? '▲ 收合' : '▼ 展開'}
               </span>
             </div>
             <div style={styles.logStats}>
-              <span>{log.sent_count} 人送達</span>
+              {isScheduled ? (
+                <span style={{ color: '#92400e' }}>{log.target_count} 人預計送達</span>
+              ) : (
+                <span>{log.sent_count} 人送達</span>
+              )}
               {log.click_count > 0 && (
                 <span style={styles.logClick}>
                   {log.click_count} 點擊（{clickRate}）
@@ -1409,9 +1560,80 @@ function PushHistory({ logs }) {
                 })}
               </div>
             )}
-            <div style={styles.logPreview}>
-              {log.message.slice(0, 60)}{log.message.length > 60 ? '...' : ''}
-            </div>
+
+            {/* 收合時只顯示預覽 */}
+            {!isExpanded && (
+              <div style={styles.logPreview}>
+                {log.message.slice(0, 60)}{log.message.length > 60 ? '...' : ''}
+              </div>
+            )}
+
+            {/* 展開後顯示完整訊息 */}
+            {isExpanded && !isEditing && (
+              <div onClick={(e) => e.stopPropagation()}>
+                <div style={{ fontSize: 13, color: '#334155', marginTop: 8, whiteSpace: 'pre-wrap', lineHeight: 1.6, background: '#f8fafc', borderRadius: 8, padding: 12 }}>
+                  {log.message}
+                </div>
+                {log.image_url && (
+                  <div style={{ marginTop: 8 }}>
+                    <img src={log.image_url} alt="" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8 }} />
+                  </div>
+                )}
+                {isScheduled && (
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button onClick={() => handleEdit(log)} style={{ ...styles.btnSmallGhost, fontSize: 12 }}>
+                      ✏️ 編輯
+                    </button>
+                    <button onClick={() => setConfirmDeleteId(log.id)} style={{ fontSize: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid #fca5a5', background: '#fff', color: '#dc2626', cursor: 'pointer' }}>
+                      🗑️ 刪除
+                    </button>
+                  </div>
+                )}
+                {confirmDeleteId === log.id && (
+                  <div style={{ marginTop: 8, padding: 12, background: '#fef2f2', borderRadius: 8, border: '1px solid #fca5a5' }}>
+                    <p style={{ fontSize: 13, color: '#991b1b', margin: '0 0 8px' }}>確定要刪除這筆排程推播嗎？此操作無法復原。</p>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => handleDelete(log.id)} disabled={saving} style={{ ...styles.btnSmallPrimary, fontSize: 12, background: '#dc2626' }}>
+                        {saving ? '刪除中...' : '確定刪除'}
+                      </button>
+                      <button onClick={() => setConfirmDeleteId(null)} style={{ ...styles.btnSmallGhost, fontSize: 12 }}>
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 編輯模式 */}
+            {isExpanded && isEditing && (
+              <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 8 }}>
+                <div style={{ marginBottom: 8 }}>
+                  <label style={{ fontSize: 12, color: '#64748b', marginBottom: 4, display: 'block' }}>訊息內容</label>
+                  <textarea
+                    value={editMsg}
+                    onChange={(e) => setEditMsg(e.target.value)}
+                    rows={5}
+                    style={{ ...styles.input, resize: 'vertical' }}
+                  />
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <label style={{ fontSize: 12, color: '#64748b', marginBottom: 4, display: 'block' }}>預計發送時間</label>
+                  <DateTimePicker24
+                    value={editScheduledAt}
+                    onChange={setEditScheduledAt}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => handleSave(log.id)} disabled={saving} style={{ ...styles.btnSmallPrimary, fontSize: 12 }}>
+                    {saving ? '儲存中...' : '儲存'}
+                  </button>
+                  <button onClick={() => setEditingId(null)} style={{ ...styles.btnSmallGhost, fontSize: 12 }}>
+                    取消
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         );
       })}

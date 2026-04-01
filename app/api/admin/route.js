@@ -76,6 +76,10 @@ export async function POST(request) {
       return handleSendScheduled(data);
     case 'upload_image':
       return handleUploadImage(data);
+    case 'update_log':
+      return handleUpdateLog(data);
+    case 'delete_log':
+      return handleDeleteLog(data);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -743,4 +747,44 @@ async function handleSendScheduled({ logId }) {
     .eq('id', logId);
 
   return NextResponse.json({ mode: 'sent_scheduled', sent, total: userIds.length, logId });
+}
+
+// ============================================================
+// 編輯排程紀錄（僅限 scheduled 狀態）
+// ============================================================
+async function handleUpdateLog(data) {
+  const { id, ...updates } = data;
+  if (!id) return NextResponse.json({ error: 'Missing log id' }, { status: 400 });
+
+  // 確認是 scheduled 狀態才允許編輯
+  const { data: log } = await supabase.from('official_push_logs').select('status').eq('id', id).single();
+  if (!log) return NextResponse.json({ error: 'Log not found' }, { status: 404 });
+  if (log.status !== 'scheduled') return NextResponse.json({ error: '只能編輯待發送的紀錄' }, { status: 400 });
+
+  const validColumns = { message: 1, scheduled_at: 1, segments: 1, exclude_enrolled: 1, image_url: 1 };
+  const dbUpdates = {};
+  Object.keys(updates).forEach((key) => {
+    if (validColumns[key]) dbUpdates[key] = updates[key];
+  });
+
+  const { error } = await supabase.from('official_push_logs').update(dbUpdates).eq('id', id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
+// ============================================================
+// 刪除排程紀錄（僅限 scheduled 狀態）
+// ============================================================
+async function handleDeleteLog(data) {
+  const { id } = data;
+  if (!id) return NextResponse.json({ error: 'Missing log id' }, { status: 400 });
+
+  // 確認是 scheduled 狀態才允許刪除
+  const { data: log } = await supabase.from('official_push_logs').select('status').eq('id', id).single();
+  if (!log) return NextResponse.json({ error: 'Log not found' }, { status: 404 });
+  if (log.status !== 'scheduled') return NextResponse.json({ error: '只能刪除待發送的紀錄' }, { status: 400 });
+
+  const { error } = await supabase.from('official_push_logs').delete().eq('id', id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
 }
