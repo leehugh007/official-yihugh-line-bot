@@ -248,6 +248,8 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 13. **推播 + 排程支援圖片** — hero image 顯示在 Flex Message 頂部，圖片存 Supabase Storage `push-images` bucket，後台上傳
 14. **Drip 排程 multicast** — 同一篇文章的用戶批量 multicast（500 人/批），不逐筆 push，撐 2000+ 人
 15. **Cron 每 10 分鐘** — `*/10 * * * *`，排程推播最多延遲 10 分鐘（原本每小時最多延遲 59 分鐘）
+16. **時間一律帶時區 +08:00** — Vercel serverless 跑 UTC，前端傳時間到 server 必須帶 `+08:00`。`datetime-local` 不帶時區會被 Supabase TIMESTAMPTZ 當 UTC 存，排程差 8 小時。用 DateTimePicker24 元件統一處理
+17. **推播紀錄可編輯/刪除** — 僅限 `scheduled` 狀態的紀錄可編輯訊息和時間、可刪除（有二次確認）。已完成的紀錄不可改不可刪
 
 ## 漏斗流程
 
