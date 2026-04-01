@@ -1464,13 +1464,9 @@ function PushHistory({ logs, onReload }) {
   const handleSave = async (id) => {
     setSaving(true);
     try {
-      const body = { id, message: editMsg };
-      if (editScheduledAt) body.scheduled_at = new Date(editScheduledAt).toISOString();
-      await fetch(apiUrl('update_log'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const payload = { action: 'update_log', id, message: editMsg };
+      if (editScheduledAt) payload.scheduled_at = editScheduledAt;
+      await apiPost(payload);
       setEditingId(null);
       if (onReload) await onReload();
     } catch (e) {
@@ -1482,11 +1478,7 @@ function PushHistory({ logs, onReload }) {
   const handleDelete = async (id) => {
     setSaving(true);
     try {
-      await fetch(apiUrl('delete_log'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      });
+      await apiPost({ action: 'delete_log', id });
       setConfirmDeleteId(null);
       if (onReload) await onReload();
     } catch (e) {
