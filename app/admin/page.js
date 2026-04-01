@@ -13,16 +13,101 @@ const SEGMENT_LABELS = {
   admin: { label: '管理者', icon: '👨‍💼', color: '#8b5cf6' },
 };
 
+// 圖片上傳元件
+function ImageUpload({ imageUrl, onChange }) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // 前端驗證
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setError('只支援 JPG / PNG / WebP');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('檔案不可超過 2MB');
+      return;
+    }
+
+    setError('');
+    setUploading(true);
+
+    try {
+      // 轉 Base64
+      const base64 = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(file);
+      });
+
+      const res = await apiPost({
+        action: 'upload_image',
+        fileName: file.name,
+        fileBase64: base64,
+        contentType: file.type,
+      });
+
+      if (res.url) {
+        onChange(res.url);
+      } else {
+        setError(res.error || '上傳失敗');
+      }
+    } catch {
+      setError('上傳失敗');
+    }
+    setUploading(false);
+  };
+
+  return (
+    <div>
+      <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#444', margin: '12px 0 4px' }}>
+        圖片<span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>（選填，顯示在訊息頂部）</span>
+      </label>
+      {imageUrl ? (
+        <div style={{ position: 'relative', maxWidth: 280, marginBottom: 8 }}>
+          <img src={imageUrl} alt="" style={{ width: '100%', borderRadius: 8, display: 'block' }} />
+          <button
+            onClick={() => onChange('')}
+            style={{
+              position: 'absolute', top: 6, right: 6,
+              background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none',
+              borderRadius: '50%', width: 24, height: 24, cursor: 'pointer',
+              fontSize: 14, lineHeight: '24px', textAlign: 'center',
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      ) : (
+        <label style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: '100%', maxWidth: 280, height: 80,
+          border: '2px dashed #d1d5db', borderRadius: 8,
+          cursor: uploading ? 'wait' : 'pointer',
+          color: '#94a3b8', fontSize: 13, marginBottom: 8,
+        }}>
+          <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleFile} style={{ display: 'none' }} disabled={uploading} />
+          {uploading ? '上傳中...' : '點擊上傳圖片'}
+        </label>
+      )}
+      {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 4 }}>{error}</div>}
+    </div>
+  );
+}
+
 // 訊息預覽元件：模擬 LINE Flex Message 樣式
-function FlexPreview({ message, buttons }) {
+function FlexPreview({ message, buttons, imageUrl }) {
   const cleanButtons = (buttons || []).filter((b) => b.label && b.url);
-  if (!message && cleanButtons.length === 0) return null;
+  if (!message && cleanButtons.length === 0 && !imageUrl) return null;
 
   const lines = (message || '').split('\n').filter((l) => l.trim());
   const title = lines[0] || '';
   const body = lines.slice(1).join('\n').trim();
 
-  const hasFlex = cleanButtons.length > 0;
+  const hasFlex = cleanButtons.length > 0 || !!imageUrl;
 
   return (
     <div style={{
@@ -34,22 +119,25 @@ function FlexPreview({ message, buttons }) {
       </div>
       {hasFlex ? (
         <div style={{ background: '#fff' }}>
+          {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', display: 'block' }} />}
           <div style={{ padding: '14px 16px' }}>
             {title && <div style={{ fontWeight: 700, fontSize: 15, marginBottom: body ? 6 : 0, whiteSpace: 'pre-wrap' }}>{title}</div>}
             {body && <div style={{ fontSize: 13, color: '#666', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{body}</div>}
           </div>
-          <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {cleanButtons.map((btn, i) => (
-              <div key={i} style={{
-                padding: '10px 12px', borderRadius: 8, fontSize: 14, textAlign: 'center', fontWeight: 600,
-                background: i === 0 ? '#2a9d6f' : '#f1f5f9',
-                color: i === 0 ? '#fff' : '#334155',
-                cursor: 'default',
-              }}>
-                {btn.label}
-              </div>
-            ))}
-          </div>
+          {cleanButtons.length > 0 && (
+            <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {cleanButtons.map((btn, i) => (
+                <div key={i} style={{
+                  padding: '10px 12px', borderRadius: 8, fontSize: 14, textAlign: 'center', fontWeight: 600,
+                  background: i === 0 ? '#2a9d6f' : '#f1f5f9',
+                  color: i === 0 ? '#fff' : '#334155',
+                  cursor: 'default',
+                }}>
+                  {btn.label}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ padding: '12px 16px', fontSize: 14, whiteSpace: 'pre-wrap', background: '#fff', lineHeight: 1.5 }}>
@@ -244,6 +332,7 @@ export default function AdminPage() {
       buttons: template.buttons || [],
       linkUrl: template.link_url,
       linkText: template.link_text,
+      imageUrl: template.image_url || undefined,
       segments: template.segments,
       mode: template.mode,
       allUsers: template.allUsers || false,
@@ -571,6 +660,7 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
         segments: [...template.segments],
         mode: template.mode,
         allUsers: false,
+        image_url: template.image_url || '',
       });
       loadAdminCount();
     }
@@ -657,7 +747,9 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
           </div>
         ))}
 
-        <FlexPreview message={editData.message} buttons={editData.buttons} />
+        <ImageUpload imageUrl={editData.image_url || ''} onChange={(url) => setEditData({ ...editData, image_url: url })} />
+
+        <FlexPreview message={editData.message} buttons={editData.buttons} imageUrl={editData.image_url} />
 
         <label style={styles.fieldLabel}>推給誰</label>
         <div style={styles.segmentCheckboxes}>
@@ -730,7 +822,7 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
               const cleanButtons = (editData.buttons || []).filter((b) => b.label && b.url);
               // 只保存資料庫欄位，過濾掉前端狀態
               const { adminOnly, allUsers, excludeEnrolled, ...dbData } = editData;
-              onSave({ ...dbData, buttons: cleanButtons });
+              onSave({ ...dbData, buttons: cleanButtons, image_url: editData.image_url || null });
             }}
             style={styles.btnPrimary}
           >
@@ -814,6 +906,7 @@ function TemplateCard({ template, stats, isEditing, onEdit, onSave, onSend, onCa
             adminOnly: editData.adminOnly || false,
             allUsers: editData.allUsers || false,
             segments: editData.segments || template.segments,
+            image_url: template.image_url || undefined,
           })}
           style={styles.btnSmallPrimary}
           disabled={template.mode === 'scheduled' && !scheduledAt}
@@ -838,6 +931,7 @@ function CustomPushForm({ stats, onSend, onCancel }) {
     allUsers: false,
     adminOnly: false,
     excludeEnrolled: false,
+    image_url: '',
   });
   const [scheduledAt, setScheduledAt] = useState('');
   const [adminTargetCount, setAdminTargetCount] = useState(0);
@@ -901,7 +995,9 @@ function CustomPushForm({ stats, onSend, onCancel }) {
         </div>
       ))}
 
-      <FlexPreview message={data.message} buttons={data.buttons} />
+      <ImageUpload imageUrl={data.image_url || ''} onChange={(url) => setData({ ...data, image_url: url })} />
+
+      <FlexPreview message={data.message} buttons={data.buttons} imageUrl={data.image_url} />
 
       <label style={styles.fieldLabel}>推給誰</label>
       <div style={styles.segmentCheckboxes}>
@@ -989,7 +1085,7 @@ function CustomPushForm({ stats, onSend, onCancel }) {
         <button
           onClick={() => {
             const cleanButtons = data.buttons.filter((b) => b.label && b.url);
-            onSend({ ...data, buttons: cleanButtons, scheduled_at: scheduledAt || undefined });
+            onSend({ ...data, buttons: cleanButtons, scheduled_at: scheduledAt || undefined, image_url: data.image_url || undefined });
           }}
           style={styles.btnPrimary}
           disabled={!data.message.trim() || (!data.adminOnly && !data.allUsers && data.segments.length === 0) || (data.mode === 'scheduled' && !scheduledAt)}
@@ -1189,6 +1285,7 @@ function DripTab({ dripStats, onUpdate }) {
                   onChange={(e) => setEditData({ ...editData, link_text: e.target.value })}
                   style={styles.input}
                 />
+                <ImageUpload imageUrl={editData.image_url || ''} onChange={(url) => setEditData({ ...editData, image_url: url })} />
                 <label style={styles.fieldLabel}>
                   發送間隔（天）
                   <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>
@@ -1232,6 +1329,7 @@ function DripTab({ dripStats, onUpdate }) {
                       message: step.message,
                       link_url: step.link_url || '',
                       link_text: step.link_text || '',
+                      image_url: step.image_url || '',
                     });
                   }}
                   style={styles.btnSmallGhost}
@@ -1239,9 +1337,10 @@ function DripTab({ dripStats, onUpdate }) {
                   ✏️ 編輯
                 </button>
               </div>
-              <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 13 }}>
+              <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 13, alignItems: 'center' }}>
                 <span style={{ color: '#666' }}>已推 {step.sent_count} 人</span>
                 <span style={{ color: '#2a9d6f', fontWeight: 500 }}>點擊 {step.click_count}（{clickRate}）</span>
+                {step.image_url && <span style={{ color: '#3b82f6' }}>有圖片</span>}
               </div>
               {step.message === '（待填入訊息內容）' && (
                 <div style={{

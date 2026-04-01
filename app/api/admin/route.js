@@ -74,6 +74,8 @@ export async function POST(request) {
       return handleUpdateSetting(data);
     case 'send_scheduled':
       return handleSendScheduled(data);
+    case 'upload_image':
+      return handleUploadImage(data);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -163,7 +165,7 @@ async function handleUpdateTemplate(data) {
   updates.updated_at = new Date().toISOString();
 
   // 只更新資料庫欄位，過濾掉前端狀態（allUsers, adminOnly, excludeEnrolled）
-  const validColumns = { message: 1, link_url: 1, link_text: 1, buttons: 1, segments: 1, mode: 1, updated_at: 1 };
+  const validColumns = { message: 1, link_url: 1, link_text: 1, buttons: 1, image_url: 1, segments: 1, mode: 1, updated_at: 1 };
   const dbUpdates = {};
   Object.keys(updates).forEach((key) => {
     if (validColumns[key]) dbUpdates[key] = updates[key];
@@ -210,7 +212,7 @@ async function handleCountTargets({ segments, allUsers, excludeEnrolled, adminOn
 }
 
 async function handlePush(data) {
-  const { templateId, message, linkUrl, linkText, buttons, segments, mode, allUsers, excludeEnrolled, adminOnly } = data;
+  const { templateId, message, linkUrl, linkText, buttons, segments, mode, allUsers, excludeEnrolled, adminOnly, imageUrl } = data;
 
   // 取得目標用戶
   const userIds = await getUsersForPush({ segments, allUsers, excludeEnrolled, adminOnly });
@@ -222,7 +224,7 @@ async function handlePush(data) {
     ? `${templateId}_${Date.now()}`
     : `custom_${Date.now()}`;
 
-  const useFlexMsg = Array.isArray(buttons) && buttons.length > 0;
+  const useFlexMsg = (Array.isArray(buttons) && buttons.length > 0) || !!imageUrl;
 
   // 建立推播紀錄
   const { data: logData, error: logError } = await supabase
@@ -234,6 +236,7 @@ async function handlePush(data) {
       link_url: useFlexMsg ? null : (linkUrl || null),
       link_id: (useFlexMsg || linkUrl) ? linkId : null,
       buttons: useFlexMsg ? buttons : [],
+      image_url: imageUrl || null,
       segments: adminOnly ? ['admin'] : allUsers ? ['active', 'warm', 'new', 'silent'] : segments,
       mode: mode || 'instant',
       target_count: userIds.length,
@@ -264,14 +267,15 @@ async function handlePush(data) {
 
   // Flex Message 固定使用 multicast（不支援佇列模式的個人化追蹤連結）
   if (useFlexMsg) {
-    const trackedButtons = buttons.map((btn, i) => ({
+    const cleanButtons = (buttons || []).filter((b) => b.label && b.url);
+    const trackedButtons = cleanButtons.map((btn, i) => ({
       ...btn,
       url: wrapLink(btn.url, `${linkId}_b${i}`),
     }));
     const lines = message.split('\n').filter((l) => l.trim());
     const title = lines[0] || message;
     const body = lines.slice(1).join('\n').trim();
-    const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons });
+    const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: imageUrl || undefined });
 
     let sent = 0;
     for (let i = 0; i < userIds.length; i += 500) {
@@ -626,6 +630,47 @@ async function handleUpdateSetting({ key, value }) {
 // 預約推播：手動觸發發送
 // ============================================================
 
+// ============================================================
+// 圖片上傳（Base64 → Supabase Storage）
+// ============================================================
+async function handleUploadImage({ fileName, fileBase64, contentType }) {
+  if (!fileBase64 || !fileName) {
+    return NextResponse.json({ error: '缺少檔案' }, { status: 400 });
+  }
+
+  // 驗證格式
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+  if (!allowedTypes.includes(contentType)) {
+    return NextResponse.json({ error: '只支援 JPG / PNG / WebP' }, { status: 400 });
+  }
+
+  // 驗證大小（Base64 約為原檔 1.37 倍，2MB 原檔 ≈ 2.74MB Base64）
+  if (fileBase64.length > 3 * 1024 * 1024) {
+    return NextResponse.json({ error: '檔案不可超過 2MB' }, { status: 400 });
+  }
+
+  const buffer = Buffer.from(fileBase64, 'base64');
+  const ext = contentType.split('/')[1] === 'jpeg' ? 'jpg' : contentType.split('/')[1];
+  const storagePath = `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '')}.${ext}`;
+
+  const { error } = await supabase.storage
+    .from('push-images')
+    .upload(storagePath, buffer, { contentType, upsert: false });
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const { data: urlData } = supabase.storage
+    .from('push-images')
+    .getPublicUrl(storagePath);
+
+  return NextResponse.json({ url: urlData.publicUrl });
+}
+
+// ============================================================
+// 預約推播：手動觸發發送
+// ============================================================
 async function handleSendScheduled({ logId }) {
   if (!logId) {
     return NextResponse.json({ error: '缺少 logId' }, { status: 400 });
@@ -660,19 +705,20 @@ async function handleSendScheduled({ logId }) {
     return NextResponse.json({ sent: 0, total: 0, message: '沒有符合條件的用戶' });
   }
 
-  // 組合訊息（支援 Flex Message）
-  const useFlexMsg = Array.isArray(log.buttons) && log.buttons.length > 0;
+  // 組合訊息（支援 Flex Message + hero image）
+  const useFlexMsg = (Array.isArray(log.buttons) && log.buttons.length > 0) || !!log.image_url;
   let lineMsg;
 
   if (useFlexMsg) {
-    const trackedButtons = log.buttons.map((btn, i) => ({
+    const cleanButtons = (log.buttons || []).filter((b) => b.label && b.url);
+    const trackedButtons = cleanButtons.map((btn, i) => ({
       ...btn,
       url: wrapLink(btn.url, `${log.link_id}_b${i}`),
     }));
     const lines = log.message.split('\n').filter((l) => l.trim());
     const title = lines[0] || log.message;
     const body = lines.slice(1).join('\n').trim();
-    lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons });
+    lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: log.image_url || undefined });
   } else {
     let finalMessage = log.message;
     if (log.link_url && log.link_id) {

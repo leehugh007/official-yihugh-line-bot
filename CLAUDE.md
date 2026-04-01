@@ -104,18 +104,132 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
   }'
 ```
 
-## Supabase 資料表
+## Supabase 資料表（Schema 對齊 — 唯一真相來源）
 
-- `official_line_users` — 用戶（line_user_id, metabolism_type, segment, interaction_count...）
-- `official_line_clicks` — 點擊紀錄（line_user_id, link_id, clicked_at）
-- `official_push_templates` — 推播模板（buttons JSONB 支援 Flex Message）
-- `official_push_logs` — 推播紀錄（scheduled_at / exclude_enrolled / buttons JSONB）
-- `official_push_queue` — 佇列推播待發送項目
-- `official_drip_schedule` — 文章排程內容
-- `official_drip_logs` — 排程推送紀錄
-- `official_sources` — 來源管理（quiz/direct/legacy/live + 自訂）
-- `official_settings` — 可編輯設定（seminar_info/pricing_info/abc_info/welcome_message）
-- `quiz_sessions` — 代謝測驗結果（共用，含 claim_code 供代碼領取）
+> **改程式碼前先對這張表。欄位不在這裡 = 不存在。要加欄位先改這份再改 code。**
+
+### official_line_users
+| 欄位 | 型別 | 預設值 | 說明 |
+|------|------|--------|------|
+| line_user_id | TEXT PK | — | LINE userId |
+| display_name | TEXT | — | LINE 顯示名稱 |
+| metabolism_type | TEXT | — | highRPM/rollerCoaster/burnout/powerSave/steady |
+| source | TEXT | 'direct' | quiz/direct/seminar/live/自訂 |
+| segment | TEXT | 'new' | new/active/warm/silent |
+| joined_at | TIMESTAMPTZ | now() | 加入時間 |
+| last_interaction_at | TIMESTAMPTZ | now() | 最後互動 |
+| last_push_click_at | TIMESTAMPTZ | — | 最後點擊推播 |
+| interaction_count | INTEGER | 0 | 互動次數 |
+| push_click_count | INTEGER | 0 | 推播點擊次數 |
+| is_blocked | BOOLEAN | false | 封鎖 |
+| tags | TEXT[] | ['未報名減重班'] | 標籤（管理者/已報名減重班/有興趣） |
+| drip_week | INTEGER | 0 | 已推到第幾篇 |
+| drip_next_at | TIMESTAMPTZ | — | 下次排程推送 |
+| drip_paused | BOOLEAN | false | 排程暫停 |
+
+### official_push_templates
+| 欄位 | 型別 | 預設值 | 說明 |
+|------|------|--------|------|
+| id | TEXT PK | — | 模板 ID |
+| name | TEXT | — | 模板名稱 |
+| icon | TEXT | '📢' | 圖示 |
+| message | TEXT | — | 訊息內容 |
+| link_url | TEXT | — | 連結（舊模式） |
+| link_text | TEXT | — | 連結文字（舊模式） |
+| buttons | JSONB | [] | Flex 按鈕 [{label, url}] |
+| image_url | TEXT | — | 推播頂部圖片 URL |
+| segments | TEXT[] | ['active','warm','new'] | 預設推播分群 |
+| mode | TEXT | 'instant' | instant/queued/scheduled |
+| sort_order | INTEGER | 0 | 排序 |
+| updated_at | TIMESTAMPTZ | now() | 更新時間 |
+
+### official_push_logs
+| 欄位 | 型別 | 預設值 | 說明 |
+|------|------|--------|------|
+| id | BIGSERIAL PK | — | — |
+| template_id | TEXT | — | 來源模板 |
+| label | TEXT | — | 顯示名稱 |
+| message | TEXT | — | 訊息內容 |
+| link_url | TEXT | — | 連結 |
+| link_id | TEXT | — | 追蹤 ID |
+| buttons | JSONB | [] | Flex 按鈕 |
+| image_url | TEXT | — | 推播頂部圖片 URL |
+| segments | TEXT[] | — | 推播分群 |
+| mode | TEXT | 'instant' | 模式 |
+| target_count | INTEGER | 0 | 目標人數 |
+| sent_count | INTEGER | 0 | 送達人數 |
+| status | TEXT | 'completed' | completed/sending/failed/scheduled |
+| exclude_enrolled | BOOLEAN | false | 排除已報名 |
+| scheduled_at | TIMESTAMPTZ | — | 排程時間 |
+| created_at | TIMESTAMPTZ | now() | 建立時間 |
+| completed_at | TIMESTAMPTZ | — | 完成時間 |
+
+### official_push_queue
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| id | BIGSERIAL PK | — |
+| log_id | BIGINT FK | 對應 push_logs |
+| line_user_id | TEXT | 目標用戶 |
+| message | TEXT | 訊息 |
+| status | TEXT | pending/sent/failed |
+| created_at | TIMESTAMPTZ | — |
+| sent_at | TIMESTAMPTZ | — |
+
+### official_drip_schedule
+| 欄位 | 型別 | 預設值 | 說明 |
+|------|------|--------|------|
+| id | BIGSERIAL PK | — | — |
+| step_number | INTEGER UNIQUE | — | 第幾篇 |
+| title | TEXT | — | 文章標題 |
+| message | TEXT | — | 推播訊息 |
+| link_url | TEXT | — | 文章連結 |
+| link_text | TEXT | '閱讀文章' | 連結文字 |
+| image_url | TEXT | — | 排程文章圖片 URL |
+| delay_days | INTEGER | 7 | 間隔天數 |
+| send_hour | INTEGER | 8 | 發送時間（台灣） |
+| exclude_tag | TEXT | '已報名減重班' | 排除標籤 |
+| is_active | BOOLEAN | true | 啟用 |
+| created_at | TIMESTAMPTZ | now() | — |
+
+### official_drip_logs
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| id | BIGSERIAL PK | — |
+| line_user_id | TEXT | 用戶 |
+| step_number | INTEGER | 第幾篇 |
+| link_id | TEXT | 追蹤 ID |
+| sent_at | TIMESTAMPTZ | 推送時間 |
+| clicked | BOOLEAN | 是否點擊 |
+| clicked_at | TIMESTAMPTZ | 點擊時間 |
+
+### official_line_clicks
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| id | BIGSERIAL PK | — |
+| line_user_id | TEXT | 可 null |
+| link_id | TEXT | 追蹤 ID |
+| clicked_at | TIMESTAMPTZ | 點擊時間 |
+
+### official_sources
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| id | TEXT PK | 來源 ID |
+| name | TEXT | 來源名稱 |
+| url | TEXT | 加入網址 |
+| created_at | TIMESTAMPTZ | — |
+
+### official_settings
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| key | TEXT PK | 設定 key |
+| value | TEXT | 設定值 |
+| updated_at | TIMESTAMPTZ | — |
+
+### quiz_sessions（共用）
+代謝測驗結果，含 claim_code 供代碼領取。
+
+### Supabase Storage
+- **Bucket**: `push-images`（公開讀取）— 推播 + 排程文章的圖片
 
 ## 設計決策
 
@@ -125,12 +239,15 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 4. **分層存 Supabase** — 不用 Redis（量小、不需要快取、需要持久化）
 5. **關鍵字回覆 DB 優先** — keywords.js 先讀 official_settings 表，fallback 到 code 裡的預設值。後台「設定」Tab 可直接編輯
 6. **代碼領取繞過測試模式** — 做完測驗的用戶傳代碼就能拿報告，不受 TEST_MODE 限制
-7. **推播三種模式** — instant（即時 multicast 500 人一批）/ queued（逐筆發送）/ scheduled（指定時間，cron 每小時掃描）
+7. **推播三種模式** — instant（即時 multicast 500 人一批）/ queued（逐筆發送）/ scheduled（指定時間，cron 每 10 分鐘掃描）
 8. **TEST_MODE** — webhook/route.js 第 47 行，`true` = 只有白名單收到回覆（代碼領取除外），改 `false` 全開
 9. **Flex Message** — 推播支援 1-2 個按鈕，URL 完全隱藏，每個按鈕獨立追蹤點擊（linkId_b0 / linkId_b1）
 10. **管理者標籤推播** — 勾「僅管理者」只推給有「管理者」tag 的人（一休 + 婉馨），測試不影響真實用戶
 11. **代碼用戶自動進 Drip** — handleCodeClaim 建檔時設 drip_next_at，隔天開始收排程文章
 12. **LINE ID** — 官方帳號 `@sososo`（專屬 ID），deep link: `line.me/R/oaMessage/%40sososo/?代碼`
+13. **推播 + 排程支援圖片** — hero image 顯示在 Flex Message 頂部，圖片存 Supabase Storage `push-images` bucket，後台上傳
+14. **Drip 排程 multicast** — 同一篇文章的用戶批量 multicast（500 人/批），不逐筆 push，撐 2000+ 人
+15. **Cron 每 10 分鐘** — `*/10 * * * *`，排程推播最多延遲 10 分鐘（原本每小時最多延遲 59 分鐘）
 
 ## 漏斗流程
 

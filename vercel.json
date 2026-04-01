@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/drip",
-      "schedule": "0 * * * *"
+      "schedule": "*/10 * * * *"
     }
   ]
 }
