@@ -45,12 +45,12 @@ official-yihugh-line-bot/
 │   └── api/
 │       ├── webhook/route.js       # LINE Webhook（follow/unfollow/message/代碼領取）
 │       ├── admin/route.js         # 管理 API（stats/templates/push/settings/users/sources）
-│       ├── cron/drip/route.js     # 排程推播 Cron（每日 08:00 台灣時間）
+│       ├── cron/drip/route.js     # Cron（每小時）：Drip 排程文章 + 到期 scheduled push
 │       ├── push/route.js          # 推播 API（管理用）
 │       ├── track/r/route.js       # 連結追蹤轉址
 │       └── stats/route.js         # 統計 API
 ├── lib/
-│   ├── line.js                    # LINE API 工具（reply/push/multicast/verify）
+│   ├── line.js                    # LINE API 工具（reply/push/multicast/verify/pushFlexMessage）
 │   ├── keywords.js                # 關鍵字規則（先讀 DB settings，fallback 到預設值）
 │   ├── users.js                   # 用戶 CRUD + 分層邏輯
 │   ├── tracking.js                # 連結追蹤（wrapLink/logClick）
@@ -59,7 +59,9 @@ official-yihugh-line-bot/
 └── supabase/
     ├── migration.sql              # 建表 SQL（001 基礎）
     ├── migration_002_sources.sql  # 來源管理表
-    └── migration_003_settings.sql # 設定表 + 排程欄位
+    ├── migration_003_settings.sql # 設定表 + 排程欄位
+    ├── migration_004_push_logs_extra.sql # push_logs 加 exclude_enrolled
+    └── migration_005_flex_message.sql    # templates + push_logs 加 buttons JSONB
 ```
 
 ## 關鍵字規則
@@ -106,8 +108,8 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 
 - `official_line_users` — 用戶（line_user_id, metabolism_type, segment, interaction_count...）
 - `official_line_clicks` — 點擊紀錄（line_user_id, link_id, clicked_at）
-- `official_push_templates` — 推播模板
-- `official_push_logs` — 推播紀錄（含 scheduled_at 排程欄位）
+- `official_push_templates` — 推播模板（buttons JSONB 支援 Flex Message）
+- `official_push_logs` — 推播紀錄（scheduled_at / exclude_enrolled / buttons JSONB）
 - `official_push_queue` — 佇列推播待發送項目
 - `official_drip_schedule` — 文章排程內容
 - `official_drip_logs` — 排程推送紀錄
@@ -123,8 +125,12 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 4. **分層存 Supabase** — 不用 Redis（量小、不需要快取、需要持久化）
 5. **關鍵字回覆 DB 優先** — keywords.js 先讀 official_settings 表，fallback 到 code 裡的預設值。後台「設定」Tab 可直接編輯
 6. **代碼領取繞過測試模式** — 做完測驗的用戶傳代碼就能拿報告，不受 TEST_MODE 限制
-7. **推播三種模式** — instant（即時 multicast 500 人一批）/ queued（逐筆發送）/ scheduled（指定時間）
+7. **推播三種模式** — instant（即時 multicast 500 人一批）/ queued（逐筆發送）/ scheduled（指定時間，cron 每小時掃描）
 8. **TEST_MODE** — webhook/route.js 第 47 行，`true` = 只有白名單收到回覆（代碼領取除外），改 `false` 全開
+9. **Flex Message** — 推播支援 1-2 個按鈕，URL 完全隱藏，每個按鈕獨立追蹤點擊（linkId_b0 / linkId_b1）
+10. **管理者標籤推播** — 勾「僅管理者」只推給有「管理者」tag 的人（一休 + 婉馨），測試不影響真實用戶
+11. **代碼用戶自動進 Drip** — handleCodeClaim 建檔時設 drip_next_at，隔天開始收排程文章
+12. **LINE ID** — 官方帳號 `@sososo`（專屬 ID），deep link: `line.me/R/oaMessage/%40sososo/?代碼`
 
 ## 漏斗流程
 
@@ -146,7 +152,7 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 - **Vercel Project ID**: prj_EUcS8nb3GTcsgiYgQjdStILTrK9N
 - **Vercel Team**: hughs-projects-1e597e4f (team_TjsHfN2RqcvIwZVqD3gBDHyu)
 - **部署指令（手動）**: `vercel --prod --yes --token <token>`（token 見 memory/deployment-tokens.md）
-- **Cron Job**: 每天 00:00 UTC（08:00 台灣）執行 `/api/cron/drip`
+- **Cron Job**: 每小時整點（`0 * * * *`）執行 `/api/cron/drip`（Drip 排程 + 到期 scheduled push）
 
 ## 協作規則
 
@@ -173,10 +179,9 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 
 ## 待做（依優先順序）
 
-1. 開測試用 LINE 帳號的 Messaging API，加環境變數
-2. 在 Supabase 跑 migration.sql
-3. 設定 LINE webhook URL
-4. 改測驗結果頁的 CTA（帶 ref 參數）
-5. 測試完整流程
-6. 婉馨填入排程文章內容和連結
-7. 未來：自建報名頁 + 金流串接
+1. TEST_MODE 改 false（測試完成後正式上線）
+2. 婉馨填入排程文章內容和連結（後台操作）
+3. 舊模板升級 Flex 按鈕（後台編輯）
+4. 追蹤漏斗優化後轉換率（對比 19% baseline，見 `ABC瘦身業務/代謝測驗漏斗追蹤.md`）
+5. 未來：自建報名頁 + 金流串接
+6. 未來：TEST_MODE 改到 official_settings 表，後台可開關
