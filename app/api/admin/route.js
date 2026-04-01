@@ -7,6 +7,7 @@ import supabase from '../../../lib/supabase.js';
 import { multicastMessage, pushMessage, textMessage, pushFlexMessage } from '../../../lib/line.js';
 import { getUsersBySegment, getAllActiveUsers } from '../../../lib/users.js';
 import { wrapLink } from '../../../lib/tracking.js';
+import { sendScheduledPush } from '../../../lib/push.js';
 
 function unauthorized() {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -673,80 +674,20 @@ async function handleUploadImage({ fileName, fileBase64, contentType }) {
 }
 
 // ============================================================
-// 預約推播：手動觸發發送
+// 預約推播：手動觸發發送（委託 lib/push.js 共用邏輯）
 // ============================================================
 async function handleSendScheduled({ logId }) {
   if (!logId) {
     return NextResponse.json({ error: '缺少 logId' }, { status: 400 });
   }
 
-  // 取得排程紀錄
-  const { data: log, error: logError } = await supabase
-    .from('official_push_logs')
-    .select('*')
-    .eq('id', logId)
-    .eq('status', 'scheduled')
-    .single();
+  const result = await sendScheduledPush(logId);
 
-  if (logError || !log) {
+  if (!result) {
     return NextResponse.json({ error: '找不到排程紀錄或已發送' }, { status: 404 });
   }
 
-  // 重新取得目標用戶（根據 segments 推斷原始推播條件）
-  const isAdminOnly = log.segments?.includes('admin') && log.segments.length === 1;
-  const isAllUsers = !isAdminOnly && log.segments?.length >= 4;
-  const userIds = await getUsersForPush({
-    segments: log.segments,
-    adminOnly: isAdminOnly,
-    allUsers: isAllUsers,
-    excludeEnrolled: log.exclude_enrolled || false,
-  });
-  if (userIds.length === 0) {
-    await supabase
-      .from('official_push_logs')
-      .update({ status: 'completed', sent_count: 0, completed_at: new Date().toISOString() })
-      .eq('id', logId);
-    return NextResponse.json({ sent: 0, total: 0, message: '沒有符合條件的用戶' });
-  }
-
-  // 組合訊息（支援 Flex Message + hero image）
-  const useFlexMsg = (Array.isArray(log.buttons) && log.buttons.length > 0) || !!log.image_url;
-  let lineMsg;
-
-  if (useFlexMsg) {
-    const cleanButtons = (log.buttons || []).filter((b) => b.label && b.url);
-    const trackedButtons = cleanButtons.map((btn, i) => ({
-      ...btn,
-      url: wrapLink(btn.url, `${log.link_id}_b${i}`),
-    }));
-    const lines = log.message.split('\n').filter((l) => l.trim());
-    const title = lines[0] || log.message;
-    const body = lines.slice(1).join('\n').trim();
-    lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: log.image_url || undefined });
-  } else {
-    let finalMessage = log.message;
-    if (log.link_url && log.link_id) {
-      const trackedUrl = wrapLink(log.link_url, log.link_id);
-      finalMessage += `\n\n👉 點這裡\n${trackedUrl}`;
-    }
-    lineMsg = textMessage(finalMessage);
-  }
-
-  // 發送
-  let sent = 0;
-  for (let i = 0; i < userIds.length; i += 500) {
-    const batch = userIds.slice(i, i + 500);
-    const ok = await multicastMessage(batch, lineMsg);
-    if (ok) sent += batch.length;
-  }
-
-  // 更新紀錄
-  await supabase
-    .from('official_push_logs')
-    .update({ sent_count: sent, status: 'completed', completed_at: new Date().toISOString() })
-    .eq('id', logId);
-
-  return NextResponse.json({ mode: 'sent_scheduled', sent, total: userIds.length, logId });
+  return NextResponse.json({ mode: 'sent_scheduled', sent: result.sent, total: result.total, logId });
 }
 
 // ============================================================

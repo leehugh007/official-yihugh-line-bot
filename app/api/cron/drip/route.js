@@ -12,6 +12,7 @@ import { NextResponse } from 'next/server';
 import supabase from '../../../../lib/supabase.js';
 import { multicastMessage, textMessage, pushFlexMessage } from '../../../../lib/line.js';
 import { wrapLink } from '../../../../lib/tracking.js';
+import { sendScheduledPush } from '../../../../lib/push.js';
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -159,6 +160,7 @@ async function processDrip() {
 
 // ============================================================
 // 排程推播：掃描到期的 scheduled push 並執行
+// 直接呼叫 sendScheduledPush（不繞 HTTP，避免 VERCEL_URL 問題）
 // ============================================================
 async function processScheduledPushes() {
   const now = new Date().toISOString();
@@ -178,20 +180,8 @@ async function processScheduledPushes() {
 
   for (const log of scheduled) {
     try {
-      // 呼叫 admin API 的 send_scheduled 邏輯
-      const res = await fetch(
-        `${process.env.VERCEL_URL ? 'https://' + process.env.VERCEL_URL : 'http://localhost:3000'}/api/admin`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            secret: process.env.ADMIN_SECRET,
-            action: 'send_scheduled',
-            logId: log.id,
-          }),
-        }
-      );
-      if (res.ok) sent++;
+      const result = await sendScheduledPush(log.id);
+      if (result) sent++;
       else failed++;
     } catch {
       failed++;
