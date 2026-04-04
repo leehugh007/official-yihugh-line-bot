@@ -44,8 +44,8 @@ official-yihugh-line-bot/
 │   ├── admin/page.js              # 管理後台（推播/紀錄/排程/用戶/設定 五個 Tab）
 │   └── api/
 │       ├── webhook/route.js       # LINE Webhook（follow/unfollow/message/代碼領取）
-│       ├── admin/route.js         # 管理 API（stats/templates/push/settings/users/sources）
-│       ├── cron/drip/route.js     # Cron（每 10 分鐘）：Drip 排程 + 到期 scheduled push
+│       ├── admin/route.js         # 管理 API（stats/templates/push/settings/users/sources/toggle_drip_active/upload_image/update_log/delete_log）
+│       ├── cron/drip/route.js     # Cron（每 10 分鐘）：Drip 逐筆 push（並發 20）+ 到期 scheduled push
 │       ├── push/route.js          # 推播 API（管理用）
 │       ├── track/r/route.js       # 連結追蹤轉址
 │       └── stats/route.js         # 統計 API
@@ -248,10 +248,12 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 11. **代碼用戶自動進 Drip** — handleCodeClaim 建檔時設 drip_next_at，隔天開始收排程文章
 12. **LINE ID** — 官方帳號 `@sososo`（專屬 ID），deep link: `line.me/R/oaMessage/%40sososo/?代碼`
 13. **推播 + 排程支援圖片** — hero image 顯示在 Flex Message 頂部，圖片存 Supabase Storage `push-images` bucket，後台上傳
-14. **Drip 排程 multicast** — 同一篇文章的用戶批量 multicast（500 人/批），不逐筆 push，撐 2000+ 人
-15. **Cron 每 10 分鐘** — `*/10 * * * *`，排程推播最多延遲 10 分鐘（原本每小時最多延遲 59 分鐘）
-16. **時間一律帶時區 +08:00** — Vercel serverless 跑 UTC，前端傳時間到 server 必須帶 `+08:00`。`datetime-local` 不帶時區會被 Supabase TIMESTAMPTZ 當 UTC 存，排程差 8 小時。用 DateTimePicker24 元件統一處理
-17. **推播紀錄可編輯/刪除** — 僅限 `scheduled` 狀態的紀錄可編輯訊息和時間、可刪除（有二次確認）。已完成的紀錄不可改不可刪
+14. **Drip 逐筆 push + 個人追蹤** — 每人獨立 push（並發 20），帶個人化追蹤 URL（wrapLink 帶 userId）。全部用 Flex Message + 按鈕（連結不外露）。DB 批量寫入。132 人無效能問題，200 人/天也撐得住
+15. **Drip 啟用驗證** — is_active 預設 false。啟用前 API 驗證：訊息非空/非 placeholder/連結非 example.com。後台點啟用會彈出 FlexPreview 預覽確認。cron 也有 placeholder 防呆（二層防禦）
+16. **Drip 點擊統計** — 從 official_line_clicks 表統計（link_id = drip_N），去重到個人。取代舊的 drip_logs.clicked
+17. **Cron 每 10 分鐘** — `*/10 * * * *`，排程推播最多延遲 10 分鐘（原本每小時最多延遲 59 分鐘）
+18. **時間一律帶時區 +08:00** — Vercel serverless 跑 UTC，前端傳時間到 server 必須帶 `+08:00`。`datetime-local` 不帶時區會被 Supabase TIMESTAMPTZ 當 UTC 存，排程差 8 小時。用 DateTimePicker24 元件統一處理
+19. **推播紀錄可編輯/刪除** — 僅限 `scheduled` 狀態的紀錄可編輯訊息和時間、可刪除（有二次確認）。已完成的紀錄不可改不可刪
 
 ## 漏斗流程
 
