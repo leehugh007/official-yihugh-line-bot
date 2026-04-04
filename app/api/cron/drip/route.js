@@ -7,10 +7,14 @@
 // 2. 檢查該用戶的下一篇文章（drip_week + 1）
 // 3. 檢查用戶是否有 exclude_tag（例如「已報名減重班」）
 // 4. 有 → 跳過（不再推）；沒有 → 推送 + 更新 drip_week 和 drip_next_at
+//
+// 發送方式：逐筆 push（非 multicast），每人帶個人化追蹤 URL
+// 並發控制：最多 20 筆同時發送，避免 timeout
+// 訊息格式：全部用 Flex Message + 按鈕（連結不外露）
 
 import { NextResponse } from 'next/server';
 import supabase from '../../../../lib/supabase.js';
-import { multicastMessage, textMessage, pushFlexMessage } from '../../../../lib/line.js';
+import { pushMessage, pushFlexMessage } from '../../../../lib/line.js';
 import { wrapLink } from '../../../../lib/tracking.js';
 import { sendScheduledPush } from '../../../../lib/push.js';
 
@@ -37,10 +41,24 @@ export async function GET(request) {
   }
 }
 
+// 並發控制：最多 concurrency 個同時執行
+async function runWithConcurrency(tasks, concurrency = 20) {
+  const results = [];
+  let i = 0;
+  async function next() {
+    const idx = i++;
+    if (idx >= tasks.length) return;
+    results[idx] = await tasks[idx]();
+    await next();
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => next()));
+  return results;
+}
+
 async function processDrip() {
   const now = new Date().toISOString();
 
-  // 1. 取得所有排程文章
+  // 1. 取得所有啟用中的排程文章
   const { data: schedule } = await supabase
     .from('official_drip_schedule')
     .select('*')
@@ -63,12 +81,13 @@ async function processDrip() {
     .lt('drip_week', totalSteps);
 
   if (!users || users.length === 0) {
-    return { processed: 0, skipped: 0, message: '沒有到期的用戶' };
+    return { processed: 0, skipped: 0, sent: 0, message: '沒有到期的用戶' };
   }
 
-  // 3. 按 step 分群（同一篇文章的用戶一起 multicast）
-  const stepGroups = {};
+  // 3. 分配每個用戶該收的文章
+  const sendTasks = []; // { userId, article, step }
   let skipped = 0;
+  const pauseUserIds = [];
 
   for (const user of users) {
     const nextStep = user.drip_week + 1;
@@ -79,83 +98,111 @@ async function processDrip() {
       continue;
     }
 
-    // 檢查排除標籤
-    if (article.exclude_tag && user.tags?.includes(article.exclude_tag)) {
-      await supabase
-        .from('official_line_users')
-        .update({ drip_paused: true })
-        .eq('line_user_id', user.line_user_id);
+    // 防呆：跳過 placeholder 內容
+    const isPlaceholder =
+      !article.message ||
+      article.message.includes('待填入') ||
+      (article.link_url && article.link_url.includes('example.com'));
+    if (isPlaceholder) {
+      console.warn(`[Drip] Step ${nextStep} 內容是 placeholder，跳過`);
       skipped++;
       continue;
     }
 
-    if (!stepGroups[nextStep]) {
-      stepGroups[nextStep] = { article, userIds: [] };
+    // 檢查排除標籤
+    if (article.exclude_tag && user.tags?.includes(article.exclude_tag)) {
+      pauseUserIds.push(user.line_user_id);
+      skipped++;
+      continue;
     }
-    stepGroups[nextStep].userIds.push(user.line_user_id);
+
+    sendTasks.push({ userId: user.line_user_id, article, step: nextStep });
   }
 
-  // 4. 每組 multicast 發送
-  let sent = 0;
+  // 批量暫停被排除的用戶
+  if (pauseUserIds.length > 0) {
+    await supabase
+      .from('official_line_users')
+      .update({ drip_paused: true })
+      .in('line_user_id', pauseUserIds);
+  }
 
-  for (const [stepStr, group] of Object.entries(stepGroups)) {
-    const step = parseInt(stepStr, 10);
-    const { article, userIds } = group;
+  if (sendTasks.length === 0) {
+    return { processed: users.length, sent: 0, skipped };
+  }
+
+  // 4. 逐筆並發發送（每人個人化追蹤 URL + Flex Message）
+  let sent = 0;
+  let failed = 0;
+
+  const pushTasks = sendTasks.map(({ userId, article, step }) => async () => {
     const linkId = `drip_${step}`;
 
-    // 組合訊息（支援圖片 → Flex，否則純文字）
-    let lineMsg;
-    if (article.image_url) {
-      // 有圖片：用 Flex Message
-      const lines = article.message.split('\n').filter((l) => l.trim());
-      const title = lines[0] || article.message;
-      const body = lines.slice(1).join('\n').trim();
-      const buttons = article.link_url
-        ? [{ label: article.link_text || '閱讀文章', url: wrapLink(article.link_url, linkId) }]
-        : [];
-      lineMsg = pushFlexMessage({ title, body, buttons, imageUrl: article.image_url });
-    } else if (article.link_url) {
-      // 無圖片但有連結：純文字 + 追蹤連結
-      const trackedUrl = wrapLink(article.link_url, linkId);
-      lineMsg = textMessage(`${article.message}\n\n👉 ${article.link_text || '閱讀文章'}\n${trackedUrl}`);
-    } else {
-      lineMsg = textMessage(article.message);
-    }
+    // 全部用 Flex Message + 按鈕（連結藏在按鈕裡，不外露）
+    const lines = article.message.split('\n').filter((l) => l.trim());
+    const title = lines[0] || article.message;
+    const body = lines.slice(1).join('\n').trim();
+    const buttons = article.link_url
+      ? [{ label: article.link_text || '閱讀文章', url: wrapLink(article.link_url, linkId, userId) }]
+      : [];
+    const lineMsg = pushFlexMessage({
+      title,
+      body,
+      buttons,
+      imageUrl: article.image_url || undefined,
+    });
 
-    // multicast 批量發送（500 人一批）
-    let stepSent = 0;
-    for (let i = 0; i < userIds.length; i += 500) {
-      const batch = userIds.slice(i, i + 500);
-      const ok = await multicastMessage(batch, lineMsg);
-      if (ok) stepSent += batch.length;
-    }
-    sent += stepSent;
+    const ok = await pushMessage(userId, lineMsg);
+    return { userId, step, linkId, ok };
+  });
 
-    // 記錄推送 + 更新用戶狀態
+  const results = await runWithConcurrency(pushTasks, 20);
+
+  // 5. 批量寫入 drip_logs + 更新用戶狀態
+  const successResults = results.filter((r) => r?.ok);
+  const failResults = results.filter((r) => r && !r.ok);
+  sent = successResults.length;
+  failed = failResults.length;
+
+  if (failResults.length > 0) {
+    console.warn(`[Drip] ${failResults.length} 筆發送失敗:`, failResults.map((r) => r.userId));
+  }
+
+  // 批量 insert drip_logs
+  if (successResults.length > 0) {
+    const logRows = successResults.map((r) => ({
+      line_user_id: r.userId,
+      step_number: r.step,
+      link_id: r.linkId,
+    }));
+    await supabase.from('official_drip_logs').insert(logRows);
+  }
+
+  // 批量 update 用戶 drip_week 和 drip_next_at（按 step 分組）
+  const stepUserMap = {}; // step -> [userId]
+  for (const r of successResults) {
+    if (!stepUserMap[r.step]) stepUserMap[r.step] = [];
+    stepUserMap[r.step].push(r.userId);
+  }
+
+  for (const [stepStr, uids] of Object.entries(stepUserMap)) {
+    const step = parseInt(stepStr, 10);
     const nextArticle = schedule.find((s) => s.step_number === step + 1);
     const nextDelay = nextArticle ? nextArticle.delay_days : 7;
     const nextAt = new Date();
     nextAt.setDate(nextAt.getDate() + nextDelay);
     nextAt.setUTCHours(0, 0, 0, 0);
 
-    for (const uid of userIds) {
-      await supabase.from('official_drip_logs').insert({
-        line_user_id: uid,
-        step_number: step,
-        link_id: linkId,
-      });
-
-      await supabase
-        .from('official_line_users')
-        .update({
-          drip_week: step,
-          drip_next_at: step >= totalSteps ? null : nextAt.toISOString(),
-        })
-        .eq('line_user_id', uid);
-    }
+    await supabase
+      .from('official_line_users')
+      .update({
+        drip_week: step,
+        drip_next_at: step >= totalSteps ? null : nextAt.toISOString(),
+      })
+      .in('line_user_id', uids);
   }
 
-  return { processed: users.length, sent, skipped };
+  return { processed: users.length, sent, failed, skipped };
 }
 
 // ============================================================

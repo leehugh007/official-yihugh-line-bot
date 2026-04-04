@@ -589,6 +589,12 @@ export default function AdminPage() {
             await apiPost({ action: 'update_drip', step_number: stepNumber, ...updates });
             const refreshed = await fetch(apiUrl('drip_stats')).then(r => r.json());
             setDripStats(refreshed);
+          }} onToggleActive={async (stepNumber, active) => {
+            const res = await apiPost({ action: 'toggle_drip_active', step_number: stepNumber, active });
+            if (res.error) return res;
+            const refreshed = await fetch(apiUrl('drip_stats')).then(r => r.json());
+            setDripStats(refreshed);
+            return res;
           }} />}
         </div>
       )}
@@ -1288,9 +1294,41 @@ function ResultModal({ result, onClose }) {
 // ============================================================
 // 排程管理
 // ============================================================
-function DripTab({ dripStats, onUpdate }) {
+function DripTab({ dripStats, onUpdate, onToggleActive }) {
   const [editingStep, setEditingStep] = useState(null);
   const [editData, setEditData] = useState({});
+  const [toggleError, setToggleError] = useState(null); // { step, msg }
+  const [toggling, setToggling] = useState(null); // step number
+  const [previewStep, setPreviewStep] = useState(null); // step number to preview before activation
+
+  const handleToggle = async (stepNumber, currentActive) => {
+    setToggleError(null);
+
+    if (!currentActive) {
+      // 要啟用 → 先顯示預覽確認
+      setPreviewStep(stepNumber);
+      return;
+    }
+
+    // 停用 → 直接執行
+    setToggling(stepNumber);
+    const res = await onToggleActive(stepNumber, false);
+    setToggling(null);
+    if (res?.error) {
+      setToggleError({ step: stepNumber, msg: res.error });
+    }
+  };
+
+  const confirmActivate = async (stepNumber) => {
+    setToggleError(null);
+    setToggling(stepNumber);
+    const res = await onToggleActive(stepNumber, true);
+    setToggling(null);
+    setPreviewStep(null);
+    if (res?.error) {
+      setToggleError({ step: stepNumber, msg: res.error });
+    }
+  };
 
   return (
     <div>
@@ -1315,10 +1353,48 @@ function DripTab({ dripStats, onUpdate }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {dripStats.schedule?.map((step) => {
           const isEditing = editingStep === step.step_number;
-          const clickRate = step.sent_count > 0
-            ? `${step.click_rate}%`
-            : '-';
+          const isPreviewing = previewStep === step.step_number;
+          const clickRate = step.sent_count > 0 ? `${step.click_rate}%` : '-';
+          const isPlaceholder = step.message === '（待填入訊息內容）' || step.link_url?.includes('example.com');
 
+          // 啟用前預覽確認
+          if (isPreviewing) {
+            return (
+              <div key={step.step_number} style={{ ...styles.cardEditing, borderColor: '#2a9d6f' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                  確認啟用第 {step.step_number} 篇：{step.title}
+                </div>
+                <div style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>
+                  啟用後，到期的用戶會自動收到這篇文章。請確認內容正確：
+                </div>
+                <FlexPreview
+                  message={step.message}
+                  buttons={step.link_url ? [{ label: step.link_text || '閱讀文章', url: step.link_url }] : []}
+                  imageUrl={step.image_url}
+                />
+                {toggleError?.step === step.step_number && (
+                  <div style={{
+                    marginTop: 8, padding: '8px 12px', background: '#fef2f2',
+                    borderRadius: 6, fontSize: 13, color: '#991b1b',
+                  }}>
+                    {toggleError.msg}
+                  </div>
+                )}
+                <div style={{ ...styles.editActions, marginTop: 12 }}>
+                  <button onClick={() => setPreviewStep(null)} style={styles.btnGhost}>取消</button>
+                  <button
+                    onClick={() => confirmActivate(step.step_number)}
+                    disabled={toggling === step.step_number}
+                    style={{ ...styles.btnPrimary, background: '#2a9d6f', opacity: toggling === step.step_number ? 0.6 : 1 }}
+                  >
+                    {toggling === step.step_number ? '啟用中...' : '確認啟用'}
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          // 編輯模式
           if (isEditing) {
             return (
               <div key={step.step_number} style={styles.cardEditing}>
@@ -1364,6 +1440,11 @@ function DripTab({ dripStats, onUpdate }) {
                   onChange={(e) => setEditData({ ...editData, delay_days: parseInt(e.target.value, 10) })}
                   style={{ ...styles.input, width: 80 }}
                 />
+                <FlexPreview
+                  message={editData.message}
+                  buttons={editData.link_url ? [{ label: editData.link_text || '閱讀文章', url: editData.link_url }] : []}
+                  imageUrl={editData.image_url}
+                />
                 <div style={styles.editActions}>
                   <button onClick={() => setEditingStep(null)} style={styles.btnGhost}>取消</button>
                   <button onClick={() => {
@@ -1375,39 +1456,83 @@ function DripTab({ dripStats, onUpdate }) {
             );
           }
 
+          // 顯示模式
           return (
-            <div key={step.step_number} style={styles.card}>
+            <div key={step.step_number} style={{
+              ...styles.card,
+              borderLeft: `3px solid ${step.is_active ? '#2a9d6f' : '#d1d5db'}`,
+            }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <div style={{ fontSize: 13, color: '#888', marginBottom: 2 }}>
-                    {step.step_number === 1 ? `加入後 ${step.delay_days} 天` : `上一篇後 ${step.delay_days} 天`}
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                    <span style={{ fontSize: 13, color: '#888' }}>
+                      {step.step_number === 1 ? `加入後 ${step.delay_days} 天` : `上一篇後 ${step.delay_days} 天`}
+                    </span>
+                    <span style={{
+                      fontSize: 11, padding: '1px 6px', borderRadius: 4, fontWeight: 500,
+                      background: step.is_active ? '#dcfce7' : '#f1f5f9',
+                      color: step.is_active ? '#166534' : '#64748b',
+                    }}>
+                      {step.is_active ? '啟用中' : '停用'}
+                    </span>
                   </div>
                   <div style={{ fontSize: 15, fontWeight: 600, color: '#1a1a1a' }}>
                     {step.title}
                   </div>
                 </div>
-                <button
-                  onClick={() => {
-                    setEditingStep(step.step_number);
-                    setEditData({
-                      title: step.title,
-                      message: step.message,
-                      link_url: step.link_url || '',
-                      link_text: step.link_text || '',
-                      image_url: step.image_url || '',
-                    });
-                  }}
-                  style={styles.btnSmallGhost}
-                >
-                  ✏️ 編輯
-                </button>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  {/* 啟用/停用 toggle */}
+                  <button
+                    onClick={() => handleToggle(step.step_number, step.is_active)}
+                    disabled={toggling === step.step_number}
+                    title={step.is_active ? '點擊停用' : '點擊啟用'}
+                    style={{
+                      padding: '4px 10px', borderRadius: 6, border: '1px solid #e5e7eb',
+                      fontSize: 12, cursor: 'pointer',
+                      background: step.is_active ? '#fff' : '#2a9d6f',
+                      color: step.is_active ? '#666' : '#fff',
+                      opacity: toggling === step.step_number ? 0.5 : 1,
+                    }}
+                  >
+                    {toggling === step.step_number ? '...' : step.is_active ? '停用' : '啟用'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingStep(step.step_number);
+                      setEditData({
+                        title: step.title,
+                        message: step.message,
+                        link_url: step.link_url || '',
+                        link_text: step.link_text || '',
+                        image_url: step.image_url || '',
+                      });
+                    }}
+                    style={styles.btnSmallGhost}
+                  >
+                    ✏️ 編輯
+                  </button>
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 13, alignItems: 'center' }}>
-                <span style={{ color: '#666' }}>已推 {step.sent_count} 人</span>
-                <span style={{ color: '#2a9d6f', fontWeight: 500 }}>點擊 {step.click_count}（{clickRate}）</span>
+
+              {/* 數據面板 */}
+              <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 13, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ color: '#666' }}>發送 {step.sent_count} 人</span>
+                <span style={{ color: '#2a9d6f', fontWeight: 500 }}>點擊 {step.click_count} 人（{clickRate}）</span>
                 {step.image_url && <span style={{ color: '#3b82f6' }}>有圖片</span>}
               </div>
-              {step.message === '（待填入訊息內容）' && (
+
+              {/* 驗證錯誤 */}
+              {toggleError?.step === step.step_number && (
+                <div style={{
+                  marginTop: 8, padding: '6px 10px', background: '#fef2f2',
+                  borderRadius: 4, fontSize: 12, color: '#991b1b',
+                }}>
+                  {toggleError.msg}
+                </div>
+              )}
+
+              {/* placeholder 警告 */}
+              {isPlaceholder && (
                 <div style={{
                   marginTop: 8, padding: '4px 8px', background: '#fef3c7',
                   borderRadius: 4, fontSize: 12, color: '#92400e', display: 'inline-block',

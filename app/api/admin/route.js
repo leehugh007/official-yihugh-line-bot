@@ -65,6 +65,8 @@ export async function POST(request) {
       return handleCountTargets(data);
     case 'update_drip':
       return handleUpdateDrip(data);
+    case 'toggle_drip_active':
+      return handleToggleDripActive(data);
     case 'update_user_tags':
       return handleUpdateUserTags(data);
     case 'add_source':
@@ -426,24 +428,40 @@ async function handleProcessQueue({ logId }) {
 // ============================================================
 
 async function handleGetDripStats() {
-  // 各篇文章的推送數 + 點擊數
+  // 各篇文章的推送數 + 點擊數（從 clicks 表統計，支援個人化追蹤）
   const { data: schedule } = await supabase
     .from('official_drip_schedule')
     .select('*')
     .order('step_number');
 
+  // 發送數：從 drip_logs 統計
   const { data: logs } = await supabase
     .from('official_drip_logs')
-    .select('step_number, clicked');
+    .select('step_number, line_user_id, sent_at');
+
+  // 點擊數：從 official_line_clicks 統計（link_id = drip_N）
+  const { data: clicks } = await supabase
+    .from('official_line_clicks')
+    .select('link_id, line_user_id')
+    .like('link_id', 'drip_%');
 
   // 統計每篇
   const stepStats = {};
   logs?.forEach((log) => {
     if (!stepStats[log.step_number]) {
-      stepStats[log.step_number] = { sent: 0, clicked: 0 };
+      stepStats[log.step_number] = { sent: 0, clickedUsers: new Set() };
     }
     stepStats[log.step_number].sent++;
-    if (log.clicked) stepStats[log.step_number].clicked++;
+  });
+
+  // 點擊去重（同一用戶多次點擊只算一次）
+  clicks?.forEach((click) => {
+    const match = click.link_id.match(/^drip_(\d+)/);
+    if (match) {
+      const step = parseInt(match[1], 10);
+      if (!stepStats[step]) stepStats[step] = { sent: 0, clickedUsers: new Set() };
+      if (click.line_user_id) stepStats[step].clickedUsers.add(click.line_user_id);
+    }
   });
 
   // 排程中的用戶數
@@ -470,14 +488,17 @@ async function handleGetDripStats() {
     .eq('is_blocked', false);
 
   return NextResponse.json({
-    schedule: schedule?.map((s) => ({
-      ...s,
-      sent_count: stepStats[s.step_number]?.sent || 0,
-      click_count: stepStats[s.step_number]?.clicked || 0,
-      click_rate: stepStats[s.step_number]?.sent
-        ? Math.round((stepStats[s.step_number].clicked / stepStats[s.step_number].sent) * 100)
-        : 0,
-    })),
+    schedule: schedule?.map((s) => {
+      const stats = stepStats[s.step_number];
+      const sentCount = stats?.sent || 0;
+      const clickCount = stats?.clickedUsers?.size || 0;
+      return {
+        ...s,
+        sent_count: sentCount,
+        click_count: clickCount,
+        click_rate: sentCount > 0 ? Math.round((clickCount / sentCount) * 100) : 0,
+      };
+    }),
     activeUsers: activeCount || 0,
     completedUsers: completedCount || 0,
     enrolledUsers: enrolledCount || 0,
@@ -488,6 +509,48 @@ async function handleUpdateDrip({ step_number, ...updates }) {
   const { error } = await supabase
     .from('official_drip_schedule')
     .update(updates)
+    .eq('step_number', step_number);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
+// 啟用/停用排程文章（啟用前驗證內容）
+async function handleToggleDripActive({ step_number, active }) {
+  // 啟用時驗證內容
+  if (active) {
+    const { data: article } = await supabase
+      .from('official_drip_schedule')
+      .select('message, link_url')
+      .eq('step_number', step_number)
+      .single();
+
+    if (!article) {
+      return NextResponse.json({ error: '找不到這篇文章' }, { status: 404 });
+    }
+
+    const errors = [];
+    if (!article.message || article.message.trim() === '') {
+      errors.push('訊息內容不能為空');
+    }
+    if (article.message?.includes('待填入')) {
+      errors.push('訊息內容還是 placeholder');
+    }
+    if (article.link_url?.includes('example.com')) {
+      errors.push('文章連結還是 example.com');
+    }
+    if (!article.link_url || article.link_url.trim() === '') {
+      errors.push('文章連結不能為空');
+    }
+
+    if (errors.length > 0) {
+      return NextResponse.json({ error: errors.join('、'), validationErrors: errors }, { status: 400 });
+    }
+  }
+
+  const { error } = await supabase
+    .from('official_drip_schedule')
+    .update({ is_active: active })
     .eq('step_number', step_number);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
