@@ -526,9 +526,9 @@ const MEAL_DB = {
       protein: { omnivore: 18, 'lacto-ovo': 18, vegan: 12 },
       food: { omnivore: '自己做（蛋/鮮奶/豆漿）', 'lacto-ovo': '自己做（蛋/鮮奶）', vegan: '自己做（豆漿/堅果）' },
       improved: {
-        omnivore: { food: '水煮蛋 3 顆 + 鮮奶 240ml', protein: 29 },
-        'lacto-ovo': { food: '水煮蛋 3 顆 + 鮮奶 240ml', protein: 29 },
-        vegan: { food: '豆漿 2 杯 + 豆干 2 片 + 堅果', protein: 24 },
+        omnivore: { food: '水煮蛋 2 顆 + 無糖豆漿 + 一片起司或一把堅果', protein: 27 },
+        'lacto-ovo': { food: '水煮蛋 2 顆 + 鮮奶 + 希臘優格（或起司片）', protein: 29 },
+        vegan: { food: '無糖豆漿 2 杯 + 豆干 2 片 + 堅果一把', protein: 24 },
       },
     },
   },
