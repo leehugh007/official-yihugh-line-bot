@@ -334,229 +334,423 @@ const TYPE_DATA = {
 };
 
 // ============================================================
-// 蛋白質策略回覆（根據 5 題答案組合）
+// 蛋白質策略回覆 — 診斷→aha moment→一步就好→搭配→互動
 // ============================================================
-const GOAL_LABELS = { maintain: '維持健康', 'fat-loss': '減脂增肌', intense: '高強度訓練' };
-const DIET_LABELS = { 'eating-out': '外食族', 'home-cook': '自煮族', mixed: '混合型（外食+自煮）' };
-const FOOD_LABELS = { omnivore: '葷食', 'lacto-ovo': '蛋奶素', vegan: '全素' };
-const MEAL_LABELS = { '2': '兩餐', '3': '三餐', frequent: '少量多餐' };
 
 function buildProteinStrategy(session, displayName) {
-  const { weight, goal, diet_type, meal_count, food_type, protein_min, protein_max } = session;
+  const { diet_type, meal_count, food_type, protein_min, protein_max } = session;
   const avgProtein = Math.round((protein_min + protein_max) / 2);
-  const meals = meal_count === '2' ? 2 : meal_count === '3' ? 3 : 4;
-  const perMeal = Math.round(avgProtein / meals);
+  const name = displayName ? displayName + '，' : '';
 
-  // 訊息 1：數字 + 搭配範例
-  const { examples, dailyTotal } = getMealPlan(food_type, diet_type, meal_count, avgProtein);
-  const gap = avgProtein - dailyTotal;
+  // 估算她目前的典型攝取量（根據飲食型態+葷素）
+  const current = estimateCurrentIntake(diet_type, food_type, meal_count);
+  const percentage = Math.round((current.total / avgProtein) * 100);
 
+  // ─── 訊息 1：診斷 + aha moment + 因果 ───
   let msg1 =
-    `🥚 ${displayName ? displayName + '，' : ''}你的蛋白質攻略來了\n\n` +
+    `🥚 ${name}你的蛋白質攻略來了\n\n` +
+    `你的目標：每天 ${protein_min}-${protein_max}g\n\n` +
     `━━━━━━━━━━━━━━━\n\n` +
-    `📊 你的數字\n` +
-    `每天需要 ${protein_min}-${protein_max}g 蛋白質\n` +
-    `分成${MEAL_LABELS[meal_count]}，每餐約 ${perMeal}g\n\n` +
-    `目標：${GOAL_LABELS[goal] || goal}\n` +
-    `飲食型態：${DIET_LABELS[diet_type] || diet_type}｜${FOOD_LABELS[food_type] || food_type}\n\n` +
+    `先幫你做個快速診斷——\n` +
+    `你現在每天大概吃到多少？\n\n` +
+    current.breakdown + '\n' +
+    `→ 合計約 ${current.total}g\n\n` +
+    `你的目標是 ${avgProtein}g。\n` +
+    `也就是說，你現在只吃到目標的 ${percentage}%。\n\n` +
     `━━━━━━━━━━━━━━━\n\n` +
-    `🍽️ 一天這樣吃，湊到 ${avgProtein}g\n\n` +
-    examples;
+    `這就是為什麼你可能：\n\n` +
+    `・下午特別想吃甜食\n` +
+    `　→ 蛋白質不夠，血糖不穩，身體在跟你要糖\n\n` +
+    `・明明吃不多但不瘦\n` +
+    `　→ 肌肉在流失，代謝被降速了\n\n` +
+    `・常覺得沒精神、容易累\n` +
+    `　→ 蛋白質是穩定能量的關鍵，缺了就像車沒油\n\n` +
+    `━━━━━━━━━━━━━━━\n\n`;
 
-  // 如果範例加起來不夠，補差距提示
-  if (gap > 5) {
-    msg1 += `\n📌 以上合計約 ${dailyTotal}g，還差 ${gap}g\n`;
-    msg1 += `→ 可以用${food_type === 'vegan' ? '一杯豆漿(7g)+一份豆干(10g)' : food_type === 'lacto-ovo' ? '一杯鮮奶(8g)+一顆茶葉蛋(7g)' : '一包即食雞胸(20g)或一杯豆漿+茶葉蛋(14g)'}補上\n`;
-  } else {
-    msg1 += `\n📌 以上合計約 ${dailyTotal}g ✅ 達標\n`;
-  }
-
+  // ─── 一步就好 ───
+  const quickWin = getQuickWin(diet_type, food_type, meal_count, current.total);
   msg1 +=
-    `\n━━━━━━━━━━━━━━━\n\n` +
-    `⚡ 最多人卡住的 3 件事\n\n` +
-    `1. 以為有吃，但沒算過\n` +
-    `→ 一份便當的蛋白質通常只有 15-20g，你以為吃了一頓差不多？離目標還差 ${avgProtein - 18}g\n\n` +
-    `2. 早餐幾乎沒蛋白質\n` +
-    `→ 吐司配奶茶 ≈ 5g，一天的缺口從早上就開始了\n\n` +
-    `3. 只吃雞胸肉，吃到怕\n` +
-    `→ 蛋白質來源要多樣：蛋、豆腐、魚、毛豆都算，換著吃才持久\n\n` +
-    `━━━━━━━━━━━━━━━\n\n` +
+    `💡 不用大改，先改一步就好\n\n` +
+    quickWin.action + '\n\n' +
+    `你的蛋白質就從 ${current.total}g → ${current.total + quickWin.addProtein}g\n` +
+    `直接提升 ${Math.round((quickWin.addProtein / current.total) * 100)}%\n\n` +
+    `這一步做穩了，再來調整其他餐。\n\n` +
     `有任何問題都可以直接問我 🙂\n` +
     `我是一休，陪你健康的瘦一輩子`;
 
-  // 訊息 2：互動引導
-  const msg2 =
+  // ─── 訊息 2：完整搭配範例 ───
+  const { plan, dailyTotal } = getFullDayPlan(food_type, diet_type, meal_count, avgProtein);
+  const gap = avgProtein - dailyTotal;
+
+  let msg2 =
+    `📋 等你準備好了，一整天可以這樣吃：\n\n` +
+    plan;
+
+  if (gap > 5) {
+    msg2 += `\n合計約 ${dailyTotal}g，還差 ${gap}g\n`;
+    msg2 += `→ 加一份點心補上：${getSnackSuggestion(food_type, gap)}\n`;
+  } else {
+    msg2 += `\n合計約 ${dailyTotal}g ✅ 達標！\n`;
+  }
+
+  // ─── 訊息 3：互動引導 ───
+  const msg3 =
     `對了，想問你一下——\n\n` +
     `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
     `回覆告訴我，我可以給你更具體的建議 😊`;
 
-  return [textMessage(msg1), textMessage(msg2)];
+  return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
 }
 
 // ============================================================
-// 餐次搭配範例（根據 meal_count + diet_type + food_type）
-// 每個食物都有固定蛋白質克數，加起來要接近 avgProtein
+// 估算目前典型蛋白質攝取（根據飲食型態，讓用戶看到差距）
 // ============================================================
-function getMealPlan(foodType, dietType, mealCount, avgProtein) {
-  // 食物資料庫（每個食物的蛋白質克數是固定的，不做動態計算）
-  const FOODS = {
+function estimateCurrentIntake(dietType, foodType, mealCount) {
+  // 大多數台灣人「沒特別注意」時的典型蛋白質攝取
+  const typical = {
     omnivore: {
-      out: {
-        breakfast: [
-          { name: '茶葉蛋 2 顆 + 無糖豆漿', protein: 21, where: '超商' },
-          { name: '御飯糰（鮪魚）+ 茶葉蛋 + 豆漿', protein: 25, where: '超商' },
+      'eating-out': {
+        '2': { meals: [
+          { label: '午餐', food: '排骨便當', protein: 18 },
+          { label: '晚餐', food: '乾麵 + 燙青菜 + 湯', protein: 12 },
+        ]},
+        '3': { meals: [
+          { label: '早餐', food: '三明治 + 奶茶', protein: 8 },
+          { label: '午餐', food: '排骨便當', protein: 18 },
+          { label: '晚餐', food: '乾麵 + 燙青菜 + 湯', protein: 12 },
+        ]},
+        frequent: { meals: [
+          { label: '早餐', food: '三明治 + 奶茶', protein: 8 },
+          { label: '午餐', food: '排骨便當', protein: 18 },
+          { label: '下午', food: '餅乾 + 手搖飲', protein: 2 },
+          { label: '晚餐', food: '滷味或麵類', protein: 12 },
+        ]},
+      },
+      'home-cook': {
+        '2': { meals: [
+          { label: '午餐', food: '炒菜 + 一點肉絲 + 飯', protein: 15 },
+          { label: '晚餐', food: '煎魚 + 蛋花湯 + 飯', protein: 20 },
+        ]},
+        '3': { meals: [
+          { label: '早餐', food: '吐司 + 鮮奶', protein: 11 },
+          { label: '午餐', food: '炒菜 + 一點肉絲 + 飯', protein: 15 },
+          { label: '晚餐', food: '煎魚 + 蛋花湯 + 飯', protein: 20 },
+        ]},
+        frequent: { meals: [
+          { label: '早餐', food: '吐司 + 鮮奶', protein: 11 },
+          { label: '午餐', food: '炒菜 + 肉絲 + 飯', protein: 15 },
+          { label: '下午', food: '水果 + 堅果', protein: 3 },
+          { label: '晚餐', food: '煎魚 + 蛋花湯 + 飯', protein: 20 },
+        ]},
+      },
+      mixed: {
+        '2': { meals: [
+          { label: '午餐', food: '便當（外食）', protein: 18 },
+          { label: '晚餐', food: '家裡煮：炒菜 + 一點肉', protein: 15 },
+        ]},
+        '3': { meals: [
+          { label: '早餐', food: '超商三明治 + 咖啡', protein: 10 },
+          { label: '午餐', food: '便當（外食）', protein: 18 },
+          { label: '晚餐', food: '家裡煮：炒菜 + 一點肉', protein: 15 },
+        ]},
+        frequent: { meals: [
+          { label: '早餐', food: '超商三明治 + 咖啡', protein: 10 },
+          { label: '午餐', food: '便當（外食）', protein: 18 },
+          { label: '下午', food: '零食/水果', protein: 2 },
+          { label: '晚餐', food: '家裡煮：炒菜 + 肉', protein: 15 },
+        ]},
+      },
+    },
+  };
+
+  // 蛋奶素和全素的典型攝取更低
+  const lactoOvo = {
+    '2': { meals: [
+      { label: '午餐', food: '蛋炒飯 + 豆腐湯', protein: 16 },
+      { label: '晚餐', food: '蔬菜麵 + 蛋', protein: 12 },
+    ]},
+    '3': { meals: [
+      { label: '早餐', food: '吐司 + 鮮奶', protein: 11 },
+      { label: '午餐', food: '蛋炒飯 + 豆腐湯', protein: 16 },
+      { label: '晚餐', food: '蔬菜麵 + 蛋', protein: 12 },
+    ]},
+    frequent: { meals: [
+      { label: '早餐', food: '吐司 + 鮮奶', protein: 11 },
+      { label: '午餐', food: '蛋炒飯 + 豆腐湯', protein: 16 },
+      { label: '下午', food: '水果 + 優格', protein: 5 },
+      { label: '晚餐', food: '蔬菜麵 + 蛋', protein: 12 },
+    ]},
+  };
+
+  const vegan = {
+    '2': { meals: [
+      { label: '午餐', food: '素食便當（青菜為主）', protein: 10 },
+      { label: '晚餐', food: '炒青菜 + 白飯 + 味噌湯', protein: 8 },
+    ]},
+    '3': { meals: [
+      { label: '早餐', food: '饅頭 + 豆漿', protein: 10 },
+      { label: '午餐', food: '素食便當（青菜為主）', protein: 10 },
+      { label: '晚餐', food: '炒青菜 + 白飯 + 味噌湯', protein: 8 },
+    ]},
+    frequent: { meals: [
+      { label: '早餐', food: '饅頭 + 豆漿', protein: 10 },
+      { label: '午餐', food: '素食便當', protein: 10 },
+      { label: '下午', food: '水果', protein: 1 },
+      { label: '晚餐', food: '炒青菜 + 白飯', protein: 8 },
+    ]},
+  };
+
+  let data;
+  if (foodType === 'vegan') {
+    data = vegan[mealCount] || vegan['3'];
+  } else if (foodType === 'lacto-ovo') {
+    data = lactoOvo[mealCount] || lactoOvo['3'];
+  } else {
+    const byDiet = typical.omnivore[dietType] || typical.omnivore['eating-out'];
+    data = byDiet[mealCount] || byDiet['3'];
+  }
+
+  const breakdown = data.meals
+    .map(m => `${m.label}：${m.food} → 約 ${m.protein}g`)
+    .join('\n');
+  const total = data.meals.reduce((sum, m) => sum + m.protein, 0);
+
+  return { breakdown, total };
+}
+
+// ============================================================
+// 一步就好：根據她目前最弱的環節，給一個最簡單的改變
+// ============================================================
+function getQuickWin(dietType, foodType, mealCount, currentTotal) {
+  if (foodType === 'vegan') {
+    return {
+      action: '最簡單的一步：每餐加一份豆腐或毛豆。\n\n早餐多一杯無糖豆漿（7g），午餐加一份滷豆腐（14g）。',
+      addProtein: 21,
+    };
+  }
+  if (foodType === 'lacto-ovo') {
+    return {
+      action: '最簡單的一步：早餐改成「2 顆水煮蛋 + 一杯鮮奶」。\n\n只改早餐這一餐，蛋白質就多 11g。',
+      addProtein: 11,
+    };
+  }
+  // omnivore
+  if (mealCount === '2') {
+    return {
+      action: '最簡單的一步：兩餐都確保有「一個手掌大的蛋白質」。\n\n自助餐多夾一份雞腿或豆腐，晚餐把麵換成有肉的主餐。',
+      addProtein: 20,
+    };
+  }
+  if (dietType === 'eating-out') {
+    return {
+      action: '最簡單的一步：早餐改成超商「茶葉蛋 2 顆 + 無糖豆漿」。\n\n從原本的 8g → 21g，光早餐就多了 13g。',
+      addProtein: 13,
+    };
+  }
+  return {
+    action: '最簡單的一步：早餐加 2 顆水煮蛋。\n\n從原本的 11g → 25g，一天的蛋白質就提升不少。',
+    addProtein: 14,
+  };
+}
+
+// ============================================================
+// 完整一天搭配範例（根據 meal_count + diet_type + food_type）
+// ============================================================
+function getFullDayPlan(foodType, dietType, mealCount, avgProtein) {
+  const plans = {
+    omnivore: {
+      'eating-out': {
+        '2': [
+          { label: '🌤️ 第一餐', where: '自助餐', food: '雞腿 + 滷蛋 + 燙青菜 + 豆腐', protein: 42 },
+          { label: '🌙 第二餐', where: '便當店', food: '排骨便當 + 茶葉蛋 + 豆漿', protein: 39 },
         ],
-        lunch: [
-          { name: '自助餐：雞腿 + 滷蛋 + 豆腐', protein: 38, where: '自助餐' },
-          { name: '便當：排骨/雞腿 + 滷豆腐', protein: 32, where: '便當店' },
+        '3': [
+          { label: '☀️ 早餐', where: '超商', food: '茶葉蛋 2 顆 + 無糖豆漿', protein: 21 },
+          { label: '🌤️ 午餐', where: '自助餐', food: '雞腿 + 滷蛋 + 豆腐 + 青菜', protein: 42 },
+          { label: '🌙 晚餐', where: '便當/餐廳', food: '鮭魚 + 蛋 + 燙青菜', protein: 30 },
         ],
-        dinner: [
-          { name: '鮭魚定食 + 味噌湯（豆腐）', protein: 30, where: '餐廳' },
-          { name: '滷雞腿便當 + 茶葉蛋', protein: 35, where: '便當店' },
+        frequent: [
+          { label: '☀️ 早餐', where: '超商', food: '茶葉蛋 2 顆 + 豆漿', protein: 21 },
+          { label: '🌤️ 午餐', where: '自助餐', food: '雞腿 + 豆腐 + 青菜', protein: 35 },
+          { label: '🍵 下午', where: '超商', food: '即食雞胸 1 包', protein: 20 },
+          { label: '🌙 晚餐', where: '', food: '滷味：雞肉 + 豆干 + 蛋 + 蔬菜', protein: 25 },
         ],
       },
-      home: {
-        breakfast: [
-          { name: '水煮蛋 2 顆 + 鮮奶 240ml', protein: 22 },
-          { name: '水煮蛋 3 顆 + 無糖豆漿', protein: 28 },
+      'home-cook': {
+        '2': [
+          { label: '🌤️ 第一餐', food: '雞胸肉 150g + 水煮蛋 2 顆 + 糙米飯 + 青菜', protein: 49 },
+          { label: '🌙 第二餐', food: '鮭魚 120g + 板豆腐 + 毛豆 100g + 蔬菜', protein: 45 },
         ],
-        lunch: [
-          { name: '雞胸肉 150g + 板豆腐半塊 + 糙米飯', protein: 42 },
-          { name: '鮭魚 120g + 水煮蛋 2 顆 + 蔬菜', protein: 38 },
+        '3': [
+          { label: '☀️ 早餐', food: '水煮蛋 3 顆 + 鮮奶 240ml', protein: 29 },
+          { label: '🌤️ 午餐', food: '雞胸肉 150g + 板豆腐半塊 + 糙米飯', protein: 42 },
+          { label: '🌙 晚餐', food: '豬里肌 120g + 毛豆 100g + 蔬菜', protein: 37 },
         ],
-        dinner: [
-          { name: '豬里肌 120g + 毛豆 100g + 蔬菜', protein: 37 },
-          { name: '鯛魚 150g + 板豆腐半塊 + 蔬菜', protein: 34 },
+        frequent: [
+          { label: '☀️ 早餐', food: '水煮蛋 2 顆 + 鮮奶', protein: 22 },
+          { label: '🌤️ 午餐', food: '雞胸肉 120g + 豆腐 + 飯', protein: 35 },
+          { label: '🍵 下午', food: '毛豆 100g + 堅果', protein: 15 },
+          { label: '🌙 晚餐', food: '鯛魚 120g + 蛋 + 蔬菜', protein: 25 },
+        ],
+      },
+      mixed: {
+        '2': [
+          { label: '🌤️ 第一餐【外食】', where: '自助餐', food: '雞腿 + 滷蛋 + 豆腐', protein: 42 },
+          { label: '🌙 第二餐【自煮】', food: '豬里肌 120g + 毛豆 + 蛋 + 蔬菜', protein: 44 },
+        ],
+        '3': [
+          { label: '☀️ 早餐【外食】', where: '超商', food: '茶葉蛋 2 顆 + 無糖豆漿', protein: 21 },
+          { label: '🌤️ 午餐【外食】', where: '自助餐', food: '雞腿 + 豆腐 + 滷蛋 + 青菜', protein: 42 },
+          { label: '🌙 晚餐【自煮】', food: '鮭魚 120g + 毛豆 100g + 蔬菜', protein: 35 },
+        ],
+        frequent: [
+          { label: '☀️ 早餐【外食】', where: '超商', food: '茶葉蛋 2 顆 + 豆漿', protein: 21 },
+          { label: '🌤️ 午餐【外食】', where: '自助餐', food: '雞腿 + 豆腐 + 青菜', protein: 35 },
+          { label: '🍵 下午【自備】', food: '毛豆 100g + 堅果', protein: 15 },
+          { label: '🌙 晚餐【自煮】', food: '雞胸肉 100g + 蛋 + 蔬菜', protein: 30 },
         ],
       },
     },
     'lacto-ovo': {
-      out: {
-        breakfast: [
-          { name: '茶葉蛋 2 顆 + 無糖豆漿', protein: 21, where: '超商' },
-          { name: '蛋餅 + 鮮奶', protein: 18, where: '早餐店' },
+      'eating-out': {
+        '2': [
+          { label: '🌤️ 第一餐', where: '自助餐', food: '蛋料理 2 份 + 豆腐 + 毛豆', protein: 35 },
+          { label: '🌙 第二餐', food: '起司蛋吐司 + 希臘優格 + 堅果', protein: 32 },
         ],
-        lunch: [
-          { name: '自助餐：蛋料理 + 豆腐 + 毛豆', protein: 30, where: '自助餐' },
-          { name: '豆腐鍋 + 蛋 + 起司', protein: 28, where: '餐廳' },
+        '3': [
+          { label: '☀️ 早餐', where: '超商', food: '茶葉蛋 2 顆 + 無糖豆漿', protein: 21 },
+          { label: '🌤️ 午餐', where: '自助餐', food: '蛋料理 + 豆腐 + 毛豆 + 青菜', protein: 30 },
+          { label: '🌙 晚餐', food: '起司蛋捲（3蛋）+ 鮮奶 + 毛豆', protein: 32 },
         ],
-        dinner: [
-          { name: '希臘優格 200g + 堅果 + 起司蛋吐司', protein: 28, where: '' },
-          { name: '蛋炒飯 + 豆腐味噌湯 + 毛豆', protein: 26, where: '' },
+        frequent: [
+          { label: '☀️ 早餐', where: '超商', food: '茶葉蛋 2 顆 + 豆漿', protein: 21 },
+          { label: '🌤️ 午餐', where: '自助餐', food: '蛋料理 + 豆腐 + 毛豆', protein: 30 },
+          { label: '🍵 下午', food: '希臘優格 200g + 堅果', protein: 16 },
+          { label: '🌙 晚餐', food: '豆腐煲 + 蛋 2 顆 + 起司', protein: 28 },
         ],
       },
-      home: {
-        breakfast: [
-          { name: '水煮蛋 3 顆 + 鮮奶 240ml', protein: 29 },
-          { name: '水煮蛋 2 顆 + 希臘優格 200g', protein: 24 },
+      'home-cook': {
+        '2': [
+          { label: '🌤️ 第一餐', food: '板豆腐整塊 + 蛋 3 顆 + 毛豆 100g + 飯', protein: 46 },
+          { label: '🌙 第二餐', food: '起司蛋捲（3蛋）+ 鮮奶 + 豆腐味噌湯', protein: 38 },
         ],
-        lunch: [
-          { name: '板豆腐一整塊 + 蛋 2 顆 + 毛豆 100g', protein: 39 },
-          { name: '豆腐蔬菜蛋炒飯 + 豆漿', protein: 31 },
+        '3': [
+          { label: '☀️ 早餐', food: '水煮蛋 3 顆 + 鮮奶 240ml', protein: 29 },
+          { label: '🌤️ 午餐', food: '板豆腐整塊 + 蛋 2 顆 + 毛豆 100g', protein: 39 },
+          { label: '🌙 晚餐', food: '起司蛋捲（3蛋）+ 毛豆 + 豆腐湯', protein: 35 },
         ],
-        dinner: [
-          { name: '起司蛋捲（3蛋）+ 毛豆 + 味噌豆腐湯', protein: 35 },
-          { name: '豆腐煲 + 水煮蛋 2 顆 + 堅果', protein: 32 },
+        frequent: [
+          { label: '☀️ 早餐', food: '水煮蛋 2 顆 + 鮮奶', protein: 22 },
+          { label: '🌤️ 午餐', food: '豆腐蔬菜蛋炒飯 + 豆漿', protein: 31 },
+          { label: '🍵 下午', food: '希臘優格 200g + 堅果', protein: 16 },
+          { label: '🌙 晚餐', food: '起司蛋捲 + 毛豆 + 豆腐湯', protein: 28 },
+        ],
+      },
+      mixed: {
+        '2': [
+          { label: '🌤️ 第一餐【外食】', where: '自助餐', food: '蛋料理 2 份 + 豆腐 + 毛豆', protein: 35 },
+          { label: '🌙 第二餐【自煮】', food: '起司蛋捲（3蛋）+ 鮮奶 + 毛豆', protein: 38 },
+        ],
+        '3': [
+          { label: '☀️ 早餐【外食】', where: '超商', food: '茶葉蛋 2 顆 + 豆漿', protein: 21 },
+          { label: '🌤️ 午餐【外食】', where: '自助餐', food: '蛋料理 + 豆腐 + 毛豆', protein: 30 },
+          { label: '🌙 晚餐【自煮】', food: '起司蛋捲（3蛋）+ 毛豆 + 豆腐湯', protein: 35 },
+        ],
+        frequent: [
+          { label: '☀️ 早餐【外食】', where: '超商', food: '茶葉蛋 2 顆 + 豆漿', protein: 21 },
+          { label: '🌤️ 午餐【外食】', where: '自助餐', food: '蛋料理 + 豆腐 + 毛豆', protein: 30 },
+          { label: '🍵 下午【自備】', food: '希臘優格 + 堅果', protein: 16 },
+          { label: '🌙 晚餐【自煮】', food: '蛋捲 + 毛豆 + 豆腐湯', protein: 28 },
         ],
       },
     },
     vegan: {
-      out: {
-        breakfast: [
-          { name: '無糖豆漿 + 堅果飯糰 + 豆干', protein: 20, where: '超商' },
-          { name: '豆漿 2 杯 + 堅果', protein: 20, where: '早餐店' },
+      'eating-out': {
+        '2': [
+          { label: '🌤️ 第一餐', where: '自助餐', food: '滷豆腐 + 毛豆 + 豆干 + 青菜', protein: 30 },
+          { label: '🌙 第二餐', food: '豆干炒蔬菜 + 味噌豆腐湯 + 毛豆', protein: 28 },
         ],
-        lunch: [
-          { name: '自助餐：滷豆腐 + 毛豆 + 豆干', protein: 28, where: '自助餐' },
-          { name: '素食便當：豆類主菜 + 豆腐湯', protein: 22, where: '便當店' },
+        '3': [
+          { label: '☀️ 早餐', where: '超商', food: '無糖豆漿 2 杯 + 堅果', protein: 20 },
+          { label: '🌤️ 午餐', where: '自助餐', food: '滷豆腐 + 毛豆 + 豆干 + 五穀飯', protein: 30 },
+          { label: '🌙 晚餐', food: '天貝 100g + 毛豆 + 堅果', protein: 28 },
         ],
-        dinner: [
-          { name: '豆干炒蔬菜 + 味噌湯（豆腐）+ 毛豆', protein: 25, where: '' },
-          { name: '天貝 100g + 毛豆 + 堅果', protein: 28, where: '' },
+        frequent: [
+          { label: '☀️ 早餐', where: '超商', food: '豆漿 2 杯 + 堅果飯糰', protein: 20 },
+          { label: '🌤️ 午餐', where: '自助餐', food: '滷豆腐 + 毛豆 + 豆干', protein: 28 },
+          { label: '🍵 下午', food: '豆干 2 片 + 堅果', protein: 14 },
+          { label: '🌙 晚餐', food: '板豆腐蔬菜鍋 + 毛豆', protein: 22 },
         ],
       },
-      home: {
-        breakfast: [
-          { name: '豆漿燕麥碗 + 堅果 + 豆干 2 片', protein: 22 },
-          { name: '無糖豆漿 2 杯 + 堅果一把', protein: 20 },
+      'home-cook': {
+        '2': [
+          { label: '🌤️ 第一餐', food: '天貝 100g + 板豆腐整塊 + 毛豆 100g + 飯', protein: 44 },
+          { label: '🌙 第二餐', food: '板豆腐蔬菜鍋 + 豆干 + 毛豆 + 堅果', protein: 38 },
         ],
-        lunch: [
-          { name: '天貝 100g + 板豆腐半塊 + 糙米飯', protein: 30 },
-          { name: '板豆腐整塊 + 毛豆 100g + 蔬菜', protein: 25 },
+        '3': [
+          { label: '☀️ 早餐', food: '豆漿燕麥碗 + 豆干 2 片 + 堅果', protein: 24 },
+          { label: '🌤️ 午餐', food: '天貝 100g + 板豆腐半塊 + 糙米飯', protein: 30 },
+          { label: '🌙 晚餐', food: '板豆腐蔬菜鍋 + 毛豆 + 豆干', protein: 28 },
         ],
-        dinner: [
-          { name: '板豆腐蔬菜鍋 + 毛豆 + 豆干', protein: 28 },
-          { name: '鷹嘴豆咖哩 + 豆漿 + 堅果', protein: 22 },
+        frequent: [
+          { label: '☀️ 早餐', food: '豆漿 + 堅果 + 豆干', protein: 20 },
+          { label: '🌤️ 午餐', food: '天貝 + 板豆腐 + 糙米飯', protein: 30 },
+          { label: '🍵 下午', food: '毛豆 100g + 堅果', protein: 15 },
+          { label: '🌙 晚餐', food: '鷹嘴豆咖哩 + 豆漿', protein: 18 },
+        ],
+      },
+      mixed: {
+        '2': [
+          { label: '🌤️ 第一餐【外食】', where: '自助餐', food: '滷豆腐 + 毛豆 + 豆干', protein: 30 },
+          { label: '🌙 第二餐【自煮】', food: '天貝 100g + 毛豆 + 板豆腐 + 堅果', protein: 38 },
+        ],
+        '3': [
+          { label: '☀️ 早餐【外食】', where: '超商', food: '豆漿 2 杯 + 堅果', protein: 20 },
+          { label: '🌤️ 午餐【外食】', where: '自助餐', food: '滷豆腐 + 毛豆 + 豆干', protein: 30 },
+          { label: '🌙 晚餐【自煮】', food: '天貝 100g + 毛豆 + 板豆腐', protein: 32 },
+        ],
+        frequent: [
+          { label: '☀️ 早餐【外食】', where: '超商', food: '豆漿 2 杯 + 堅果', protein: 20 },
+          { label: '🌤️ 午餐【外食】', where: '自助餐', food: '滷豆腐 + 毛豆 + 豆干', protein: 28 },
+          { label: '🍵 下午【自備】', food: '豆干 + 堅果', protein: 14 },
+          { label: '🌙 晚餐【自煮】', food: '板豆腐鍋 + 毛豆', protein: 22 },
         ],
       },
     },
   };
 
-  const foods = FOODS[foodType] || FOODS.omnivore;
+  const foodPlans = plans[foodType] || plans.omnivore;
+  const dietPlans = foodPlans[dietType] || foodPlans['eating-out'];
+  const dayPlan = dietPlans[mealCount] || dietPlans['3'];
 
-  // 根據 diet_type 決定用哪套食材
-  // mixed: 早餐外食、午餐外食、晚餐自煮（最常見的混合模式）
-  function pickMeal(mealTime, idx) {
-    let source;
-    if (dietType === 'eating-out') {
-      source = foods.out[mealTime];
-    } else if (dietType === 'home-cook') {
-      source = foods.home[mealTime];
-    } else {
-      // mixed: 早午外食、晚餐自煮
-      source = (mealTime === 'dinner') ? foods.home[mealTime] : foods.out[mealTime];
-    }
-    return source[idx % source.length];
-  }
+  const lines = dayPlan.map(m => {
+    const whereTag = m.where ? `（${m.where}）` : '';
+    return `${m.label}${whereTag}\n・${m.food}\n　→ ${m.protein}g`;
+  });
 
-  // 根據 meal_count 組合
-  let mealSlots;
-  if (mealCount === '2') {
-    // 兩餐：午餐 + 晚餐（最常見的兩餐模式）
-    mealSlots = [
-      { label: '🌤️ 第一餐', time: 'lunch' },
-      { label: '🌙 第二餐', time: 'dinner' },
-    ];
-  } else if (mealCount === 'frequent') {
-    // 少量多餐：早+午+點心+晚
-    mealSlots = [
-      { label: '☀️ 早餐', time: 'breakfast' },
-      { label: '🌤️ 午餐', time: 'lunch' },
-      { label: '🍵 下午點心', time: 'breakfast' }, // 用 breakfast 的輕食
-      { label: '🌙 晚餐', time: 'dinner' },
-    ];
-  } else {
-    // 三餐
-    mealSlots = [
-      { label: '☀️ 早餐', time: 'breakfast' },
-      { label: '🌤️ 午餐', time: 'lunch' },
-      { label: '🌙 晚餐', time: 'dinner' },
-    ];
-  }
-
-  // 選擇最接近 avgProtein 的組合（用第一組 idx=0）
-  let totalProtein = 0;
-  let lines = [];
-
-  for (let i = 0; i < mealSlots.length; i++) {
-    const slot = mealSlots[i];
-    const meal = pickMeal(slot.time, i === 2 && mealCount === 'frequent' ? 1 : 0);
-    totalProtein += meal.protein;
-
-    const whereTag = meal.where ? `（${meal.where}）` : '';
-    if (dietType === 'mixed' && slot.time !== 'dinner') {
-      lines.push(`${slot.label}【外食】${whereTag}\n・${meal.name} ≈ ${meal.protein}g`);
-    } else if (dietType === 'mixed' && slot.time === 'dinner') {
-      lines.push(`${slot.label}【自煮】\n・${meal.name} ≈ ${meal.protein}g`);
-    } else {
-      lines.push(`${slot.label}${whereTag}\n・${meal.name} ≈ ${meal.protein}g`);
-    }
-  }
+  const dailyTotal = dayPlan.reduce((sum, m) => sum + m.protein, 0);
 
   return {
-    examples: lines.join('\n\n') + '\n',
-    dailyTotal: totalProtein,
+    plan: lines.join('\n\n') + '\n',
+    dailyTotal,
   };
+}
+
+// 點心補差距建議
+function getSnackSuggestion(foodType, gap) {
+  if (foodType === 'vegan') {
+    if (gap > 15) return '豆干 2 片(10g) + 豆漿一杯(7g) + 堅果(6g)';
+    if (gap > 10) return '豆干 2 片(10g) + 豆漿一杯(7g)';
+    return '豆漿一杯(7g) + 堅果一把(6g)';
+  }
+  if (foodType === 'lacto-ovo') {
+    if (gap > 15) return '茶葉蛋 2 顆(14g) + 鮮奶(8g)';
+    if (gap > 10) return '茶葉蛋 1 顆(7g) + 希臘優格(10g)';
+    return '茶葉蛋 1 顆(7g) + 堅果(6g)';
+  }
+  if (gap > 15) return '即食雞胸 1 包(20g)';
+  if (gap > 10) return '茶葉蛋 2 顆(14g)';
+  return '茶葉蛋 1 顆(7g) + 豆漿(7g)';
 }
 
 function buildPersonalizedReport(session, displayName) {
