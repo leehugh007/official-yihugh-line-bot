@@ -684,16 +684,18 @@ function buildPersonalizedReport(session, displayName) {
     `有任何問題都可以直接問我 🙂\n` +
     `我是一休，陪你健康的瘦一輩子`;
 
-  // ─── 訊息 2：完整建議 + 類型頁連結 + 互動引導 ───
+  // ─── 訊息 2：完整建議 + 類型頁連結 ───
   const msg2 =
     `📋 等你準備好了，這 3 件事可以慢慢做：\n\n` +
     type.suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n') +
     `\n\n想更了解「${type.name}」代謝的完整解析 👇\n` +
-    type.typeUrl +
-    `\n\n━━━━━━━━━━━━━━━\n\n` +
-    `對了，想問你一下——\n` +
-    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
-    `回覆告訴我，我可以給你更具體的建議 😊`;
+    type.typeUrl;
 
-  return [textMessage(msg1), textMessage(msg2)];
+  // ─── 訊息 3：互動引導 ───
+  const msg3 =
+    `對了，想問你一下——\n\n` +
+    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
+    `回覆告訴我，想瘦幾公斤就好 😊`;
+
+  return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
 }
