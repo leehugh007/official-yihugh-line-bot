@@ -157,15 +157,35 @@ async function handleFollow(event, userId) {
 // 代碼領取報告（測試模式也開放）
 // ============================================================
 async function handleCodeClaim(event, userId, code) {
-  const { data: session } = await supabase
+  // 1. 先查測驗代碼
+  const { data: quizSession } = await supabase
     .from('quiz_sessions')
     .select('metabolism_type, secondary_type, q7_symptoms, body_signal')
     .eq('claim_code', code)
     .single();
 
-  if (!session) return false; // 代碼不存在
+  if (quizSession) {
+    // 測驗代碼 → 走原有的代謝報告流程
+    return await handleQuizCodeClaim(event, userId, quizSession);
+  }
 
-  // 確保用戶有建檔（測試模式外的用戶可能還沒在資料庫裡）
+  // 2. 再查蛋白質代碼
+  const { data: proteinSession } = await supabase
+    .from('protein_sessions')
+    .select('*')
+    .eq('claim_code', code)
+    .single();
+
+  if (proteinSession) {
+    // 蛋白質代碼 → 走蛋白質策略流程
+    return await handleProteinCodeClaim(event, userId, proteinSession);
+  }
+
+  return false; // 兩張表都查不到
+}
+
+// 測驗代碼領取（原有邏輯）
+async function handleQuizCodeClaim(event, userId, session) {
   const existingUser = await getUser(userId);
   if (!existingUser) {
     const profile = await getProfile(userId);
@@ -175,28 +195,63 @@ async function handleCodeClaim(event, userId, code) {
     });
   }
 
-  // 計算排程開始時間：1 天後，台灣時間 08:00
   const dripNextAt = new Date();
   dripNextAt.setDate(dripNextAt.getDate() + 1);
-  dripNextAt.setUTCHours(0, 0, 0, 0); // UTC 00:00 = 台灣 08:00
+  dripNextAt.setUTCHours(0, 0, 0, 0);
 
-  // 更新用戶的代謝類型 + 啟動 Drip 排程
   await supabase
     .from('official_line_users')
     .update({
       metabolism_type: session.metabolism_type,
       source: 'quiz',
-      drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(), // 已有排程的不覆蓋
+      drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(),
     })
     .eq('line_user_id', userId);
 
-  // 記錄互動
   await recordInteraction(userId);
 
   const profile = await getProfile(userId);
   const report = buildPersonalizedReport(session, profile?.displayName || '');
   await replyMessage(event.replyToken, report);
-  return true; // 代碼有效，已回覆
+  return true;
+}
+
+// 蛋白質代碼領取
+async function handleProteinCodeClaim(event, userId, session) {
+  const existingUser = await getUser(userId);
+  if (!existingUser) {
+    const profile = await getProfile(userId);
+    await upsertUser(userId, {
+      displayName: profile?.displayName || '',
+      source: 'protein',
+    });
+  }
+
+  const dripNextAt = new Date();
+  dripNextAt.setDate(dripNextAt.getDate() + 1);
+  dripNextAt.setUTCHours(0, 0, 0, 0);
+
+  // 更新用戶來源 + 啟動 Drip
+  await supabase
+    .from('official_line_users')
+    .update({
+      source: existingUser?.source === 'quiz' ? 'quiz' : 'protein', // quiz 優先
+      drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(),
+    })
+    .eq('line_user_id', userId);
+
+  // 標記已領取
+  await supabase
+    .from('protein_sessions')
+    .update({ claimed_by: userId, claimed_at: new Date().toISOString() })
+    .eq('id', session.id);
+
+  await recordInteraction(userId);
+
+  const profile = await getProfile(userId);
+  const strategy = buildProteinStrategy(session, profile?.displayName || '');
+  await replyMessage(event.replyToken, strategy);
+  return true;
 }
 
 // ============================================================
@@ -277,6 +332,155 @@ const TYPE_DATA = {
     typeUrl: 'https://abcmetabolic.com/types/steady?utm_source=line&utm_medium=bot&utm_campaign=report',
   },
 };
+
+// ============================================================
+// 蛋白質策略回覆（根據 5 題答案組合）
+// ============================================================
+const GOAL_LABELS = { maintain: '維持健康', 'fat-loss': '減脂增肌', intense: '高強度訓練' };
+const DIET_LABELS = { 'eating-out': '外食族', 'home-cook': '自煮族', mixed: '混合型' };
+const FOOD_LABELS = { omnivore: '葷食', 'lacto-ovo': '蛋奶素', vegan: '全素' };
+const MEAL_LABELS = { '2': '兩餐', '3': '三餐', frequent: '少量多餐' };
+
+function buildProteinStrategy(session, displayName) {
+  const { weight, goal, diet_type, meal_count, food_type, protein_min, protein_max } = session;
+  const avgProtein = Math.round((protein_min + protein_max) / 2);
+
+  // 每餐分配
+  const meals = meal_count === '2' ? 2 : meal_count === '3' ? 3 : 4;
+  const perMeal = Math.round(avgProtein / meals);
+
+  // 食材推薦（根據 food_type）
+  const foodRecs = getProteinFoodRecs(food_type, diet_type);
+
+  // 組訊息 1：策略主體
+  let msg1 =
+    `🥚 ${displayName ? displayName + '，' : ''}你的蛋白質攻略來了\n\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `📊 你的數字\n` +
+    `每天需要 ${protein_min}-${protein_max}g 蛋白質\n` +
+    `分成${MEAL_LABELS[meal_count]}，每餐約 ${perMeal}g\n\n` +
+    `目標：${GOAL_LABELS[goal] || goal}\n` +
+    `飲食型態：${DIET_LABELS[diet_type] || diet_type}｜${FOOD_LABELS[food_type] || food_type}\n\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `🍽️ ${DIET_LABELS[diet_type] || ''}這樣湊到 ${perMeal}g／餐\n\n`;
+
+  // 三餐範例
+  const mealExamples = getMealExamples(food_type, diet_type, perMeal);
+  msg1 += mealExamples;
+
+  msg1 +=
+    `\n━━━━━━━━━━━━━━━\n\n` +
+    `⚡ 最多人卡住的 3 件事\n\n` +
+    `1. 以為有吃，但沒算過\n` +
+    `→ 一份便當的蛋白質通常只有 15-20g，離目標還差很遠\n\n` +
+    `2. 早餐幾乎沒蛋白質\n` +
+    `→ 吐司配奶茶 ≈ 5g，一天的缺口從早上就開始了\n\n` +
+    `3. 只吃雞胸肉，吃到怕\n` +
+    `→ 蛋白質來源要多樣：蛋、豆腐、魚、毛豆都算\n\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `有任何問題都可以直接問我 🙂\n` +
+    `我是一休，陪你健康的瘦一輩子`;
+
+  // 訊息 2：互動引導
+  const msg2 =
+    `對了，想問你一下——\n\n` +
+    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
+    `回覆告訴我，我可以給你更具體的建議 😊`;
+
+  return [textMessage(msg1), textMessage(msg2)];
+}
+
+// 根據葷素 + 飲食型態推薦蛋白質食材
+function getProteinFoodRecs(foodType, dietType) {
+  if (foodType === 'vegan') {
+    return {
+      high: ['毛豆（100g = 11g）', '板豆腐（一塊 = 14g）', '天貝（100g = 19g）'],
+      mid: ['豆漿無糖（240ml = 7g）', '鷹嘴豆（100g = 9g）', '黑豆（100g = 9g）'],
+      snack: ['堅果一把（6g）', '豆干（2片 = 10g）', '素肉排（依品牌 10-15g）'],
+    };
+  }
+  if (foodType === 'lacto-ovo') {
+    return {
+      high: ['雞蛋（2顆 = 14g）', '板豆腐（一塊 = 14g）', '希臘優格（200g = 14g）'],
+      mid: ['起司片（2片 = 10g）', '豆漿無糖（240ml = 7g）', '毛豆（100g = 11g）'],
+      snack: ['茶葉蛋（1顆 = 7g）', '堅果一把（6g）', '鮮奶（240ml = 8g）'],
+    };
+  }
+  // omnivore
+  return {
+    high: ['雞胸肉（100g = 23g）', '鮭魚（100g = 20g）', '豬里肌（100g = 22g）'],
+    mid: ['雞蛋（2顆 = 14g）', '板豆腐（一塊 = 14g）', '鯛魚（100g = 18g）'],
+    snack: ['茶葉蛋（1顆 = 7g）', '即食雞胸（1包 = 20g）', '毛豆（100g = 11g）'],
+  };
+}
+
+// 三餐搭配範例
+function getMealExamples(foodType, dietType, perMeal) {
+  const isEatingOut = dietType === 'eating-out';
+  const isMixed = dietType === 'mixed';
+
+  if (foodType === 'vegan') {
+    if (isEatingOut || isMixed) {
+      return (
+        `☀️ 早餐（超商）\n` +
+        `・無糖豆漿 + 堅果飯糰 ≈ ${Math.min(perMeal, 13)}g\n\n` +
+        `🌤️ 午餐（自助餐/便當）\n` +
+        `・滷豆腐 + 毛豆 + 五穀飯 ≈ ${Math.min(perMeal, 22)}g\n\n` +
+        `🌙 晚餐\n` +
+        `・豆干炒蔬菜 + 味噌湯（加豆腐）≈ ${Math.min(perMeal, 18)}g\n`
+      );
+    }
+    return (
+      `☀️ 早餐\n` +
+      `・豆漿燕麥碗 + 堅果 ≈ ${Math.min(perMeal, 15)}g\n\n` +
+      `🌤️ 午餐\n` +
+      `・天貝炒蔬菜 + 糙米飯 ≈ ${Math.min(perMeal, 22)}g\n\n` +
+      `🌙 晚餐\n` +
+      `・板豆腐蔬菜鍋 + 毛豆 ≈ ${Math.min(perMeal, 20)}g\n`
+    );
+  }
+
+  if (foodType === 'lacto-ovo') {
+    if (isEatingOut || isMixed) {
+      return (
+        `☀️ 早餐（超商）\n` +
+        `・茶葉蛋 2 顆 + 無糖豆漿 ≈ ${Math.min(perMeal, 21)}g\n\n` +
+        `🌤️ 午餐（自助餐）\n` +
+        `・蛋料理 + 豆腐 + 蔬菜 ≈ ${Math.min(perMeal, 22)}g\n\n` +
+        `🌙 晚餐\n` +
+        `・希臘優格 + 堅果 + 起司蛋吐司 ≈ ${Math.min(perMeal, 24)}g\n`
+      );
+    }
+    return (
+      `☀️ 早餐\n` +
+      `・水煮蛋 2 顆 + 鮮奶 ≈ ${Math.min(perMeal, 22)}g\n\n` +
+      `🌤️ 午餐\n` +
+      `・豆腐蔬菜蛋炒飯 ≈ ${Math.min(perMeal, 24)}g\n\n` +
+      `🌙 晚餐\n` +
+      `・起司蛋捲 + 毛豆 + 味噌豆腐湯 ≈ ${Math.min(perMeal, 22)}g\n`
+    );
+  }
+
+  // omnivore
+  if (isEatingOut || isMixed) {
+    return (
+      `☀️ 早餐（超商）\n` +
+      `・茶葉蛋 2 顆 + 無糖豆漿 ≈ ${Math.min(perMeal, 21)}g\n\n` +
+      `🌤️ 午餐（自助餐/便當）\n` +
+      `・一份主菜（雞腿/魚）+ 豆腐 ≈ ${Math.min(perMeal, 30)}g\n\n` +
+      `🌙 晚餐\n` +
+      `・鮭魚/里肌 + 蛋 + 蔬菜 ≈ ${Math.min(perMeal, 30)}g\n`
+    );
+  }
+  return (
+    `☀️ 早餐\n` +
+    `・水煮蛋 2 顆 + 鮮奶 ≈ ${Math.min(perMeal, 22)}g\n\n` +
+    `🌤️ 午餐\n` +
+    `・雞胸肉/魚 + 豆腐 + 糙米飯 ≈ ${Math.min(perMeal, 35)}g\n\n` +
+    `🌙 晚餐\n` +
+    `・豬里肌 + 毛豆 + 蔬菜 ≈ ${Math.min(perMeal, 30)}g\n`
+  );
+}
 
 function buildPersonalizedReport(session, displayName) {
   const type = TYPE_DATA[session.metabolism_type];
