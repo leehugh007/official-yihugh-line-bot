@@ -297,6 +297,8 @@ const TYPE_DATA = {
     keyPoint: '你需要的不是更努力，而是讓身體學會「切換檔位」。',
     suggestions: ['每餐確保有足夠的好油（酪梨、堅果、橄欖油）', '睡前 1 小時放下手機，讓副交感神經啟動', '嘗試把高強度運動改成 2-3 次/週，其他天走路就好'],
     symptomContext: '這些都是皮質醇長期偏高的典型表現——你的身體在用這些信號告訴你：「我需要休息，不是更努力。」',
+    ahaReason: '你一直逼自己更努力——少吃、多動、早起運動。但你的身體不是不配合，是已經在超載了。皮質醇長期偏高，身體會優先把脂肪堆在肚子周圍。越努力，肚子反而越難消。',
+    oneStep: '這禮拜開始，把其中一天的高強度運動改成散步 30 分鐘。不是偷懶，是讓身體從紅線區退下來。',
     typeUrl: 'https://abcmetabolic.com/types/high-rpm?utm_source=line&utm_medium=bot&utm_campaign=report',
   },
   rollerCoaster: {
@@ -305,6 +307,8 @@ const TYPE_DATA = {
     keyPoint: '穩定血糖 = 穩定情緒 = 穩定體重。三件事其實是同一件事。',
     suggestions: ['吃飯順序改成：菜 → 肉 → 飯', '把精緻澱粉換成原型澱粉（白飯 → 糙米、地瓜）', '下午想吃甜食時，先吃一把堅果或一顆水煮蛋'],
     symptomContext: '這些症狀跟血糖不穩直接相關——當血糖像雲霄飛車一樣大起大落，你的身體就會用這些方式求救。',
+    ahaReason: '你可能試過少吃、節食、或跳過某一餐。但問題不在吃多吃少，是你吃的東西讓血糖忽高忽低。血糖一掉，你的大腦就會瘋狂叫你吃甜的。這不是意志力差，是血糖在控制你。',
+    oneStep: '下一餐開始，吃飯順序改成：菜先吃 → 再吃肉 → 最後吃飯。同樣的食物，換個順序，血糖波動就能減少三成。',
     typeUrl: 'https://abcmetabolic.com/types/roller-coaster?utm_source=line&utm_medium=bot&utm_campaign=report',
   },
   burnout: {
@@ -313,6 +317,8 @@ const TYPE_DATA = {
     keyPoint: '現在最重要的不是少吃，而是「吃對」讓身體重新信任你。',
     suggestions: ['先不要減少食量，確保每餐都有蛋白質', '好油不要怕：每天至少 1-2 湯匙的好油脂', '優先處理睡眠，睡不好其他都白費'],
     symptomContext: '這些都是身體長期能量透支的警訊——不是你不夠努力，是身體已經在用最後的力氣撐了。',
+    ahaReason: '你已經很努力了——吃得少、忍得住、該做的都做了。但身體被透支太久，它啟動了自我保護機制：降低代謝、囤積脂肪、讓你覺得累。你越少吃，它越省，形成惡性循環。',
+    oneStep: '明天開始，每餐確保有一份蛋白質（一顆蛋、一塊豆腐、一片肉都行）。先不要減量，讓身體知道「食物會穩定供應」。',
     typeUrl: 'https://abcmetabolic.com/types/burnout?utm_source=line&utm_medium=bot&utm_campaign=report',
   },
   powerSave: {
@@ -321,6 +327,8 @@ const TYPE_DATA = {
     keyPoint: '要讓代謝回來，第一步是「敢吃」。聽起來矛盾，但這是科學。',
     suggestions: ['循序漸進增加食量（每週多加 100-200 大卡）', '蛋白質是重建代謝的關鍵，每餐都要有', '加入阻力訓練（深蹲、硬舉），肌肉量 = 代謝的引擎'],
     symptomContext: '這些都是代謝降速的典型反應——你的身體為了省能量，把很多「非必要功能」關掉了。',
+    ahaReason: '你吃得很少，但身體不會因為你少吃就乖乖瘦。它的邏輯是：「進來的不夠，那我就省著用。」代謝降速、體溫下降、容易掉髮——這些都是身體在告訴你它已經進入省電模式了。',
+    oneStep: '這禮拜開始，每天多吃一份點心（一杯豆漿、一把堅果、或一顆蛋）。不用一次加很多，每週多一點，讓代謝慢慢回來。',
     typeUrl: 'https://abcmetabolic.com/types/power-save?utm_source=line&utm_medium=bot&utm_campaign=report',
   },
   steady: {
@@ -329,6 +337,8 @@ const TYPE_DATA = {
     keyPoint: '你的起點比多數人好，接下來要做的是精進，不是從頭來過。',
     suggestions: ['嘗試拉長空腹時間（12-14 小時）', '增加蛋白質攝取到每公斤體重 1.2-1.6g', '規律運動 + 充足睡眠，把優勢鞏固住'],
     symptomContext: '雖然你的代謝整體穩定，但這些小信號代表還有優化空間——身體在告訴你哪裡可以更好。',
+    ahaReason: '你的身體底子不差，但「不差」容易讓人停在原地。很多人覺得自己還好就不調整，結果隨著年齡增長，代謝慢慢往下掉。現在是鞏固優勢最好的時機。',
+    oneStep: '從這禮拜開始，注意每餐的蛋白質份量——目標是每公斤體重吃到 1.2g。大多數人以為自己吃夠了，其實差很多。',
     typeUrl: 'https://abcmetabolic.com/types/steady?utm_source=line&utm_medium=bot&utm_campaign=report',
   },
 };
@@ -629,38 +639,61 @@ function buildPersonalizedReport(session, displayName) {
   const type = TYPE_DATA[session.metabolism_type];
   if (!type) return [textMessage('找不到你的代謝報告，請重新做一次測驗：\nhttps://abcmetabolic.com/quiz?utm_source=line&utm_medium=bot&utm_campaign=official')];
 
-  // 訊息 1：個人化報告
-  let msg1 =
-    `📋 ${displayName ? displayName + '，這是' : '這是'}你的代謝報告\n\n` +
-    `你是「${type.name}」代謝\n` +
-    `「${type.tagline}」\n\n` +
-    `${type.description}\n\n` +
-    `💡 ${type.keyPoint}\n\n` +
-    `── 給你的 3 個具體建議 ──\n\n` +
-    type.suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n');
-
-  // Q7 症狀回饋（個人化的核心）
+  const name = displayName ? displayName + '，' : '';
   const symptoms = session.q7_symptoms || [];
+
+  // ─── 訊息 1：診斷 + aha moment + 一步就好 ───
+
+  let msg1 = '';
+
+  // 開頭：用她自己的症狀做診斷
   if (symptoms.length > 0) {
-    msg1 += `\n\n───────────────\n\n`;
-    msg1 += `📊 你的身體正在告訴你：\n\n`;
-    msg1 += `你提到了這些狀況：\n`;
-    msg1 += symptoms.map((s) => `• ${s}`).join('\n');
-    msg1 += `\n\n${type.symptomContext}`;
+    msg1 +=
+      `${name}你的代謝報告出來了\n\n` +
+      `你提到了：\n` +
+      symptoms.map((s) => `・${s}`).join('\n') + '\n\n' +
+      `這些不是個別問題，它們都指向同一件事——\n` +
+      `${type.symptomContext}\n\n`;
+  } else {
+    msg1 +=
+      `${name}你的代謝報告出來了\n\n` +
+      `「${type.tagline}」\n\n` +
+      `${type.description}\n\n`;
   }
 
-  // 體重趨勢
+  // 體重波動加強診斷
   if (session.body_signal === 'fluctuating') {
-    msg1 += symptoms.length > 0 ? '\n\n' : '\n\n───────────────\n\n';
-    msg1 += `📉 你的體重波動模式也反映了代謝不穩定——這不是意志力的問題，是身體在告訴你現在的方法需要調整。`;
+    msg1 += `你的體重波動模式也在反映同一件事——不是你不夠努力，是身體正在用它的方式告訴你：現在的方法需要調整。\n\n`;
   }
 
-  msg1 += `\n\n有任何問題都可以直接問我 🙂\n我是一休，陪你健康的瘦一輩子`;
+  // aha moment：為什麼之前的方法沒用
+  msg1 +=
+    `━━━━━━━━━━━━━━━\n\n` +
+    `${type.ahaReason}\n\n`;
 
-  // 訊息 2：類型詳細頁連結
+  // 核心認知
+  msg1 +=
+    `━━━━━━━━━━━━━━━\n\n` +
+    `💡 ${type.keyPoint}\n\n`;
+
+  // 一步就好
+  msg1 +=
+    `不用一次改很多，先做一件事就好：\n\n` +
+    `👉 ${type.oneStep}\n\n` +
+    `這一步做穩了，再來調整其他的。\n\n` +
+    `有任何問題都可以直接問我 🙂\n` +
+    `我是一休，陪你健康的瘦一輩子`;
+
+  // ─── 訊息 2：完整建議 + 類型頁連結 + 互動引導 ───
   const msg2 =
-    `想更了解「${type.name}」代謝的完整解析 👇\n` +
-    type.typeUrl;
+    `📋 等你準備好了，這 3 件事可以慢慢做：\n\n` +
+    type.suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n') +
+    `\n\n想更了解「${type.name}」代謝的完整解析 👇\n` +
+    type.typeUrl +
+    `\n\n━━━━━━━━━━━━━━━\n\n` +
+    `對了，想問你一下——\n` +
+    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
+    `回覆告訴我，我可以給你更具體的建議 😊`;
 
   return [textMessage(msg1), textMessage(msg2)];
 }
