@@ -181,7 +181,18 @@ async function handleCodeClaim(event, userId, code) {
     return await handleProteinCodeClaim(event, userId, proteinSession);
   }
 
-  return false; // 兩張表都查不到
+  // 3. 再查脂肪肝代碼
+  const { data: fattyLiverSession } = await supabase
+    .from('fatty_liver_sessions')
+    .select('*')
+    .eq('claim_code', code)
+    .single();
+
+  if (fattyLiverSession) {
+    return await handleFattyLiverCodeClaim(event, userId, fattyLiverSession);
+  }
+
+  return false; // 三張表都查不到
 }
 
 // 測驗代碼領取（原有邏輯）
@@ -251,6 +262,45 @@ async function handleProteinCodeClaim(event, userId, session) {
   const profile = await getProfile(userId);
   const strategy = buildProteinStrategy(session, profile?.displayName || '');
   await replyMessage(event.replyToken, strategy);
+  return true;
+}
+
+// 脂肪肝代碼領取
+async function handleFattyLiverCodeClaim(event, userId, session) {
+  const existingUser = await getUser(userId);
+  if (!existingUser) {
+    const profile = await getProfile(userId);
+    await upsertUser(userId, {
+      displayName: profile?.displayName || '',
+      source: 'fatty_liver',
+    });
+  }
+
+  const dripNextAt = new Date();
+  dripNextAt.setDate(dripNextAt.getDate() + 1);
+  dripNextAt.setUTCHours(0, 0, 0, 0);
+
+  // 更新用戶來源 + 啟動 Drip（quiz/protein 優先）
+  const keepSource = ['quiz', 'protein'].includes(existingUser?.source);
+  await supabase
+    .from('official_line_users')
+    .update({
+      source: keepSource ? existingUser.source : 'fatty_liver',
+      drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(),
+    })
+    .eq('line_user_id', userId);
+
+  // 標記已領取
+  await supabase
+    .from('fatty_liver_sessions')
+    .update({ claimed_by: userId, claimed_at: new Date().toISOString() })
+    .eq('id', session.id);
+
+  await recordInteraction(userId);
+
+  const profile = await getProfile(userId);
+  const report = buildFattyLiverReport(session, profile?.displayName || '');
+  await replyMessage(event.replyToken, report);
   return true;
 }
 
@@ -690,6 +740,101 @@ function buildPersonalizedReport(session, displayName) {
     type.suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n') +
     `\n\n想更了解「${type.name}」代謝的完整解析 👇\n` +
     type.typeUrl;
+
+  // ─── 訊息 3：互動引導 ───
+  const msg3 =
+    `對了，想問你一下——\n\n` +
+    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
+    `回覆告訴我，想瘦幾公斤就好 😊`;
+
+  return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
+}
+
+// ============================================================
+// 脂肪肝報告
+// ============================================================
+
+const FATTY_LIVER_RISK = {
+  low: {
+    label: '低風險',
+    diagnosis: '你的生活習慣對肝臟的負擔不大，肝臟目前還不算加班。',
+    aha: '但你可能不知道——脂肪肝初期完全沒感覺。台灣每 2 個人就有 1 個有脂肪肝，很多體重正常的人也有。不是現在沒事就永遠沒事，而是你現在的好習慣正在保護它。',
+    oneStep: '每年做一次腹部超音波。脂肪肝初期只有超音波看得到，體重計量不到。這是最簡單的保護。',
+    tips: [
+      '維持目前少糖的習慣——肝臟最怕的不是油，是多餘的糖',
+      '注意腰圍變化——腰圍比體重更能反映內臟脂肪',
+      '蛋白質吃夠，下午就不會一直想找飲料喝',
+    ],
+  },
+  moderate: {
+    label: '中等風險',
+    diagnosis: '你的飲食裡有幾個地方，正在讓肝臟默默加班。',
+    aha: '你可能覺得「我又沒喝酒」。但手搖飲裡的高果糖糖漿，走進身體之後的路跟酒精幾乎一樣——全部直接塞給肝臟處理，速度是一般糖的 5 到 10 倍。你不喝酒，但你的肝每天下午都在處理一杯「酒」。\n\n好消息是，這個階段調整效果最好。',
+    oneStep: '先從下午那杯飲料下手——換成無糖茶或水就好。光這一步，你的肝就少扛一半的工作量。',
+    tips: [
+      '含糖飲料換成無糖茶、黑咖啡、氣泡水',
+      '中午多夾一樣菜、選蛋白質取代炸物',
+      '量一次腰圍（肚臍一圈），一個月後再量，看變化',
+    ],
+  },
+  high: {
+    label: '高風險',
+    diagnosis: '你的多項習慣都在增加肝臟的負擔。不是嚇你，但你的肝需要你的注意了。',
+    aha: '肝不會痛、不會腫、不會發燒。它就是默默扛，扛到有一天扛不住。等你感覺到的時候，通常不是脂肪肝了，是更嚴重的東西。\n\n但脂肪肝是可以改善的。不一定要瘦下來，改變吃進去的東西就有用。',
+    oneStep: '最重要的一步：把每天的含糖飲料換掉。高果糖糖漿全部直接塞給肝臟處理，換掉它，肝臟的壓力馬上減半。',
+    tips: [
+      '把含糖飲料全部換成水或無糖飲品——這是最大的槓桿',
+      '安排一次腹部超音波檢查——照了才知道',
+      '蛋白質吃夠，身體不缺了就不會一直跟你討糖',
+    ],
+  },
+};
+
+function buildFattyLiverReport(session, displayName) {
+  const risk = FATTY_LIVER_RISK[session.risk_level];
+  if (!risk) return [textMessage('找不到你的檢測結果，請重新做一次檢測：\nhttps://abcmetabolic.com/tools/fatty-liver')];
+
+  const name = displayName ? displayName + '，' : '';
+  const answers = session.answers || [];
+
+  // 從回答中找出最嚴重的習慣（score 最高的題目）
+  const worstHabit = answers.reduce((worst, a) => (!worst || a.score > worst.score) ? a : worst, null);
+
+  // ─── 訊息 1：診斷 → aha → 一步就好 ───
+  let msg1 = '';
+
+  // 診斷開頭：用她的回答
+  if (worstHabit && worstHabit.score >= 2) {
+    msg1 +=
+      `${name}你的護肝報告出來了\n\n` +
+      `你提到了「${worstHabit.answer}」\n` +
+      `這件事跟你的肝臟狀態直接相關。\n\n`;
+  } else {
+    msg1 += `${name}你的護肝報告出來了\n\n`;
+  }
+
+  msg1 +=
+    `檢測結果：${risk.label}\n` +
+    `${risk.diagnosis}\n\n`;
+
+  // aha
+  msg1 +=
+    `━━━━━━━━━━━━━━━\n\n` +
+    `${risk.aha}\n\n`;
+
+  // 一步就好
+  msg1 +=
+    `━━━━━━━━━━━━━━━\n\n` +
+    `不用一次改很多，先做一件事就好：\n\n` +
+    `👉 ${risk.oneStep}\n\n` +
+    `這一步做穩了，再來調整其他的。\n\n` +
+    `有任何問題都可以直接問我 🙂\n` +
+    `我是一休，陪你健康的瘦一輩子`;
+
+  // ─── 訊息 2：完整建議 ───
+  const msg2 =
+    `📋 等你準備好了，這 3 件事可以慢慢做：\n\n` +
+    risk.tips.map((t, i) => `${i + 1}. ${t}`).join('\n');
 
   // ─── 訊息 3：互動引導 ───
   const msg3 =
