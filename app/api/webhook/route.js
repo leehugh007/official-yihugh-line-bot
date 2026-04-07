@@ -192,7 +192,18 @@ async function handleCodeClaim(event, userId, code) {
     return await handleFattyLiverCodeClaim(event, userId, fattyLiverSession);
   }
 
-  return false; // 三張表都查不到
+  // 4. 再查 TDEE 代碼
+  const { data: tdeeSession } = await supabase
+    .from('tdee_sessions')
+    .select('*')
+    .eq('claim_code', code)
+    .single();
+
+  if (tdeeSession) {
+    return await handleTdeeCodeClaim(event, userId, tdeeSession);
+  }
+
+  return false; // 四張表都查不到
 }
 
 // 測驗代碼領取（原有邏輯）
@@ -300,6 +311,43 @@ async function handleFattyLiverCodeClaim(event, userId, session) {
 
   const profile = await getProfile(userId);
   const report = buildFattyLiverReport(session, profile?.displayName || '');
+  await replyMessage(event.replyToken, report);
+  return true;
+}
+
+// TDEE 代碼領取
+async function handleTdeeCodeClaim(event, userId, session) {
+  const existingUser = await getUser(userId);
+  if (!existingUser) {
+    const profile = await getProfile(userId);
+    await upsertUser(userId, {
+      displayName: profile?.displayName || '',
+      source: 'tdee',
+    });
+  }
+
+  const dripNextAt = new Date();
+  dripNextAt.setDate(dripNextAt.getDate() + 1);
+  dripNextAt.setUTCHours(0, 0, 0, 0);
+
+  const keepSource = ['quiz', 'protein'].includes(existingUser?.source);
+  await supabase
+    .from('official_line_users')
+    .update({
+      source: keepSource ? existingUser.source : 'tdee',
+      drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(),
+    })
+    .eq('line_user_id', userId);
+
+  await supabase
+    .from('tdee_sessions')
+    .update({ claimed_by: userId, claimed_at: new Date().toISOString() })
+    .eq('id', session.id);
+
+  await recordInteraction(userId);
+
+  const profile = await getProfile(userId);
+  const report = buildTdeeReport(session, profile?.displayName || '');
   await replyMessage(event.replyToken, report);
   return true;
 }
@@ -790,12 +838,29 @@ const FATTY_LIVER_RISK = {
   },
 };
 
+// 飲料打臉
+const DRINK_AHA = {
+  'sugar-tea': '你平常喝手搖飲——裡面的高果糖糖漿，走進身體之後的路跟酒精幾乎一樣，全部直接塞給肝臟處理。你不喝酒，但你的肝每天下午都在處理一杯「酒」。',
+  'juice': '你平常喝果汁——你以為很健康？果汁的果糖含量不輸手搖飲，而且沒有纖維幫忙減速，全部直接塞給肝臟處理。',
+  'sugar-coffee': '你平常喝加糖咖啡——三合一和加糖拿鐵裡的糖，一天兩杯就超過肝臟的舒適負擔。',
+  'water': null,
+};
+
+// 午餐打臉
+const LUNCH_AHA = {
+  'bento': '再加上你中午吃便當——裡面大部分是精緻澱粉，你的肝下午就在加班處理這些糖。',
+  'noodle': '再加上你中午吃麵食——幾乎全是精緻碳水，蛋白質很少，肝臟一整個下午都在處理多出來的糖。',
+  'homemade': null,
+  'skip': '再加上你中午常跳過或隨便吃——身體拿不到需要的東西，反而更容易在下午、晚上爆吃，肝臟反而更累。',
+};
+
 function buildFattyLiverReport(session, displayName) {
   const risk = FATTY_LIVER_RISK[session.risk_level];
   if (!risk) return [textMessage('找不到你的檢測結果，請重新做一次檢測：\nhttps://abcmetabolic.com/tools/fatty-liver')];
 
   const name = displayName ? displayName + '，' : '';
   const answers = session.answers || [];
+  const { drink_habit, lunch_habit } = session;
 
   // 從回答中找出最嚴重的習慣（score 最高的題目）
   const worstHabit = answers.reduce((worst, a) => (!worst || a.score > worst.score) ? a : worst, null);
@@ -817,10 +882,23 @@ function buildFattyLiverReport(session, displayName) {
     `檢測結果：${risk.label}\n` +
     `${risk.diagnosis}\n\n`;
 
-  // aha
-  msg1 +=
-    `━━━━━━━━━━━━━━━\n\n` +
-    `${risk.aha}\n\n`;
+  // 飲食習慣打臉（用第二階段的回答）
+  const drinkAha = DRINK_AHA[drink_habit];
+  const lunchAha = LUNCH_AHA[lunch_habit];
+
+  if (drinkAha || lunchAha) {
+    msg1 += `━━━━━━━━━━━━━━━\n\n`;
+    if (drinkAha) msg1 += `${drinkAha}\n\n`;
+    if (lunchAha) msg1 += `${lunchAha}\n\n`;
+    if (drinkAha && lunchAha) {
+      msg1 += `飲料 + 午餐，你的肝一天加班兩次。\n\n`;
+    }
+  } else {
+    // 沒有飲食打臉就用原本的 aha
+    msg1 +=
+      `━━━━━━━━━━━━━━━\n\n` +
+      `${risk.aha}\n\n`;
+  }
 
   // 一步就好
   msg1 +=
@@ -835,6 +913,95 @@ function buildFattyLiverReport(session, displayName) {
   const msg2 =
     `📋 等你準備好了，這 3 件事可以慢慢做：\n\n` +
     risk.tips.map((t, i) => `${i + 1}. ${t}`).join('\n');
+
+  // ─── 訊息 3：互動引導 ───
+  const msg3 =
+    `對了，想問你一下——\n\n` +
+    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
+    `回覆告訴我，想瘦幾公斤就好 😊`;
+
+  return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
+}
+
+// ============================================================
+// TDEE 報告
+// ============================================================
+
+// 早餐蛋白質估算
+const BREAKFAST_PROTEIN = {
+  bread: { label: '麵包/蛋餅/三明治', protein: 8, gap: '碳水為主，蛋白質只有一點點' },
+  skip: { label: '不吃早餐', protein: 0, gap: '整個早上身體都在空轉，代謝從一早就在降速' },
+  cereal: { label: '牛奶/麥片/燕麥', protein: 10, gap: '感覺健康但蛋白質還是不夠' },
+  balanced: { label: '有意識搭配', protein: 20, gap: null },
+};
+
+// 減肥方式的 aha
+const DIET_METHOD_AHA = {
+  'eat-less': '你選了「少吃」——這就是你的代謝越來越低的原因。身體偵測到熱量不夠，第一反應不是燒脂肪，是降代謝。你越少吃，它越省著用。',
+  'exercise': '你選了「運動為主」——運動很好，但光靠運動消耗的卡路里其實遠比你想的少。跑步 30 分鐘大約消耗 250 卡，但一杯手搖飲就 500 卡。運動不是不做，但吃的東西不對，怎麼動都追不回來。',
+  'both': '你選了「兩個都有但效果不持久」——因為少吃+運動的組合會讓身體以為你在逃難，它會同時降代謝+增加飢餓感。這不是你意志力差，是身體的生存本能在跟你打架。',
+  'none': '你選了「沒特別做但體重一直上升」——這通常代表代謝正在慢慢下降。可能是蛋白質長期不夠、可能是精緻澱粉太多，身體一直在儲存模式。',
+};
+
+function buildTdeeReport(session, displayName) {
+  const name = displayName ? displayName + '，' : '';
+  const { bmr, tdee, protein_min, protein_max, activity_level, diet_method, breakfast_habit, afternoon_craving } = session;
+
+  const deficit = tdee - 500;
+  const bmrAfter3m = Math.round(bmr * 0.87);
+  const proteinPerMeal = Math.round(protein_min / 3);
+  const isSedentary = activity_level === 'sedentary' || activity_level === 'light';
+  const breakfast = BREAKFAST_PROTEIN[breakfast_habit] || BREAKFAST_PROTEIN.bread;
+  const dietAha = DIET_METHOD_AHA[diet_method] || DIET_METHOD_AHA['eat-less'];
+
+  // ─── 訊息 1：診斷 → aha → 一步就好 ───
+  let msg1 =
+    `${name}你的飲食模式分析出來了\n\n` +
+    `你的 TDEE 是 ${tdee} 卡，BMR 是 ${bmr} 卡。\n\n`;
+
+  // 用她的減肥方式做診斷
+  msg1 += `${dietAha}\n\n`;
+
+  // 代謝適應數字
+  msg1 +=
+    `━━━━━━━━━━━━━━━\n\n` +
+    `用數字看更清楚：\n` +
+    `你吃 ${deficit} 卡，3 個月後 BMR 可能從 ${bmr} 降到 ${bmrAfter3m}。\n` +
+    `到時候正常吃就會復胖。這不是你的問題，是方法的問題。\n\n`;
+
+  // 早餐蛋白質打臉
+  if (breakfast.gap) {
+    msg1 +=
+      `而且你的早餐「${breakfast.label}」，蛋白質大約只有 ${breakfast.protein}g。\n` +
+      `你的目標是每餐 ${proteinPerMeal}g——差了 ${Math.max(0, proteinPerMeal - breakfast.protein)}g。\n` +
+      `${breakfast.gap}。\n\n`;
+  }
+
+  // 下午想吃甜食的因果串聯
+  if (afternoon_craving === 'must') {
+    msg1 += `你說下午一定要來杯飲料？這不是嘴饞——你早餐和中午的蛋白質沒吃夠，血糖掉了，大腦在跟你要糖。\n\n`;
+  } else if (afternoon_craving === 'sometimes') {
+    msg1 += `你說下午有時候想吃——這可能跟中午吃的蛋白質不夠有關。蛋白質吃夠了，下午自然不會想找東西吃。\n\n`;
+  }
+
+  // 一步就好
+  msg1 +=
+    `━━━━━━━━━━━━━━━\n\n` +
+    `不用算卡路里，先做一件事就好：\n\n` +
+    `👉 每餐至少吃 ${proteinPerMeal} 克蛋白質。蛋白質吃夠了，代謝不會降、不容易餓、肌肉不流失。` +
+    (isSedentary ? '\n\n你目前活動量偏低，蛋白質更重要——代謝有一半以上靠肌肉撐著，蛋白質不夠，肌肉流失，代謝只會越來越低。' : '') +
+    `\n\n` +
+    `這一步做穩了，再來調整其他的。\n\n` +
+    `有任何問題都可以直接問我 🙂\n` +
+    `我是一休，陪你健康的瘦一輩子`;
+
+  // ─── 訊息 2：完整建議 ───
+  const msg2 =
+    `📋 不用算卡路里，照這個比例吃就好：\n\n` +
+    `1. 每餐蛋白質 ${proteinPerMeal}g 以上（一個手掌大的肉/魚/蛋）\n` +
+    `2. 蔬菜佔餐盤一半（纖維撐飽足感，不用靠意志力）\n` +
+    `3. 碳水吃原型的（白飯→糙米或地瓜，不用不吃，換一種就好）\n\n` +
+    `每天蛋白質目標：${protein_min}-${protein_max} 克`;
 
   // ─── 訊息 3：互動引導 ───
   const msg3 =
