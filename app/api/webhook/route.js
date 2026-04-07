@@ -203,7 +203,18 @@ async function handleCodeClaim(event, userId, code) {
     return await handleTdeeCodeClaim(event, userId, tdeeSession);
   }
 
-  return false; // 四張表都查不到
+  // 5. 再查血糖穩定度代碼
+  const { data: bloodSugarSession } = await supabase
+    .from('blood_sugar_sessions')
+    .select('*')
+    .eq('claim_code', code)
+    .single();
+
+  if (bloodSugarSession) {
+    return await handleBloodSugarCodeClaim(event, userId, bloodSugarSession);
+  }
+
+  return false; // 五張表都查不到
 }
 
 // 測驗代碼領取（原有邏輯）
@@ -311,6 +322,43 @@ async function handleFattyLiverCodeClaim(event, userId, session) {
 
   const profile = await getProfile(userId);
   const report = buildFattyLiverReport(session, profile?.displayName || '');
+  await replyMessage(event.replyToken, report);
+  return true;
+}
+
+// 血糖穩定度代碼領取
+async function handleBloodSugarCodeClaim(event, userId, session) {
+  const existingUser = await getUser(userId);
+  if (!existingUser) {
+    const profile = await getProfile(userId);
+    await upsertUser(userId, {
+      displayName: profile?.displayName || '',
+      source: 'blood_sugar',
+    });
+  }
+
+  const dripNextAt = new Date();
+  dripNextAt.setDate(dripNextAt.getDate() + 1);
+  dripNextAt.setUTCHours(0, 0, 0, 0);
+
+  const keepSource = ['quiz', 'protein'].includes(existingUser?.source);
+  await supabase
+    .from('official_line_users')
+    .update({
+      source: keepSource ? existingUser.source : 'blood_sugar',
+      drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(),
+    })
+    .eq('line_user_id', userId);
+
+  await supabase
+    .from('blood_sugar_sessions')
+    .update({ claimed_by: userId, claimed_at: new Date().toISOString() })
+    .eq('id', session.id);
+
+  await recordInteraction(userId);
+
+  const profile = await getProfile(userId);
+  const report = buildBloodSugarReport(session, profile?.displayName || '');
   await replyMessage(event.replyToken, report);
   return true;
 }
@@ -1002,6 +1050,135 @@ function buildTdeeReport(session, displayName) {
     `2. 蔬菜佔餐盤一半（纖維撐飽足感，不用靠意志力）\n` +
     `3. 碳水吃原型的（白飯→糙米或地瓜，不用不吃，換一種就好）\n\n` +
     `每天蛋白質目標：${protein_min}-${protein_max} 克`;
+
+  // ─── 訊息 3：互動引導 ───
+  const msg3 =
+    `對了，想問你一下——\n\n` +
+    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
+    `回覆告訴我，想瘦幾公斤就好 😊`;
+
+  return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
+}
+
+// ============================================================
+// 血糖穩定度報告
+// ============================================================
+
+const BLOOD_SUGAR_DRINK_AHA = {
+  'sugar-tea': '你平常喝手搖飲——一杯下去，你的血糖在 30 分鐘內飆到最高點，然後胰島素把它壓下來，血糖掉得比飆上去還快。你下午想睡、想吃甜，就是這杯飲料造成的。',
+  'juice': '你平常喝果汁——你以為很健康？果汁沒有纖維減速，果糖直接衝進身體，血糖波動跟喝手搖飲差不多。',
+  'sugar-coffee': '你平常喝加糖咖啡——你以為在提神，但糖讓血糖先飆後掉，兩小時後比喝之前更累。',
+  'water': null,
+};
+
+const BLOOD_SUGAR_LUNCH_AHA = {
+  'bento': '再加上你中午吃便當——白飯佔了大半，蛋白質不夠，血糖吃完就飆。到了下午，血糖掉到谷底，你的大腦就開始跟你要糖。',
+  'noodle': '再加上你中午吃麵食——幾乎全是碳水，血糖吃完直接衝上去，掉下來的時候你就想睡、想吃甜。',
+  'homemade': null,
+  'skip': '再加上你中午常跳過——血糖先掉到谷底，下午一吃東西就報復性飆高，波動比正常吃三餐還大。',
+};
+
+const BLOOD_SUGAR_RISK_DATA = {
+  low: {
+    label: '穩定',
+    diagnosis: '你的血糖目前看起來還算穩定，日常症狀不多。',
+    aha: '但你可能不知道——血糖不穩的早期完全沒感覺。空腹血糖可以正常好幾年，但你的胰島素可能早就在超時工作了。知道怎麼保持，比不知不覺滑下去重要。',
+    oneStep: '每餐吃東西的順序改成：先吃菜和肉，最後吃飯。同樣的食物，換個順序，血糖波動就能減少三成。這是最簡單的保護。',
+    tips: [
+      '吃飯順序：菜 → 肉 → 飯，穩住餐後血糖',
+      '少喝含糖飲料——每一杯都是一次血糖雲霄飛車',
+      '每年健檢加驗「空腹胰島素」，不只看空腹血糖',
+    ],
+  },
+  moderate: {
+    label: '有波動',
+    diagnosis: '你的血糖已經開始不穩了——你的身體正在用這些症狀跟你說。',
+    aha: '你可能以為吃飽想睡是正常的、下午想喝飲料是嘴饞。但這些都是血糖在控制你的訊號。\n\n好消息是：血糖波動是可逆的。不用吃藥，調整吃法就有用。',
+    oneStep: '先從吃飯順序開始：先吃菜和肉，最後吃飯。同樣的東西，換個順序，血糖波動能減少三成。做到這一步，你會發現吃飽不再想睡了。',
+    tips: [
+      '吃飯順序：菜 → 肉 → 飯（最重要的一步）',
+      '下午想喝飲料時，先吃一把堅果或一顆水煮蛋',
+      '把精緻澱粉（白飯、麵）換成原型澱粉（糙米、地瓜）',
+    ],
+  },
+  high: {
+    label: '明顯不穩',
+    diagnosis: '你的多個症狀都指向血糖波動——你的身體已經在發出明顯的警訊了。',
+    aha: '吃飽想睡、下午要喝飲料、肚子大、怎麼少吃都瘦不下來——這些不是個別問題，它們的共同根源是血糖不穩導致的高胰島素。\n\n高胰島素會鎖住脂肪，不讓身體燃燒。不是你不夠努力，是身體被鎖住了。但這是可逆的。',
+    oneStep: '最重要的一步：改變吃飯順序，先吃菜和肉，最後吃飯。然後把含糖飲料換掉。這兩步做到，血糖波動能減少一半以上。',
+    tips: [
+      '吃飯順序：菜 → 肉 → 飯（血糖波動減少三成）',
+      '含糖飲料全部換掉——每一杯都讓血糖坐一次雲霄飛車',
+      '建議跟醫師要求檢查「空腹胰島素」，不只看空腹血糖',
+    ],
+  },
+  'very-high': {
+    label: '需要注意',
+    diagnosis: '你的身體正在發出很多警訊——這些症狀加在一起，代表你的血糖波動已經很大了。',
+    aha: '你的多個症狀都指向同一件事：身體需要分泌越來越多胰島素才能壓住血糖。長期下來，細胞對胰島素越來越不敏感——這就是胰島素阻抗。\n\n但胰島素阻抗是可逆的。飲食調整是最有效的方式，不一定需要吃藥。',
+    oneStep: '最重要的一步：去做一次健檢，要求加驗「空腹胰島素」（不只是空腹血糖）。很多醫師不會主動檢查，你可以主動提出。同時開始調整吃飯順序：先吃菜和肉，最後吃飯。',
+    tips: [
+      '去醫院要求檢查「空腹胰島素」——這是早期發現的關鍵',
+      '吃飯順序：菜 → 肉 → 飯，立刻降低餐後血糖飆高',
+      '含糖飲料換掉 + 精緻澱粉減量，讓胰島素有機會休息',
+    ],
+  },
+};
+
+function buildBloodSugarReport(session, displayName) {
+  const risk = BLOOD_SUGAR_RISK_DATA[session.risk_level];
+  if (!risk) return [textMessage('找不到你的檢測結果，請重新做一次檢測：\nhttps://abcmetabolic.com/tools/blood-sugar')];
+
+  const name = displayName ? displayName + '，' : '';
+  const symptoms = session.symptoms || [];
+  const { drink_habit, lunch_habit } = session;
+
+  // 找出最有打臉力的症狀
+  const keySymptoms = [];
+  if (symptoms.includes('吃飽之後很容易想睡覺')) keySymptoms.push('吃飽就想睡');
+  if (symptoms.includes('下午特別容易想喝手搖飲或吃甜食')) keySymptoms.push('下午想喝飲料');
+  if (symptoms.includes('怎麼少吃都瘦不下來')) keySymptoms.push('怎麼少吃都瘦不下來');
+  if (symptoms.includes('肚子（腰部）的肉特別多，四肢相對瘦')) keySymptoms.push('肚子特別大');
+
+  // ─── 訊息 1：診斷 → aha → 一步就好 ───
+  let msg1 = `${name}你的血糖穩定報告出來了\n\n`;
+
+  // 用她的症狀做開頭
+  if (keySymptoms.length > 0) {
+    msg1 += `你提到了${keySymptoms.map(s => `「${s}」`).join('、')}——\n`;
+    msg1 += `這些不是個別問題，它們都指向同一件事：你的血糖在餐後飆太高了。\n\n`;
+  }
+
+  msg1 += `檢測結果：${risk.label}\n${risk.diagnosis}\n\n`;
+
+  // 飲食習慣打臉
+  const drinkAha = BLOOD_SUGAR_DRINK_AHA[drink_habit];
+  const lunchAha = BLOOD_SUGAR_LUNCH_AHA[lunch_habit];
+
+  if (drinkAha || lunchAha) {
+    msg1 += `━━━━━━━━━━━━━━━\n\n`;
+    if (drinkAha) msg1 += `${drinkAha}\n\n`;
+    if (lunchAha) msg1 += `${lunchAha}\n\n`;
+    if (drinkAha && lunchAha) {
+      msg1 += `午餐讓血糖飆上去，飲料再飆一次——你的血糖一天坐兩次雲霄飛車。\n\n`;
+    }
+  } else {
+    msg1 += `━━━━━━━━━━━━━━━\n\n${risk.aha}\n\n`;
+  }
+
+  // 一步就好
+  msg1 +=
+    `━━━━━━━━━━━━━━━\n\n` +
+    `不用一次改很多，先做一件事就好：\n\n` +
+    `👉 ${risk.oneStep}\n\n` +
+    `這一步做穩了，再來調整其他的。\n\n` +
+    `有任何問題都可以直接問我 🙂\n` +
+    `我是一休，陪你健康的瘦一輩子`;
+
+  // ─── 訊息 2：完整建議 ───
+  const msg2 =
+    `📋 等你準備好了，這 3 件事可以慢慢做：\n\n` +
+    risk.tips.map((t, i) => `${i + 1}. ${t}`).join('\n');
 
   // ─── 訊息 3：互動引導 ───
   const msg3 =
