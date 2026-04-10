@@ -214,7 +214,55 @@ async function handleCodeClaim(event, userId, code) {
     return await handleBloodSugarCodeClaim(event, userId, bloodSugarSession);
   }
 
-  return false; // 五張表都查不到
+  // 6. 再查糖攝取代碼
+  const { data: sugarSession } = await supabase
+    .from('sugar_sessions')
+    .select('*')
+    .eq('claim_code', code)
+    .single();
+
+  if (sugarSession) {
+    return await handleSugarCodeClaim(event, userId, sugarSession);
+  }
+
+  return false; // 六張表都查不到
+}
+
+// 糖攝取代碼領取
+async function handleSugarCodeClaim(event, userId, session) {
+  const existingUser = await getUser(userId);
+  if (!existingUser) {
+    const profile = await getProfile(userId);
+    await upsertUser(userId, {
+      displayName: profile?.displayName || '',
+      source: 'sugar',
+    });
+  }
+
+  const dripNextAt = new Date();
+  dripNextAt.setDate(dripNextAt.getDate() + 1);
+  dripNextAt.setUTCHours(0, 0, 0, 0);
+
+  const keepSource = ['quiz', 'protein'].includes(existingUser?.source);
+  await supabase
+    .from('official_line_users')
+    .update({
+      source: keepSource ? existingUser.source : 'sugar',
+      drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(),
+    })
+    .eq('line_user_id', userId);
+
+  await supabase
+    .from('sugar_sessions')
+    .update({ claimed_by: userId, claimed_at: new Date().toISOString() })
+    .eq('id', session.id);
+
+  await recordInteraction(userId);
+
+  const profile = await getProfile(userId);
+  const report = buildSugarReport(session, profile?.displayName || '');
+  await replyMessage(event.replyToken, report);
+  return true;
 }
 
 // 測驗代碼領取（原有邏輯）
@@ -494,9 +542,24 @@ const TYPE_DATA = {
 // ============================================================
 
 function buildProteinStrategy(session, displayName) {
-  const { food_type, protein_min, protein_max } = session;
+  const { food_type, protein_min, protein_max, age, height, weight } = session;
   const avgProtein = Math.round((protein_min + protein_max) / 2);
   const name = displayName ? displayName + '，' : '';
+
+  // BMI + 分齡提醒（有資料才顯示）
+  let bmiLine = '';
+  if (height && weight) {
+    const h = height / 100;
+    const bmi = Math.round((weight / (h * h)) * 10) / 10;
+    const bmiLabel = bmi < 18.5 ? '偏輕' : bmi < 24 ? '正常範圍' : bmi < 27 ? '微超標' : '偏高';
+    bmiLine = `BMI ${bmi}（${bmiLabel}）\n`;
+  }
+  let ageLine = '';
+  if (age && age >= 50) {
+    ageLine = '\n⚡ 50 歲以後肌肉流失速度加快，你的建議量已經幫你調高了。吃夠蛋白質是守住代謝最重要的一步。\n';
+  } else if (age && age >= 40) {
+    ageLine = '\n⚡ 40 歲以後肌肉每年流失 1-2%，代謝跟著慢下來。你的建議量已經幫你往上調了，吃夠蛋白質比少吃重要。\n';
+  }
 
   // 判斷新版（每餐選擇）還是舊版（大分類）
   const hasPerMeal = session.breakfast_type || session.lunch_type || session.dinner_type;
@@ -544,8 +607,10 @@ function buildProteinStrategy(session, displayName) {
   // ─── 訊息 1：診斷 + aha moment + quick win ───
   let msg1 =
     `🥚 ${name}你的蛋白質攻略來了\n\n` +
-    `你的目標：每天 ${protein_min}-${protein_max}g\n\n` +
-    `━━━━━━━━━━━━━━━\n\n` +
+    `你的目標：每天 ${protein_min}-${protein_max}g\n` +
+    bmiLine +
+    ageLine +
+    `\n━━━━━━━━━━━━━━━\n\n` +
     `根據你的回答，你現在每天大概吃到：\n\n` +
     diagnosisLines.join('\n') + '\n' +
     `→ 合計約 ${currentTotal}g\n\n` +
@@ -724,7 +789,7 @@ const MEAL_DB = {
       protein: { omnivore: 20, 'lacto-ovo': 18, vegan: 14 },
       food: { omnivore: '自己煮/帶便當', 'lacto-ovo': '自己煮/帶便當', vegan: '自己煮/帶便當' },
       improved: {
-        omnivore: { food: '雞胸肉 150g + 板豆腐半塊 + 飯 + 青菜', protein: 42 },
+        omnivore: { food: '雞胸肉 150g + 板豆腐半塊 + 飯 + 青菜', protein: 40 },
         'lacto-ovo': { food: '板豆腐整塊 + 蛋 2 顆 + 毛豆 100g + 飯', protein: 39 },
         vegan: { food: '天貝 100g + 板豆腐半塊 + 毛豆 + 飯', protein: 30 },
       },
@@ -1179,6 +1244,149 @@ function buildBloodSugarReport(session, displayName) {
   const msg2 =
     `📋 等你準備好了，這 3 件事可以慢慢做：\n\n` +
     risk.tips.map((t, i) => `${i + 1}. ${t}`).join('\n');
+
+  // ─── 訊息 3：互動引導 ───
+  const msg3 =
+    `對了，想問你一下——\n\n` +
+    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
+    `回覆告訴我，想瘦幾公斤就好 😊`;
+
+  return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
+}
+
+// ============================================================
+// 糖攝取報告
+// ============================================================
+
+const SWEETNESS_GRAMS = {
+  full: { label: '全糖', grams: 50 },
+  less: { label: '少糖', grams: 38 },
+  half: { label: '半糖', grams: 25 },
+  slight: { label: '微糖', grams: 13 },
+  none: { label: '無糖', grams: 0 },
+};
+
+const CUPS_NUM = { '0': 0, '1': 1, '2': 2, '3': 3 };
+
+function buildSugarReport(session, displayName) {
+  const name = displayName ? displayName + '，' : '';
+  const { sugar_limit_10, sugar_limit_5, cups_per_day, sweetness_level, drink_time, topping } = session;
+
+  const sweet = SWEETNESS_GRAMS[sweetness_level] || SWEETNESS_GRAMS.half;
+  const cups = CUPS_NUM[cups_per_day] || 1;
+  const dailySugar = cups * sweet.grams;
+  const overRate = sugar_limit_10 > 0 ? Math.round((dailySugar / sugar_limit_10) * 100) : 0;
+
+  // 配料卡路里
+  const TOPPING_DATA = {
+    boba: { label: '波霸', cal: 156, green: '蒟蒻', greenCal: 71 },
+    cream: { label: '奶蓋', cal: 203, green: '仙草', greenCal: 57 },
+    pudding: { label: '布丁/芋圓', cal: 119, green: '愛玉', greenCal: 45 },
+    jelly: { label: '仙草/愛玉', cal: 57, green: '仙草/愛玉', greenCal: 57 },
+    none: { label: '不加', cal: 0, green: '不加', greenCal: 0 },
+  };
+  const BASE_CAL = { full: 575, less: 475, half: 375, slight: 275, none: 0 };
+  const tp = TOPPING_DATA[topping] || TOPPING_DATA.none;
+  const baseCal = BASE_CAL[sweetness_level] || 0;
+  const currentPerCup = baseCal + tp.cal;
+  const greenPerCup = tp.greenCal; // 無糖茶 0 + 綠燈配料
+  const currentDaily = currentPerCup * cups;
+  const greenDaily = greenPerCup * cups;
+  const savedDaily = currentDaily - greenDaily;
+  const savedMonthKg = Math.round((savedDaily * 30 / 7700) * 10) / 10;
+
+  // ─── 訊息 1：診斷 → aha → 一步就好 ───
+  let msg1 = `${name}你的糖攝取報告出來了\n\n`;
+
+  if (dailySugar > 0) {
+    msg1 +=
+      `你每天喝 ${cups} 杯${sweet.label}飲料\n` +
+      `= 每天 ${dailySugar}g 糖\n\n` +
+      `你的每日上限是 ${sugar_limit_10}g——`;
+
+    if (overRate > 100) {
+      msg1 += `你光喝飲料就超標了，是上限的 ${overRate}%。\n\n`;
+    } else {
+      msg1 += `光飲料就用掉 ${overRate}% 的額度，剩下的要給一整天的食物。\n\n`;
+    }
+  } else {
+    msg1 +=
+      `你已經喝無糖了，飲料這塊不用擔心。\n` +
+      `但注意食物裡的隱藏糖——醬料、麵包、水果乾裡都有。\n\n`;
+  }
+
+  msg1 += `━━━━━━━━━━━━━━━\n\n`;
+
+  if (dailySugar > 0) {
+    if (sweetness_level === 'full') {
+      msg1 +=
+        `你現在喝全糖——一杯就 50g，你的上限才 ${sugar_limit_10}g。\n\n` +
+        `但你不需要一次戒到無糖。很多學員的經驗是：先從全糖改少糖，兩週後你會覺得全糖太甜了。\n` +
+        `不是意志力，是味覺跟著身體一起改變了。\n\n`;
+    } else if (sweetness_level === 'half' || sweetness_level === 'less') {
+      msg1 +=
+        `你覺得${sweet.label}已經很節制了？${sweet.label}一杯還有 ${sweet.grams}g 糖。\n` +
+        `你一天 ${cups} 杯 = ${dailySugar}g，上限是 ${sugar_limit_10}g。\n\n` +
+        `而且這只是飲料。你早餐的麵包、午餐的醬料裡都有隱藏糖。加起來，你每天吃的糖可能是上限的 2-3 倍。\n\n`;
+    } else {
+      msg1 +=
+        `你點${sweet.label}，糖量不算多。但配料的差距更大——\n` +
+        `奶蓋 203 卡、波霸 156 卡，換成仙草 57 卡、愛玉 45 卡，一杯差 100 卡以上。\n\n`;
+    }
+  } else {
+    msg1 +=
+      `你的飲料控制得不錯。但糖最容易藏在你不注意的地方：\n` +
+      `果汁、優酪乳、能量棒、沙拉醬、番茄醬——這些看起來健康的東西裡面都有糖。\n\n`;
+  }
+
+  // 配料 + 時段個人化
+  if (tp.cal > 70) {
+    msg1 += `你加的「${tp.label}」一份就 ${tp.cal} 卡。換成「${tp.green}」只有 ${tp.greenCal} 卡——同樣有口感，差了 ${tp.cal - tp.greenCal} 卡。\n\n`;
+  }
+
+  if (drink_time === 'afternoon') {
+    msg1 += `你下午喝那杯——可能不只是習慣。如果你中午吃的蛋白質不夠，血糖會在下午掉下來，大腦就跟你要糖。不是嘴饞，是血糖在控制你。\n\n`;
+  }
+
+  // 卡路里對比（最有衝擊力的部分）
+  if (savedDaily > 0) {
+    msg1 +=
+      `用數字看更清楚：\n` +
+      `你現在：每天 ${cups} 杯 = ${currentDaily} 卡\n` +
+      `換個點法：每天 ${cups} 杯 = ${greenDaily} 卡\n` +
+      `每天省 ${savedDaily} 卡，一個月 ≈ ${savedMonthKg} 公斤\n\n` +
+      `你沒有少喝，只是換了一個點法。\n\n`;
+  }
+
+  msg1 +=
+    `━━━━━━━━━━━━━━━\n\n` +
+    `不用一次改很多，先做一件事就好：\n\n`;
+
+  if (sweetness_level === 'full') {
+    msg1 += `👉 下一杯點少糖就好。一杯省 100 卡，一天 ${cups} 杯就省 ${cups * 100} 卡。兩週後你會自然覺得全糖太甜——不是靠意志力，是味覺跟著身體一起改變了。`;
+  } else if (tp.cal > 70) {
+    msg1 += `👉 配料從「${tp.label}」換成「${tp.green}」就好。口感差不多，一杯省 ${tp.cal - tp.greenCal} 卡。不是不能喝紅燈的，只是不用每杯都加。`;
+  } else if (sweetness_level === 'less' || sweetness_level === 'half') {
+    msg1 += `👉 試試微糖或無糖。一杯再省 ${sweet.grams > 13 ? sweet.grams - 13 : sweet.grams}g 糖。喝幾天你就會習慣，味覺會跟著調整。`;
+  } else {
+    msg1 += `👉 你的飲料已經控制得不錯了。下一步注意食物裡的隱藏糖——醬料、麵包、水果乾裡都有，看包裝上的含糖量你會嚇到。`;
+  }
+
+  msg1 +=
+    `\n\n這一步做穩了，再來調整其他的。\n\n` +
+    `有任何問題都可以直接問我 🙂\n` +
+    `我是一休，陪你健康的瘦一輩子`;
+
+  // ─── 訊息 2：配料紅綠燈 ───
+  const msg2 =
+    `📋 手搖飲配料紅綠燈（存起來）：\n\n` +
+    `🔴 紅燈（偶爾喝）：\n` +
+    `奶蓋 203 卡 / 波霸 156 卡 / 冰淇淋 160 卡 / 多多 144 卡\n\n` +
+    `🟡 黃燈（注意頻率）：\n` +
+    `粉條 131 卡 / 芋圓 128 卡 / 布丁 110 卡\n\n` +
+    `🟢 綠燈（放心加）：\n` +
+    `椰果 76 卡 / 蒟蒻 71 卡 / 仙草 57 卡 / 愛玉 45 卡 / 寒天 42 卡\n\n` +
+    `基底：無糖茶 0 卡 → 半糖 100 卡 → 全糖 200 卡`;
 
   // ─── 訊息 3：互動引導 ───
   const msg3 =
