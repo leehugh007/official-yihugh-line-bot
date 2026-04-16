@@ -595,6 +595,22 @@ export default function AdminPage() {
             const refreshed = await fetch(apiUrl('drip_stats')).then(r => r.json());
             setDripStats(refreshed);
             return res;
+          }} onToggleTestMode={async (enabled) => {
+            await apiPost({ action: 'toggle_drip_test_mode', enabled });
+            const refreshed = await fetch(apiUrl('drip_stats')).then(r => r.json());
+            setDripStats(refreshed);
+          }} onAddStep={async () => {
+            const res = await apiPost({ action: 'add_drip_step' });
+            if (res.error) return res;
+            const refreshed = await fetch(apiUrl('drip_stats')).then(r => r.json());
+            setDripStats(refreshed);
+            return res;
+          }} onDeleteStep={async (stepNumber) => {
+            const res = await apiPost({ action: 'delete_drip_step', step_number: stepNumber });
+            if (res.error) return res;
+            const refreshed = await fetch(apiUrl('drip_stats')).then(r => r.json());
+            setDripStats(refreshed);
+            return res;
           }} />}
         </div>
       )}
@@ -1294,12 +1310,16 @@ function ResultModal({ result, onClose }) {
 // ============================================================
 // 排程管理
 // ============================================================
-function DripTab({ dripStats, onUpdate, onToggleActive }) {
+function DripTab({ dripStats, onUpdate, onToggleActive, onToggleTestMode, onAddStep, onDeleteStep }) {
   const [editingStep, setEditingStep] = useState(null);
   const [editData, setEditData] = useState({});
   const [toggleError, setToggleError] = useState(null); // { step, msg }
   const [toggling, setToggling] = useState(null); // step number
   const [previewStep, setPreviewStep] = useState(null); // step number to preview before activation
+  const [togglingTestMode, setTogglingTestMode] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [deletingStep, setDeletingStep] = useState(null); // step number pending delete confirmation
+  const [deleteError, setDeleteError] = useState(null);
 
   const handleToggle = async (stepNumber, currentActive) => {
     setToggleError(null);
@@ -1347,6 +1367,36 @@ function DripTab({ dripStats, onUpdate, onToggleActive }) {
             <div style={{ fontSize: 12, color: '#888' }}>{label}</div>
           </div>
         ))}
+      </div>
+
+      {/* 測試模式 */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
+        padding: '10px 14px', borderRadius: 8,
+        background: dripStats.dripTestMode ? '#fef3c7' : '#f8fafc',
+        border: `1px solid ${dripStats.dripTestMode ? '#f59e0b' : '#e5e7eb'}`,
+      }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', flex: 1 }}>
+          <input
+            type="checkbox"
+            checked={dripStats.dripTestMode || false}
+            disabled={togglingTestMode}
+            onChange={async (e) => {
+              setTogglingTestMode(true);
+              await onToggleTestMode(e.target.checked);
+              setTogglingTestMode(false);
+            }}
+            style={{ width: 18, height: 18, cursor: 'pointer' }}
+          />
+          <span style={{ fontSize: 14, fontWeight: 600, color: dripStats.dripTestMode ? '#92400e' : '#374151' }}>
+            🧪 測試模式（僅推管理者）
+          </span>
+        </label>
+        {dripStats.dripTestMode && (
+          <span style={{ fontSize: 12, color: '#b45309' }}>
+            啟用中 — Cron 只會推給管理者
+          </span>
+        )}
       </div>
 
       {/* 文章列表 */}
@@ -1511,8 +1561,42 @@ function DripTab({ dripStats, onUpdate, onToggleActive }) {
                   >
                     ✏️ 編輯
                   </button>
+                  {!step.is_active && step.sent_count === 0 && (
+                    <button
+                      onClick={() => { setDeletingStep(step.step_number); setDeleteError(null); }}
+                      style={{ ...styles.btnSmallGhost, color: '#dc2626' }}
+                    >
+                      🗑️
+                    </button>
+                  )}
                 </div>
               </div>
+
+              {/* 刪除確認 */}
+              {deletingStep === step.step_number && (
+                <div style={{
+                  marginTop: 8, padding: '8px 12px', background: '#fef2f2',
+                  borderRadius: 6, border: '1px solid #fecaca',
+                }}>
+                  <div style={{ fontSize: 13, color: '#991b1b', marginBottom: 6 }}>
+                    確定要刪除「{step.title}」嗎？
+                  </div>
+                  {deleteError && (
+                    <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 6 }}>{deleteError}</div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => setDeletingStep(null)} style={styles.btnGhost}>取消</button>
+                    <button
+                      onClick={async () => {
+                        const res = await onDeleteStep(step.step_number);
+                        if (res?.error) { setDeleteError(res.error); return; }
+                        setDeletingStep(null);
+                      }}
+                      style={{ ...styles.btnPrimary, background: '#dc2626' }}
+                    >確定刪除</button>
+                  </div>
+                </div>
+              )}
 
               {/* 數據面板 */}
               <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 13, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1543,6 +1627,25 @@ function DripTab({ dripStats, onUpdate, onToggleActive }) {
             </div>
           );
         })}
+
+        {/* 新增文章按鈕 */}
+        <button
+          disabled={adding}
+          onClick={async () => {
+            setAdding(true);
+            await onAddStep();
+            setAdding(false);
+          }}
+          style={{
+            marginTop: 8, padding: '10px 16px', borderRadius: 8,
+            border: '2px dashed #d1d5db', background: '#fafafa',
+            color: '#6b7280', fontSize: 14, cursor: 'pointer',
+            width: '100%', textAlign: 'center',
+            opacity: adding ? 0.5 : 1,
+          }}
+        >
+          {adding ? '新增中...' : '＋ 新增文章'}
+        </button>
       </div>
     </div>
   );
