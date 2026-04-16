@@ -83,6 +83,12 @@ export async function POST(request) {
       return handleUpdateLog(data);
     case 'delete_log':
       return handleDeleteLog(data);
+    case 'toggle_drip_test_mode':
+      return handleToggleDripTestMode(data);
+    case 'add_drip_step':
+      return handleAddDripStep(data);
+    case 'delete_drip_step':
+      return handleDeleteDripStep(data);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -487,7 +493,16 @@ async function handleGetDripStats() {
     .eq('drip_paused', true)
     .eq('is_blocked', false);
 
+  // 測試模式狀態
+  const { data: testModeSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'drip_test_mode')
+    .single();
+  const dripTestMode = testModeSetting?.value === 'true';
+
   return NextResponse.json({
+    dripTestMode,
     schedule: schedule?.map((s) => {
       const stats = stepStats[s.step_number];
       const sentCount = stats?.sent || 0;
@@ -789,6 +804,80 @@ async function handleDeleteLog(data) {
   if (log.status !== 'scheduled') return NextResponse.json({ error: '只能刪除待發送的紀錄' }, { status: 400 });
 
   const { error } = await supabase.from('official_push_logs').delete().eq('id', id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
+}
+
+// ============================================================
+// Drip 測試模式開關（存 official_settings）
+// ============================================================
+async function handleToggleDripTestMode({ enabled }) {
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({ key: 'drip_test_mode', value: String(enabled), updated_at: new Date().toISOString() });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, dripTestMode: enabled });
+}
+
+// ============================================================
+// 新增排程文章
+// ============================================================
+async function handleAddDripStep() {
+  // 找出目前最大的 step_number
+  const { data: existing } = await supabase
+    .from('official_drip_schedule')
+    .select('step_number')
+    .order('step_number', { ascending: false })
+    .limit(1);
+
+  const nextStep = (existing?.[0]?.step_number || 0) + 1;
+
+  const { error } = await supabase
+    .from('official_drip_schedule')
+    .insert({
+      step_number: nextStep,
+      title: `第 ${nextStep} 篇`,
+      message: '',
+      link_url: '',
+      link_text: '閱讀文章',
+      delay_days: 1,
+      send_hour: 8,
+      is_active: false,
+    });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, step_number: nextStep });
+}
+
+// ============================================================
+// 刪除排程文章（僅限未啟用的）
+// ============================================================
+async function handleDeleteDripStep({ step_number }) {
+  if (!step_number) return NextResponse.json({ error: '缺少 step_number' }, { status: 400 });
+
+  // 確認未啟用
+  const { data: article } = await supabase
+    .from('official_drip_schedule')
+    .select('is_active')
+    .eq('step_number', step_number)
+    .single();
+
+  if (!article) return NextResponse.json({ error: '找不到這篇文章' }, { status: 404 });
+  if (article.is_active) return NextResponse.json({ error: '啟用中的文章不能刪除，請先停用' }, { status: 400 });
+
+  // 檢查是否有人已收到這篇
+  const { count } = await supabase
+    .from('official_drip_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('step_number', step_number);
+
+  if (count > 0) return NextResponse.json({ error: `已有 ${count} 人收到這篇，無法刪除` }, { status: 400 });
+
+  const { error } = await supabase
+    .from('official_drip_schedule')
+    .delete()
+    .eq('step_number', step_number);
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
 }

@@ -58,6 +58,14 @@ async function runWithConcurrency(tasks, concurrency = 20) {
 async function processDrip() {
   const now = new Date().toISOString();
 
+  // 0. 檢查測試模式
+  const { data: testModeSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'drip_test_mode')
+    .single();
+  const isTestMode = testModeSetting?.value === 'true';
+
   // 1. 取得所有啟用中的排程文章
   const { data: schedule } = await supabase
     .from('official_drip_schedule')
@@ -72,7 +80,7 @@ async function processDrip() {
   const totalSteps = schedule.length;
 
   // 2. 找出到期的用戶
-  const { data: users } = await supabase
+  let usersQuery = supabase
     .from('official_line_users')
     .select('line_user_id, drip_week, tags')
     .lte('drip_next_at', now)
@@ -80,8 +88,15 @@ async function processDrip() {
     .eq('is_blocked', false)
     .lt('drip_week', totalSteps);
 
+  // 測試模式：只推給管理者
+  if (isTestMode) {
+    usersQuery = usersQuery.contains('tags', ['管理者']);
+  }
+
+  const { data: users } = await usersQuery;
+
   if (!users || users.length === 0) {
-    return { processed: 0, skipped: 0, sent: 0, message: '沒有到期的用戶' };
+    return { processed: 0, skipped: 0, sent: 0, testMode: isTestMode, message: '沒有到期的用戶' };
   }
 
   // 3. 分配每個用戶該收的文章
@@ -202,7 +217,7 @@ async function processDrip() {
       .in('line_user_id', uids);
   }
 
-  return { processed: users.length, sent, failed, skipped };
+  return { processed: users.length, sent, failed, skipped, testMode: isTestMode };
 }
 
 // ============================================================
