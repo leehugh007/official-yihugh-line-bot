@@ -165,6 +165,108 @@ if (!hasSupabaseEnv) {
 }
 
 // ----------------------------------------------------------------
+// Case 7-9：Phase 3.1 dispatch 純函式（extractWeights / isMainChoice / CHOICE_TO_PATH）
+// ----------------------------------------------------------------
+{
+  const { extractWeights, isMainChoice, CHOICE_TO_PATH, pickWeightDiffCondition } = await import(
+    '../lib/conversation-path.js'
+  );
+
+  // --- extractWeights 正案 ---
+  {
+    const cases = [
+      { in: '我目前 170公分，78公斤，想瘦到70公斤', expect: { current: 78, target: 70 } },
+      { in: '身高 165cm 體重 72 想瘦到 62', expect: { current: 72, target: 62 } },
+      { in: '173 身高 65 體重，想瘦到 58 公斤', expect: { current: 65, target: 58 } },
+      { in: '身高 180 體重 95 kg 目標 80 kg', expect: { current: 95, target: 80 } },
+      { in: '78 想瘦到 70', expect: { current: 78, target: 70 } },
+      { in: '目前體重 85kg，目標 65kg', expect: { current: 85, target: 65 } },
+      { in: '現在 72.5 想瘦到 65.0 公斤', expect: { current: 72.5, target: 65 } },
+    ];
+    for (const c of cases) {
+      const r = extractWeights(c.in);
+      const pass = r && r.current === c.expect.current && r.target === c.expect.target;
+      if (pass) ok(`Case 7: extractWeights "${c.in}" → ${r.current}/${r.target}`);
+      else fail(`Case 7: extractWeights "${c.in}"`, JSON.stringify(r));
+    }
+  }
+
+  // --- extractWeights 反案（不該抽到）---
+  {
+    const negatives = [
+      '今天天氣真好',
+      '我想聽說明會',
+      '32 個人來看我的影片',  // 沒 weight keyword
+      '走了 5 公里', // 只有 1 個數字
+    ];
+    for (const t of negatives) {
+      const r = extractWeights(t);
+      if (r === null) ok(`Case 8: extractWeights 不誤抽 "${t}"`);
+      else fail(`Case 8: extractWeights 誤抽 "${t}"`, JSON.stringify(r));
+    }
+  }
+
+  // --- isMainChoice 正案 ---
+  {
+    const cases = [
+      { in: 'A', expect: 'A' },
+      { in: 'B ', expect: 'B' },
+      { in: '選 C', expect: 'C' },
+      { in: '我選D', expect: 'D' },
+      { in: 'a', expect: 'A' },
+      { in: 'Ｂ', expect: 'B' }, // 全形
+      { in: 'A.', expect: 'A' },
+      { in: 'A、', expect: 'A' },
+    ];
+    for (const c of cases) {
+      const r = isMainChoice(c.in);
+      if (r === c.expect) ok(`Case 9: isMainChoice "${c.in}" → ${r}`);
+      else fail(`Case 9: isMainChoice "${c.in}"`, `expect ${c.expect}, got ${r}`);
+    }
+  }
+
+  // --- isMainChoice 反案 ---
+  {
+    const negatives = ['ABCD', '我是 A 類型', '感謝你', 'AB'];
+    for (const t of negatives) {
+      const r = isMainChoice(t);
+      if (r === null) ok(`Case 10: isMainChoice 不誤判 "${t}"`);
+      else fail(`Case 10: isMainChoice 誤判 "${t}"`, `got ${r}`);
+    }
+  }
+
+  // --- CHOICE_TO_PATH 字典 ---
+  {
+    const expected = {
+      A: 'healthCheck',
+      B: 'rebound',
+      C: 'postpartum',
+      D: 'eatOut',
+    };
+    const match = Object.keys(expected).every((k) => CHOICE_TO_PATH[k] === expected[k]);
+    if (match) ok('Case 11: CHOICE_TO_PATH 4 個 enum 對齊契約');
+    else fail('Case 11: CHOICE_TO_PATH', JSON.stringify(CHOICE_TO_PATH));
+  }
+
+  // --- pickWeightDiffCondition 三段切 ---
+  {
+    const cases = [
+      { diff: 3, expect: 'weight_diff_small' },
+      { diff: 5, expect: 'weight_diff_small' }, // boundary
+      { diff: 8, expect: 'weight_diff_medium' },
+      { diff: 14, expect: 'weight_diff_medium' },
+      { diff: 15, expect: 'weight_diff_large' }, // boundary
+      { diff: 30, expect: 'weight_diff_large' },
+    ];
+    for (const c of cases) {
+      const r = pickWeightDiffCondition(c.diff, 5, 15);
+      if (r === c.expect) ok(`Case 12: pickWeightDiffCondition diff=${c.diff} → ${r}`);
+      else fail(`Case 12: pickWeightDiffCondition diff=${c.diff}`, `expect ${c.expect}, got ${r}`);
+    }
+  }
+}
+
+// ----------------------------------------------------------------
 // Summary
 // ----------------------------------------------------------------
 console.log('');

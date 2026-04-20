@@ -10,7 +10,22 @@ import {
   textMessage,
 } from '../../../lib/line.js';
 import { matchKeyword } from '../../../lib/keywords.js';
-import { getUser, upsertUser, recordInteraction, markBlocked } from '../../../lib/users.js';
+import {
+  getUser,
+  upsertUser,
+  recordInteraction,
+  markBlocked,
+  getUserPathState,
+  updatePathStage,
+} from '../../../lib/users.js';
+import { getSettingTyped } from '../../../lib/official-settings.js';
+import { renderTemplate } from '../../../lib/templates.js';
+import {
+  CHOICE_TO_PATH,
+  isMainChoice,
+  extractWeights,
+  pickWeightDiffCondition,
+} from '../../../lib/conversation-path.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 import supabase from '../../../lib/supabase.js';
 
@@ -64,7 +79,23 @@ async function handleEvent(event) {
   }
 
   // 測試模式：白名單外的人靜默（代碼領取除外，上面已處理）
+  // 放在 idempotency INSERT 之前，避免非白名單用戶污染 official_webhook_events
   if (TEST_MODE && !TEST_ALLOWLIST.includes(userId)) return;
+
+  // Webhook idempotency（Phase 3.1）：LINE retry 會用同一個 webhookEventId
+  // 先 INSERT PK；違反 (23505) = 重複事件，skip
+  const eventId = event.webhookEventId;
+  if (eventId) {
+    const { error: dupErr } = await supabase
+      .from('official_webhook_events')
+      .insert({ event_id: eventId });
+    if (dupErr?.code === '23505') {
+      console.log('[Webhook] Duplicate event, skip:', eventId);
+      return;
+    }
+    // 其他 INSERT 錯（例如網路暫失） → log 但繼續處理（不擋正常流程）
+    if (dupErr) console.error('[Webhook] idempotency INSERT failed:', dupErr.message);
+  }
 
   switch (event.type) {
     case 'follow':
@@ -470,15 +501,169 @@ async function handleTextMessage(event, userId) {
 
   // 代碼領取已在 handleEvent 層處理，這裡直接走關鍵字比對
 
-  // 關鍵字比對
+  // 關鍵字比對（報告 / 方案 / 說明會 / 地雷 / 菜單 / ABC …，優先於對話路徑）
   const rule = matchKeyword(text);
 
   if (rule) {
-    // 匹配到 → 自動回覆
     const messages = await rule.handler(userId);
     await replyMessage(event.replyToken, messages);
+    return;
   }
-  // 沒匹配 → 不回覆（一休手動處理）
+
+  // 關鍵字沒匹配 → 走對話路徑 dispatch（Phase 3.1 MVP：Q1→Q2→Q3）
+  const handled = await handleConversationPath(event, userId, text);
+  if (handled) return;
+
+  // 對話路徑也沒接到 → 靜默（一休/婉馨手動處理）
+}
+
+// ============================================================
+// Phase 3.1 對話路徑 dispatch（無 AI，純 regex + 選項比對）
+// ============================================================
+
+// CHOICE_TO_PATH / isMainChoice / extractWeights / pickWeightDiffCondition
+// 已抽出到 lib/conversation-path.js（便於單元測試 + Phase 3.2 reuse）
+
+// 讀啟用的單一模板（partial index 已 WHERE is_active=true）
+async function getTemplate(path, stage, condition) {
+  let q = supabase
+    .from('official_reply_templates')
+    .select('*')
+    .eq('stage', stage)
+    .eq('condition', condition)
+    .eq('is_active', true)
+    .limit(1);
+  // path 可能為 NULL（Q1/Q2 通用）
+  if (path === null || path === undefined) {
+    q = q.is('path', null);
+  } else {
+    q = q.eq('path', path);
+  }
+  const { data, error } = await q.maybeSingle();
+  if (error) {
+    console.error('[getTemplate] error:', error.message, { path, stage, condition });
+    return null;
+  }
+  return data;
+}
+
+// pickWeightDiffCondition 已在 lib/conversation-path.js，此處包裝讀 setting
+async function pickWeightDiffConditionWithSettings(diff) {
+  const smallMax = await getSettingTyped('weight_diff_small_max'); // default 5
+  const largeMin = await getSettingTyped('weight_diff_large_min'); // default 15
+  return pickWeightDiffCondition(diff, smallMax, largeMin);
+}
+
+/**
+ * 對話路徑 dispatch（MVP 版本）
+ * 回傳 true = 已處理（發出 reply），false = 未處理（讓 caller 靜默）
+ */
+async function handleConversationPath(event, userId, text) {
+  const state = await getUserPathState(userId);
+
+  // 封鎖用戶 / Stage 5 特例：Phase 3.1 不接，留給 3.2/3.3
+  if (state.is_blocked) return false;
+  if (state.path_stage === 5) return false;
+
+  const stage = state.path_stage ?? 0;
+
+  // === 分支 1：Q1→Q2（stage 0 或 1，用戶提供體重數字）===
+  if (stage <= 1) {
+    const weights = extractWeights(text);
+    if (!weights) return false; // 沒數字 → 靜默
+
+    const { current, target } = weights;
+
+    // 打反了（目標 ≥ 現在）→ 推 q1_target_invalid
+    if (target >= current) {
+      const tpl = await getTemplate(null, 1, 'weight_target_invalid');
+      if (!tpl) {
+        console.error('[ConversationPath] q1_target_invalid template missing/inactive');
+        return false;
+      }
+      const text2 = await renderTemplate(tpl, { current_weight: current, target_weight: target });
+      await replyMessage(event.replyToken, [textMessage(text2)]);
+      // 不推進 stage（等用戶重答）
+      await supabase
+        .from('official_line_users')
+        .update({ last_user_reply_at: new Date().toISOString() })
+        .eq('line_user_id', userId);
+      return true;
+    }
+
+    // 正常 → 寫體重 + 推進 stage=2
+    const diff = current - target;
+    const condition = await pickWeightDiffConditionWithSettings(diff);
+    const tpl = await getTemplate(null, 2, condition);
+    if (!tpl) {
+      console.error('[ConversationPath] q2 template missing/inactive:', condition);
+      return false;
+    }
+
+    // 寫 current/target + last_user_reply_at + 推進 stage=2
+    await supabase
+      .from('official_line_users')
+      .update({
+        current_weight: current,
+        target_weight: target,
+        last_user_reply_at: new Date().toISOString(),
+      })
+      .eq('line_user_id', userId);
+
+    const r = await updatePathStage(userId, 2);
+    if (!r.ok) console.error('[ConversationPath] updatePathStage(2) failed:', r.error);
+
+    const q2Text = await renderTemplate(tpl, { current_weight: current, target_weight: target });
+
+    // chain_next_id：推完 Q2 體重差距馬上 push Q2 主因選項
+    const messages = [textMessage(q2Text)];
+    if (tpl.chain_next_id) {
+      const nextTpl = await getTemplate(null, 2, 'path_choice');
+      if (nextTpl) {
+        const nextText = await renderTemplate(nextTpl, { current_weight: current, target_weight: target });
+        messages.push(textMessage(nextText));
+      }
+    }
+    await replyMessage(event.replyToken, messages);
+    return true;
+  }
+
+  // === 分支 2：Q2→Q3（stage === 2，用戶選 A/B/C/D）===
+  if (stage === 2) {
+    const choice = isMainChoice(text);
+    if (!choice) return false; // 沒選 → 靜默（Phase 3.2 再接 AI 分類「其他狀況」）
+
+    const pathVal = CHOICE_TO_PATH[choice] ?? 'other';
+    const q3Tpl = await getTemplate(pathVal, 3, 'q3');
+    if (!q3Tpl) {
+      console.error('[ConversationPath] q3 template missing/inactive:', pathVal);
+      return false;
+    }
+
+    // last_user_reply_at
+    await supabase
+      .from('official_line_users')
+      .update({ last_user_reply_at: new Date().toISOString() })
+      .eq('line_user_id', userId);
+
+    // updatePathStage(3, {path}) 會同時寫 path + path_stage + retry_count_q3=0
+    const r = await updatePathStage(userId, 3, { path: pathVal });
+    if (!r.ok) {
+      console.error('[ConversationPath] updatePathStage(3) failed:', r.error);
+      return false;
+    }
+
+    const state2 = await getUserPathState(userId);
+    const q3Text = await renderTemplate(q3Tpl, {
+      current_weight: state2.current_weight,
+      target_weight: state2.target_weight,
+    });
+    await replyMessage(event.replyToken, [textMessage(q3Text)]);
+    return true;
+  }
+
+  // === 分支 3：stage >= 3（Q3 之後）→ Phase 3.2 才接 AI 分子情境 ===
+  return false;
 }
 
 // ============================================================
