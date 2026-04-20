@@ -17,6 +17,7 @@ import {
   markBlocked,
   getUserPathState,
   updatePathStage,
+  updateAiTags,
 } from '../../../lib/users.js';
 import { getSettingTyped } from '../../../lib/official-settings.js';
 import { renderTemplate } from '../../../lib/templates.js';
@@ -26,6 +27,13 @@ import {
   extractWeights,
   pickWeightDiffCondition,
 } from '../../../lib/conversation-path.js';
+import {
+  matchPoliteEnd,
+  matchGlobalHandoff,
+  triggerHandoff,
+  handlePoliteEnd,
+} from '../../../lib/handoff.js';
+import { classifyQ4Condition } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 import supabase from '../../../lib/supabase.js';
 
@@ -561,11 +569,33 @@ async function pickWeightDiffConditionWithSettings(diff) {
 async function handleConversationPath(event, userId, text) {
   const state = await getUserPathState(userId);
 
-  // 封鎖用戶 / Stage 5 特例：Phase 3.1 不接，留給 3.2/3.3
+  // 封鎖用戶 / Stage 5 特例：Phase 3.1/3.2a 不接，留給 3.3 處理
   if (state.is_blocked) return false;
   if (state.path_stage === 5) return false;
 
   const stage = state.path_stage ?? 0;
+
+  // === Level 0 禮貌結束（Phase 3.2a 新增，任何 stage 都先檢查）===
+  // 契約 6.3：命中「太貴/沒預算/沒錢/先不用」→ 回禮貌話 + intent='low'，path_stage 保持
+  if (await matchPoliteEnd(text)) {
+    await handlePoliteEnd(event, userId, replyMessage);
+    return true;
+  }
+
+  // === Level 1 全域 Handoff（Phase 3.2a 新增，stage>=2 才觸發）===
+  // 契約 6.1 + 6.4：want_enroll > asked_price > asked_family → stage=5 + notify 婉馨/一休
+  if (stage >= 2) {
+    const reason = await matchGlobalHandoff(text);
+    if (reason) {
+      const ok = await triggerHandoff(userId, reason);
+      if (ok) {
+        await replyMessage(event.replyToken, [
+          textMessage('好的，這邊我先請婉馨老師私下跟你聊會比較仔細～她會主動找你哦。'),
+        ]);
+        return true;
+      }
+    }
+  }
 
   // === 分支 1：Q1→Q2（stage 0 或 1，用戶提供體重數字）===
   if (stage <= 1) {
@@ -662,8 +692,177 @@ async function handleConversationPath(event, userId, text) {
     return true;
   }
 
-  // === 分支 3：stage >= 3（Q3 之後）→ Phase 3.2 才接 AI 分子情境 ===
+  // === 分支 3：Q3→Q4（stage === 3，Phase 3.2a 接 AI 子情境分類）===
+  if (stage === 3) {
+    return await handleStage3ToQ4(event, userId, text, state);
+  }
+
+  // stage >= 4 → Phase 3.2 後續處理（outro / retry / handoff on_keyword_match）
   return false;
+}
+
+// ============================================================
+// Phase 3.2a stage=3 → stage=4 AI 分類（Code Gate E1-E2 + Gemini + ai_tags 寫入）
+// ============================================================
+
+/**
+ * 非中文/英數字比率 → 判定純 emoji/符號（Code Gate E2）
+ */
+function isMostlyNonTextual(text) {
+  const real = text.replace(/\s/g, '');
+  if (real.length === 0) return true;
+  const textual = real.match(/[\u4e00-\u9fa5A-Za-z0-9]/g) || [];
+  return textual.length / real.length < 0.3;
+}
+
+// AI 重入保護窗口：同一用戶 1h 內只打一次 Gemini
+// 目的：Q4 模板 is_active=false 時，每則訊息 stage 停在 3，若不保護會每則都打 AI
+const AI_REENTRY_WINDOW_MS = 60 * 60 * 1000;
+
+function isInTestAllowlist(userId) {
+  return TEST_ALLOWLIST.includes(userId);
+}
+
+async function handleStage3ToQ4(event, userId, text, state) {
+  // === Code Gate E1：字數過少 ===
+  const minChars = await getSettingTyped('min_msg_chars_for_ai');
+  const realChars = text.replace(/\s/g, '').length;
+  if (realChars < minChars) {
+    // Phase 3.2a 簡化：retry_count_q3++ 後靜默（path_×_retry 模板 Phase 3.2 後續啟用）
+    await updateAiTags(userId, {
+      retry_count_q3: (state.ai_tags?.retry_count_q3 ?? 0) + 1,
+      _op: 'overwrite',
+    });
+    return false;
+  }
+
+  // === Code Gate E2：純 emoji / 符號 ===
+  if (isMostlyNonTextual(text)) {
+    await updateAiTags(userId, {
+      retry_count_q3: (state.ai_tags?.retry_count_q3 ?? 0) + 1,
+      _op: 'overwrite',
+    });
+    return false;
+  }
+
+  // === AI 適用性：只處理三條主流 path ===
+  const { path } = state;
+  if (!['healthCheck', 'rebound', 'postpartum'].includes(path)) {
+    // path=eatOut 走 Phase 3.2c DYNAMIC、path=other 走 Phase 3.2 後續 path_e 邏輯
+    return false;
+  }
+
+  // === 重入保護：若 1h 內已分類過，跳過 AI call（避免 Q4 模板 inactive 時無限重打）===
+  const lastClassifiedAt = state.ai_tags?.q4_classified_at;
+  if (lastClassifiedAt) {
+    const age = Date.now() - new Date(lastClassifiedAt).getTime();
+    if (age < AI_REENTRY_WINDOW_MS && age >= 0) {
+      console.log('[Stage3ToQ4] skip AI (1h reentry window):', {
+        userId,
+        path,
+        age_ms: age,
+        last_condition: state.ai_tags?.q4_condition,
+      });
+      // 白名單測試期額外回 debug，免一休誤判 Bot 壞（TEST_MODE 保護，不影響真實用戶）
+      if (TEST_MODE && isInTestAllowlist(userId)) {
+        await replyMessage(event.replyToken, [
+          textMessage(
+            `[debug] 跳過 AI（1h 內已分類為 ${state.ai_tags?.q4_condition || '?'}）。Q4 模板未啟用，正式流程會等啟用後才推進。`
+          ),
+        ]);
+      }
+      return false;
+    }
+  }
+
+  // === AI call ===
+  const result = await classifyQ4Condition({
+    path,
+    current: state.current_weight,
+    target: state.target_weight,
+    userText: text,
+  });
+
+  if (!result.ok) {
+    console.error('[Stage3ToQ4] AI classify failed:', result.reason, { userId, path });
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      await replyMessage(event.replyToken, [
+        textMessage(`[debug] AI 分類失敗：${result.reason}`),
+      ]);
+    }
+    return false;
+  }
+
+  const { output, fallback } = result;
+
+  // 寫 ai_tags（痛點/猶豫/意願/關注，_from_ai 自動 en→zh key mapping）
+  if (output.ai_tags) {
+    const r = await updateAiTags(userId, {
+      ...output.ai_tags,
+      _from_ai: true,
+      _op: 'append',
+    });
+    if (!r.ok) console.error('[Stage3ToQ4] updateAiTags failed:', r.error);
+  }
+
+  // confidence=low → fallback（Phase 3.2a 暫靜默，後續可推 path_×_retry_q3）
+  if (fallback) {
+    console.log('[Stage3ToQ4] low confidence fallback:', { userId, path });
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      await replyMessage(event.replyToken, [
+        textMessage(`[debug] AI 低信心分類（confidence=low），暫不推進 Q4。`),
+      ]);
+    }
+    return false;
+  }
+
+  const condition = Array.isArray(output.conditions) ? output.conditions[0] : null;
+  if (!condition) {
+    console.log('[Stage3ToQ4] no condition picked:', { userId, path });
+    return false;
+  }
+
+  // 寫 classify flag（不管 Q4 模板 active 與否都要寫，防下次訊息重打 AI）
+  await updateAiTags(userId, {
+    q4_classified_at: new Date().toISOString(),
+    q4_condition: condition,
+    _op: 'overwrite',
+  });
+
+  // 查 Q4 模板（is_active=true 才有結果）
+  const q4Tpl = await getTemplate(path, 4, condition);
+  if (!q4Tpl) {
+    // 模板未啟用 → 靜默（Phase 3.2a 啟用前這會是常態，ai_tags + classify flag 已寫入）
+    console.log('[Stage3ToQ4] Q4 template inactive:', { path, condition });
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      const intent = output.ai_tags?.intent || '?';
+      await replyMessage(event.replyToken, [
+        textMessage(
+          `[debug] AI 分類成功：\npath=${path} / condition=${condition} / intent=${intent} / confidence=${output.confidence}\n→ Q4 模板 is_active=false，正式流程會靜默。\nai_tags 已寫入 DB。`
+        ),
+      ]);
+    }
+    return false;
+  }
+
+  // 推進 stage=4 + 寫 last_user_reply_at
+  await supabase
+    .from('official_line_users')
+    .update({ last_user_reply_at: new Date().toISOString() })
+    .eq('line_user_id', userId);
+
+  const r = await updatePathStage(userId, 4);
+  if (!r.ok) {
+    console.error('[Stage3ToQ4] updatePathStage(4) failed:', r.error);
+    return false;
+  }
+
+  const q4Text = await renderTemplate(q4Tpl, {
+    current_weight: state.current_weight,
+    target_weight: state.target_weight,
+  });
+  await replyMessage(event.replyToken, [textMessage(q4Text)]);
+  return true;
 }
 
 // ============================================================
