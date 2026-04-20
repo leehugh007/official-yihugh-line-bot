@@ -494,6 +494,8 @@ const TYPE_DATA = {
     ahaReason: '你一直逼自己更努力——少吃、多動、早起運動。但你的身體不是不配合，是已經在超載了。皮質醇長期偏高，身體會優先把脂肪堆在肚子周圍。越努力，肚子反而越難消。',
     oneStep: '這禮拜開始，把其中一天的高強度運動改成散步 30 分鐘。不是偷懶，是讓身體從紅線區退下來。',
     typeUrl: 'https://abcmetabolic.com/types/high-rpm?utm_source=line&utm_medium=bot&utm_campaign=report',
+    trapTeaser: '高轉速型肚子消不掉的真相',
+    menuTeaser: '高轉速型怎麼吃讓肚子消下去',
   },
   rollerCoaster: {
     name: '雲霄飛車型', tagline: '早上精神好到想跑步，下午累到想辭職',
@@ -504,6 +506,8 @@ const TYPE_DATA = {
     ahaReason: '你可能試過少吃、節食、或跳過某一餐。但問題不在吃多吃少，是你吃的東西讓血糖忽高忽低。血糖一掉，你的大腦就會瘋狂叫你吃甜的。這不是意志力差，是血糖在控制你。',
     oneStep: '下一餐開始，吃飯順序改成：菜先吃 → 再吃肉 → 最後吃飯。同樣的食物，換個順序，血糖波動就能減少三成。',
     typeUrl: 'https://abcmetabolic.com/types/roller-coaster?utm_source=line&utm_medium=bot&utm_campaign=report',
+    trapTeaser: '雲霄飛車型下午崩盤的真正原因',
+    menuTeaser: '雲霄飛車型怎麼吃讓你下午不崩',
   },
   burnout: {
     name: '燃燒殆盡型', tagline: '不是你偷懶，是身體已經把油燒光了還在硬撐',
@@ -514,6 +518,8 @@ const TYPE_DATA = {
     ahaReason: '你已經很努力了——吃得少、忍得住、該做的都做了。但身體被透支太久，它啟動了自我保護機制：降低代謝、囤積脂肪、讓你覺得累。你越少吃，它越省，形成惡性循環。',
     oneStep: '明天開始，每餐確保有一份蛋白質（一顆蛋、一塊豆腐、一片肉都行）。先不要減量，讓身體知道「食物會穩定供應」。',
     typeUrl: 'https://abcmetabolic.com/types/burnout?utm_source=line&utm_medium=bot&utm_campaign=report',
+    trapTeaser: '燃盡型最傷代謝的那件事',
+    menuTeaser: '燃盡型該怎麼吃才能把代謝養回來',
   },
   powerSave: {
     name: '省電模式型', tagline: '吃很少還是瘦不下來？你的身體已經自己降速了',
@@ -524,6 +530,8 @@ const TYPE_DATA = {
     ahaReason: '你吃得很少，但身體不會因為你少吃就乖乖瘦。它的邏輯是：「進來的不夠，那我就省著用。」代謝降速、體溫下降、容易掉髮——這些都是身體在告訴你它已經進入省電模式了。',
     oneStep: '這禮拜開始，每天多吃一份點心（一杯豆漿、一把堅果、或一顆蛋）。不用一次加很多，每週多一點，讓代謝慢慢回來。',
     typeUrl: 'https://abcmetabolic.com/types/power-save?utm_source=line&utm_medium=bot&utm_campaign=report',
+    trapTeaser: '省電模式型為什麼越吃少越胖',
+    menuTeaser: '省電模式型該敢吃什麼',
   },
   steady: {
     name: '穩定燃燒型', tagline: '朋友都問你怎麼吃不胖，但你知道自己其實可以更好',
@@ -534,6 +542,8 @@ const TYPE_DATA = {
     ahaReason: '你的身體底子不差，但「不差」容易讓人停在原地。很多人覺得自己還好就不調整，結果隨著年齡增長，代謝慢慢往下掉。現在是鞏固優勢最好的時機。',
     oneStep: '從這禮拜開始，注意每餐的蛋白質份量——目標是每公斤體重吃到 1.2g。大多數人以為自己吃夠了，其實差很多。',
     typeUrl: 'https://abcmetabolic.com/types/steady?utm_source=line&utm_medium=bot&utm_campaign=report',
+    trapTeaser: '穩定型容易忽略的小陷阱',
+    menuTeaser: '穩定型該怎麼吃精進到更好',
   },
 };
 
@@ -902,11 +912,12 @@ function buildPersonalizedReport(session, displayName) {
     `\n\n想更了解「${type.name}」代謝的完整解析 👇\n` +
     type.typeUrl;
 
-  // ─── 訊息 3：互動引導 ───
+  // ─── 訊息 3：互動引導（地雷/菜單/公斤數 三選一）───
   const msg3 =
-    `對了，想問你一下——\n\n` +
-    `你現在是想瘦幾公斤？還是想維持現在的體重？\n\n` +
-    `回覆告訴我，想瘦幾公斤就好 😊`;
+    `看完報告只是第一步，想繼續聊的話：\n\n` +
+    `👉 回「地雷」— 我告訴你${type.trapTeaser}\n` +
+    `👉 回「菜單」— 我告訴你${type.menuTeaser}\n` +
+    `👉 或直接告訴我你目前幾公斤、想瘦到幾公斤，我告訴你這個目標在你這個類型下要多久、該怎麼走`;
 
   return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
 }
