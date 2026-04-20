@@ -135,7 +135,7 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 | last_user_reply_at | TIMESTAMPTZ | — | [對話路徑] 用戶最後主動回覆時間 |
 | ai_tags | JSONB | '{}' | [對話路徑] {痛點:[], 猶豫:[], 意願, 關注:[]} — 寫入禁 SQL jsonb_set、走 lib/users.js |
 | handoff_triggered_at | TIMESTAMPTZ | — | [對話路徑] 專人介入觸發時間 |
-| handoff_reason | TEXT | — | [對話路徑] asked_price/asked_family/high_intent/postpartum_returned/manual |
+| handoff_reason | TEXT | — | [對話路徑] want_enroll/asked_price/asked_family/high_intent/postpartum_returned/manual |
 | ai_tags_updated_at | TIMESTAMPTZ | — | [避坑補丁] ai_tags 14 天重估基準（抄阿算 insights） |
 | path_stage_updated_at | TIMESTAMPTZ | — | [避坑補丁] stage timeout cron 基準（>7天 stage 2/3 無互動 reset 0） |
 | enrolled_from_path | TEXT | — | [北極星量測] 成交時 snapshot 當時 path |
