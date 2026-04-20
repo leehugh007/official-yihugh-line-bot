@@ -128,6 +128,37 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 | drip_week | INTEGER | 0 | 已推到第幾篇 |
 | drip_next_at | TIMESTAMPTZ | — | 下次排程推送 |
 | drip_paused | BOOLEAN | false | 排程暫停 |
+| current_weight | NUMERIC | — | [對話路徑] 目前體重 |
+| target_weight | NUMERIC | — | [對話路徑] 目標體重 |
+| path | TEXT | — | [對話路徑] healthCheck/rebound/postpartum/eatOut/other |
+| path_stage | INTEGER | 0 | [對話路徑] 0=未進/1=Q1/2=Q2/3=Q3/4=Q4 |
+| last_user_reply_at | TIMESTAMPTZ | — | [對話路徑] 用戶最後主動回覆時間 |
+| ai_tags | JSONB | '{}' | [對話路徑] {痛點:[], 猶豫:[], 意願, 關注:[]} — 寫入禁 SQL jsonb_set、走 lib/users.js |
+| handoff_triggered_at | TIMESTAMPTZ | — | [對話路徑] 專人介入觸發時間 |
+| handoff_reason | TEXT | — | [對話路徑] asked_price/asked_family/high_intent/postpartum_returned/manual |
+| ai_tags_updated_at | TIMESTAMPTZ | — | [避坑補丁] ai_tags 14 天重估基準（抄阿算 insights） |
+| path_stage_updated_at | TIMESTAMPTZ | — | [避坑補丁] stage timeout cron 基準（>7天 stage 2/3 無互動 reset 0） |
+| enrolled_from_path | TEXT | — | [北極星量測] 成交時 snapshot 當時 path |
+| enrolled_at | TIMESTAMPTZ | — | [北極星量測] 成交時間 |
+
+### official_reply_templates（migration_007，Phase 1 建立）
+| 欄位 | 型別 | 預設值 | 說明 |
+|------|------|--------|------|
+| id | TEXT PK | — | 模板 ID（'q1_init'/'q2_weight_small'/'path_a_blood_sugar'...） |
+| path | TEXT | — | healthCheck/rebound/postpartum/eatOut/other/NULL（通用） |
+| stage | INTEGER | — | 0/1/2/3/4 |
+| condition | TEXT | — | weight_diff_small/blood_sugar/... |
+| message_template | TEXT | — | 含 {current}{target}{diff}{user_meal} 變數 |
+| buttons | JSONB | '[]' | Flex 按鈕 [{label, url_or_postback, linkId}] |
+| image_url | TEXT | — | Flex hero 圖 |
+| is_active | BOOLEAN | false | 04-04 Drip 事故教訓：啟用前必須 FlexPreview 確認 |
+| updated_at | TIMESTAMPTZ | now() | 更新時間 |
+
+Partial index: `(path, stage, condition) WHERE is_active = true` — webhook 每則訊息查模板只掃啟用的 row。
+
+### official_chat_history（Phase 3 建立，尚未執行）
+- 對話記錄表，含 role/message/path_at_time/stage_at_time 快照欄位
+- 執行順序延後原因：`path_at_time`/`stage_at_time` 在 Phase 4 AI 上線前為 NULL，綁 webhook 邏輯一起建避免空表期
 
 ### official_push_templates
 | 欄位 | 型別 | 預設值 | 說明 |
