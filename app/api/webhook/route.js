@@ -724,6 +724,47 @@ function isInTestAllowlist(userId) {
 }
 
 async function handleStage3ToQ4(event, userId, text, state) {
+  // === Code Gate E0（Phase 3.2b）：stage=3 收到「像 Q1 體重格式」訊息 → 用戶想重來 ===
+  // 實測發現：stage=3 的用戶重打「我目前 170公分,78公斤,想瘦到70公斤」會被當 Q3 回覆餵 AI,
+  // AI 仍給 confidence=high 亂分類。偵測到體重格式 → 重置 stage=1 + 清 path + reply。
+  const maybeWeights = extractWeights(text);
+  if (maybeWeights) {
+    await supabase
+      .from('official_line_users')
+      .update({
+        current_weight: null,
+        target_weight: null,
+        path: null,
+        path_stage: 1,
+        path_stage_updated_at: new Date().toISOString(),
+        last_user_reply_at: new Date().toISOString(),
+      })
+      .eq('line_user_id', userId);
+
+    // 清 ai_tags 的 q4 flag（讓下次正常走完 AI 重分類）+ 重置 retry_count_q3
+    await updateAiTags(userId, {
+      q4_classified_at: null,
+      q4_condition: null,
+      retry_count_q3: 0,
+      _op: 'overwrite',
+    });
+
+    // 推 q1_retry_weight 或 hardcoded 引導（Phase 3.2a 啟用的是 q1_retry_weight）
+    const retryTpl = await getTemplate(null, 1, 'retry_weight');
+    const msg = retryTpl
+      ? await renderTemplate(retryTpl, {})
+      : '看起來你想重新講一次？好的，我重新聽 — 你目前體重幾公斤，想瘦到幾公斤？';
+
+    const messages = [textMessage(msg)];
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      messages.push(
+        textMessage('[debug] Code Gate E0 觸發：偵測到 Q1 體重格式，已重置 stage=1+清 path+清 q4 flag。下一則體重會重走 Q1→Q2→Q3。')
+      );
+    }
+    await replyMessage(event.replyToken, messages);
+    return true;
+  }
+
   // === Code Gate E1：字數過少 ===
   const minChars = await getSettingTyped('min_msg_chars_for_ai');
   const realChars = text.replace(/\s/g, '').length;
