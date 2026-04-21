@@ -729,19 +729,36 @@ async function handleStage3ToQ4(event, userId, text, state) {
   const realChars = text.replace(/\s/g, '').length;
   if (realChars < minChars) {
     // Phase 3.2a 簡化：retry_count_q3++ 後靜默（path_×_retry 模板 Phase 3.2 後續啟用）
+    const newCount = (state.ai_tags?.retry_count_q3 ?? 0) + 1;
     await updateAiTags(userId, {
-      retry_count_q3: (state.ai_tags?.retry_count_q3 ?? 0) + 1,
+      retry_count_q3: newCount,
       _op: 'overwrite',
     });
+    // 白名單測試期推 debug 回覆，免一休看起來像 Bot 壞（實測 2026-04-21 發現缺口）
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          `[debug] Code Gate E1 擋下（字數 ${realChars} < ${minChars}，避免浪費 Gemini token）。\nretry_count_q3=${newCount}。請多打幾個字，例如「血糖紅字、有吃藥」。`
+        ),
+      ]);
+    }
     return false;
   }
 
   // === Code Gate E2：純 emoji / 符號 ===
   if (isMostlyNonTextual(text)) {
+    const newCount = (state.ai_tags?.retry_count_q3 ?? 0) + 1;
     await updateAiTags(userId, {
-      retry_count_q3: (state.ai_tags?.retry_count_q3 ?? 0) + 1,
+      retry_count_q3: newCount,
       _op: 'overwrite',
     });
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          `[debug] Code Gate E2 擋下（純 emoji/符號，AI 無法分類）。\nretry_count_q3=${newCount}。請用文字描述。`
+        ),
+      ]);
+    }
     return false;
   }
 
