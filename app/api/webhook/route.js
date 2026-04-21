@@ -33,7 +33,7 @@ import {
   triggerHandoff,
   handlePoliteEnd,
 } from '../../../lib/handoff.js';
-import { classifyQ4Condition } from '../../../lib/ai-classifier.js';
+import { classifyQ4Condition, generateMealFeedback } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 import supabase from '../../../lib/supabase.js';
 
@@ -115,8 +115,10 @@ async function handleEvent(event) {
     case 'message':
       if (event.message?.type === 'text') {
         await handleTextMessage(event, userId);
+      } else if (event.message?.type === 'image') {
+        await handleImageMessage(event, userId);
       }
-      // 非文字訊息（圖片、貼圖等）→ 不回覆
+      // 其他（貼圖、影片、檔案等）→ 不回覆
       break;
   }
 }
@@ -803,10 +805,15 @@ async function handleStage3ToQ4(event, userId, text, state) {
     return false;
   }
 
-  // === AI 適用性：只處理三條主流 path ===
+  // === Phase 3.2c：eatOut 走 DYNAMIC path_d_ai_meal_feedback ===
   const { path } = state;
+  if (path === 'eatOut') {
+    return await handleEatOutMealFeedback(event, userId, text, state);
+  }
+
+  // === AI 適用性：只處理三條主流 path ===
   if (!['healthCheck', 'rebound', 'postpartum'].includes(path)) {
-    // path=eatOut 走 Phase 3.2c DYNAMIC、path=other 走 Phase 3.2 後續 path_e 邏輯
+    // path=other 走 Phase 3.2 後續 path_e 邏輯
     return false;
   }
 
@@ -921,6 +928,174 @@ async function handleStage3ToQ4(event, userId, text, state) {
   });
   await replyMessage(event.replyToken, [textMessage(q4Text)]);
   return true;
+}
+
+// ============================================================
+// Phase 3.2c：eatOut DYNAMIC 餐點回饋（path_d_ai_meal_feedback）
+// ============================================================
+
+async function handleEatOutMealFeedback(event, userId, text, state) {
+  // === Code Gate E6：字數 < meal_min_chars + 無圖片 → 推 path_d_retry_meal_detail ===
+  // （E6' 的「圖片 + 無文字」情況在 handleImageMessage 處理）
+  const mealMinChars = await getSettingTyped('meal_min_chars');
+  const realChars = text.replace(/\s/g, '').length;
+  if (realChars < mealMinChars) {
+    const newCount = (state.ai_tags?.retry_count_q3 ?? 0) + 1;
+    await updateAiTags(userId, {
+      retry_count_q3: newCount,
+      _op: 'overwrite',
+    });
+
+    const retryTpl = await getTemplate('eatOut', 3, 'retry');
+    const fallbackMsg =
+      '具體一點比較好抓 —\n早餐大概吃什麼？午餐呢？晚餐呢？\n隨便寫都可以，我看得懂。';
+    const msg = retryTpl
+      ? await renderTemplate(retryTpl, {
+          current_weight: state.current_weight,
+          target_weight: state.target_weight,
+        })
+      : fallbackMsg;
+
+    const messages = [textMessage(msg)];
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      messages.push(
+        textMessage(
+          `[debug] Code Gate E6 擋下（字數 ${realChars} < ${mealMinChars}，path_d_retry_meal_detail ${retryTpl ? '啟用中' : '未啟用→fallback 文字'}）。retry_count_q3=${newCount}。`
+        )
+      );
+    }
+    await replyMessage(event.replyToken, messages);
+    return true;
+  }
+
+  // === 重入保護：若 1h 內已分類過 eatOut 回饋，跳過 AI call（避免 DYNAMIC 模板 inactive 時無限重打）===
+  const lastClassifiedAt = state.ai_tags?.q4_classified_at;
+  if (lastClassifiedAt) {
+    const age = Date.now() - new Date(lastClassifiedAt).getTime();
+    if (age < AI_REENTRY_WINDOW_MS && age >= 0) {
+      console.log('[EatOutMealFeedback] skip AI (1h reentry window):', {
+        userId,
+        age_ms: age,
+        last_condition: state.ai_tags?.q4_condition,
+      });
+      if (TEST_MODE && isInTestAllowlist(userId)) {
+        await replyMessage(event.replyToken, [
+          textMessage(
+            `[debug] 跳過 AI（1h 內已處理過 eatOut 回饋，上次 condition=${state.ai_tags?.q4_condition || '?'}）。DYNAMIC 模板未啟用時正式流程會靜默。`
+          ),
+        ]);
+      }
+      return false;
+    }
+  }
+
+  // === 取 DYNAMIC 模板（含 AI prompt 骨架）===
+  // 模板未啟用時：仍 call AI 讓白名單看到產物，但不推進 stage（契約 4.2：DYNAMIC 必須拿到 aiOutput 才能 render）
+  const dynamicTpl = await getTemplate('eatOut', 4, 'ai_meal_feedback');
+
+  // === AI call ===
+  const result = await generateMealFeedback({
+    current: state.current_weight,
+    target: state.target_weight,
+    userText: text,
+    promptSkeleton: dynamicTpl?.message_template,
+  });
+
+  if (!result.ok) {
+    console.error('[EatOutMealFeedback] AI generate failed:', result.reason, { userId });
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      await replyMessage(event.replyToken, [
+        textMessage(`[debug] generateMealFeedback 失敗：${result.reason}`),
+      ]);
+    }
+    return false;
+  }
+
+  const { output, fallback } = result;
+
+  // 寫 ai_tags（痛點/猶豫/意願/關注，_from_ai 自動 en→zh key mapping）
+  if (output.ai_tags) {
+    const r = await updateAiTags(userId, {
+      ...output.ai_tags,
+      _from_ai: true,
+      _op: 'append',
+    });
+    if (!r.ok) console.error('[EatOutMealFeedback] updateAiTags failed:', r.error);
+  }
+
+  // 寫 classify flag（不管模板 active 與否都寫，防下次訊息重打 AI）
+  await updateAiTags(userId, {
+    q4_classified_at: new Date().toISOString(),
+    q4_condition: 'ai_meal_feedback',
+    _op: 'overwrite',
+  });
+
+  // confidence=low / feedback_too_short → fallback 不推進
+  if (fallback) {
+    console.log('[EatOutMealFeedback] low confidence / short fallback:', { userId });
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          `[debug] AI 低信心（confidence=${output.confidence}，len=${output.feedback_text?.length}），暫不推進 stage=4。feedback_text 預覽：\n${(output.feedback_text || '').slice(0, 100)}…`
+        ),
+      ]);
+    }
+    return false;
+  }
+
+  // 模板未啟用 → TEST_MODE 預覽 AI 產出，不推進
+  if (!dynamicTpl) {
+    console.log('[EatOutMealFeedback] DYNAMIC template inactive:', {
+      userId,
+      tpl: 'path_d_ai_meal_feedback',
+    });
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      const intent = output.ai_tags?.intent || '?';
+      await replyMessage(event.replyToken, [
+        textMessage(
+          `[debug] AI 生成飲食回饋成功：\nintent=${intent} / confidence=${output.confidence} / len=${output.feedback_text.length}\n→ DYNAMIC 模板 path_d_ai_meal_feedback is_active=false，正式流程會靜默。\nai_tags 已寫入 DB。`
+        ),
+        textMessage(`[debug preview] ${output.feedback_text}`),
+      ]);
+    }
+    return false;
+  }
+
+  // === 推進 stage=4 + 寫 last_user_reply_at ===
+  await supabase
+    .from('official_line_users')
+    .update({ last_user_reply_at: new Date().toISOString() })
+    .eq('line_user_id', userId);
+
+  const r = await updatePathStage(userId, 4);
+  if (!r.ok) {
+    console.error('[EatOutMealFeedback] updatePathStage(4) failed:', r.error);
+    return false;
+  }
+
+  // DYNAMIC 走 renderTemplate 的 feedback_text 分支
+  const feedbackText = await renderTemplate(
+    dynamicTpl,
+    { current_weight: state.current_weight, target_weight: state.target_weight },
+    { feedback_text: output.feedback_text }
+  );
+  await replyMessage(event.replyToken, [textMessage(feedbackText)]);
+  return true;
+}
+
+// ============================================================
+// Phase 3.2c：圖片訊息處理（Code Gate E6'）
+// ============================================================
+
+async function handleImageMessage(event, userId) {
+  // 只在 path=eatOut + path_stage=3 時回覆「請打字」；其他狀態靜默
+  const state = await getUserPathState(userId);
+  if (!state) return;
+  if (state.path !== 'eatOut' || state.path_stage !== 3) return;
+
+  await replyMessage(event.replyToken, [
+    textMessage('能不能也打字說一下你常吃什麼？圖片我看不到細節。'),
+  ]);
 }
 
 // ============================================================
