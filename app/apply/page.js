@@ -41,9 +41,13 @@ export default function ApplyPage() {
         const liff = (await import('@line/liff')).default;
         await liff.init({ liffId: LIFF_ID });
 
-        // 瀏覽器直訪（非 LINE in-app browser）→ redirect LINE 開啟
+        // 瀏覽器直訪（非 LINE in-app browser）→ universal link
+        // 走 https://liff.line.me/{LIFF_ID} 而非 line://app/ scheme：
+        //   - iOS Safari 對 line:// custom scheme 在 cross-origin 有警告
+        //   - universal link 手機有 LINE app 會自動進 app，沒裝走 web LIFF
+        //   - iOS/Android/desktop 行為一致可預期
         if (!liff.isInClient()) {
-          window.location.href = `line://app/${LIFF_ID}${window.location.search}`;
+          window.location.href = `https://liff.line.me/${LIFF_ID}${window.location.search}`;
           return;
         }
 
@@ -60,13 +64,16 @@ export default function ApplyPage() {
         const source = urlParams.get('source') || 'unknown';
         const trigger = urlParams.get('trigger') || 'unknown';
 
-        // URL userId 不存在或不等於 LIFF userId → 擋下（分享盜用）
-        if (urlUserId && urlUserId !== context.userId) {
+        // URL userId 必須存在且等於 LIFF userId（yi-challenge #4 洞）
+        // 原 `if (urlUserId && ...)` 會在 URL 沒帶 userid 時繞過驗證，
+        // 讓任何 LINE user 都能看頁 → 污染北極星 baseline。
+        // 修：沒帶 userid 也當 mismatch 擋下。
+        if (!urlUserId || urlUserId !== context.userId) {
           if (!cancelled) {
             setView({
               status: 'url_mismatch',
               contextUserId: context.userId,
-              urlUserId,
+              urlUserId: urlUserId || '(missing)',
             });
           }
           return;
@@ -108,6 +115,33 @@ export default function ApplyPage() {
     color: '#222',
   };
   const mutedStyle = { color: '#888', fontSize: 12 };
+  const btnStyle = {
+    display: 'inline-block',
+    padding: '10px 20px',
+    margin: '8px 8px 8px 0',
+    background: '#06c755',
+    color: 'white',
+    textDecoration: 'none',
+    borderRadius: 6,
+    fontSize: 15,
+    border: 'none',
+    cursor: 'pointer',
+  };
+  const btnSecondaryStyle = { ...btnStyle, background: '#f5f5f5', color: '#333' };
+
+  // yi-challenge #5 洞：錯誤態都要給用戶出路（retry + contact），不要死循環
+  const CONTACT_LINE_URL = 'https://line.me/R/oaMessage/%40sososo/?%E9%A0%81%E9%9D%A2%E6%89%93%E4%B8%8D%E9%96%8B';
+
+  const ErrorActions = () => (
+    <div style={{ marginTop: 20 }}>
+      <button style={btnStyle} onClick={() => window.location.reload()}>
+        重試
+      </button>
+      <a style={btnSecondaryStyle} href={CONTACT_LINE_URL}>
+        傳訊息告訴一休
+      </a>
+    </div>
+  );
 
   if (view.status === 'initializing') {
     return <div style={{ ...wrapperStyle, textAlign: 'center' }}>載入中…</div>;
@@ -118,6 +152,7 @@ export default function ApplyPage() {
       <div style={wrapperStyle}>
         <h2>系統未設定</h2>
         <p>這個頁面需要在 LINE 裡開啟。請回到 LINE 傳訊息給一休，他會重新給你一個連結。</p>
+        <ErrorActions />
         <p style={mutedStyle}>reason: {view.reason}</p>
       </div>
     );
@@ -128,6 +163,7 @@ export default function ApplyPage() {
       <div style={wrapperStyle}>
         <h2>請從 LINE 開啟</h2>
         <p>這個頁面必須從 LINE 裡的訊息點按鈕開啟，不要直接複製連結到瀏覽器。</p>
+        <ErrorActions />
         <p style={mutedStyle}>reason: {view.reason}</p>
       </div>
     );
@@ -138,6 +174,9 @@ export default function ApplyPage() {
       <div style={wrapperStyle}>
         <h2>這個連結綁的是別人</h2>
         <p>每個人的連結都是專屬的。如果你想看方案，回 LINE 傳「我想報名」給我，我另外給你一個。</p>
+        <a style={btnStyle} href="https://line.me/R/oaMessage/%40sososo/?%E6%88%91%E6%83%B3%E5%A0%B1%E5%90%8D">
+          回 LINE 傳「我想報名」
+        </a>
         <p style={mutedStyle}>
           URL userid: {view.urlUserId}
           <br />
@@ -151,7 +190,8 @@ export default function ApplyPage() {
     return (
       <div style={wrapperStyle}>
         <h2>載入失敗</h2>
-        <p>請回到 LINE 裡重新點按鈕試試。如果還是不行，傳「載入失敗」給我。</p>
+        <p>可能是網路暫時不穩。先按「重試」試一次，如果還是打不開，傳訊息告訴一休。</p>
+        <ErrorActions />
         <p style={mutedStyle}>reason: {view.reason}</p>
       </div>
     );
