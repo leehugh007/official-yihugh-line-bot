@@ -12,6 +12,7 @@
     "verify:q5-atomic": "node scripts/verify-q5-atomic.js"
   },
   "dependencies": {
+    "@line/liff": "^2.25.1",
     "@supabase/supabase-js": "^2.99.1",
     "next": "^14.2.0"
   },
