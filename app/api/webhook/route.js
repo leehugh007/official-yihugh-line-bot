@@ -77,16 +77,39 @@ async function handleEvent(event) {
   const userId = event.source?.userId;
   if (!userId) return;
 
-  // 代碼領取報告：即使測試模式也開放（做完測驗的用戶需要拿報告）
+  // 代碼領取 + A 軌關鍵字回覆：都繞過 TEST_MODE（全量用戶可用）
+  // A 軌 = 地雷 / 菜單 / 報告 / 方案 / 說明會 / 文章 / ABC 等靜態關鍵字回覆
+  // 跟代碼領取同等地位：走 matchKeyword 命中即回，不進對話路徑 dispatch
   if (event.type === 'message' && event.message?.type === 'text') {
     const text = event.message.text.trim();
+
+    // 代碼領取
     if (/^[A-Z2-9]{4}$/.test(text)) {
       const claimed = await handleCodeClaim(event, userId, text);
       if (claimed) return; // 代碼有效，已回覆
     }
+
+    // A 軌關鍵字（繞過 TEST_MODE，跟代碼領取同等地位）
+    const rule = matchKeyword(text);
+    if (rule) {
+      // 確保用戶檔案存在 + 記錄互動（對齊 handleTextMessage 的邏輯）
+      const existingUser = await getUser(userId);
+      if (!existingUser) {
+        const profile = await getProfile(userId);
+        await upsertUser(userId, {
+          displayName: profile?.displayName || '',
+          source: 'legacy',
+        });
+      }
+      await recordInteraction(userId);
+
+      const messages = await rule.handler(userId);
+      await replyMessage(event.replyToken, messages);
+      return;
+    }
   }
 
-  // 測試模式：白名單外的人靜默（代碼領取除外，上面已處理）
+  // 測試模式：白名單外的人靜默（代碼領取 + A 軌關鍵字除外，上面已處理）
   // 放在 idempotency INSERT 之前，避免非白名單用戶污染 official_webhook_events
   if (TEST_MODE && !TEST_ALLOWLIST.includes(userId)) return;
 
@@ -509,18 +532,8 @@ async function handleTextMessage(event, userId) {
   // 記錄互動（不管有沒有匹配關鍵字）
   await recordInteraction(userId);
 
-  // 代碼領取已在 handleEvent 層處理，這裡直接走關鍵字比對
-
-  // 關鍵字比對（報告 / 方案 / 說明會 / 地雷 / 菜單 / ABC …，優先於對話路徑）
-  const rule = matchKeyword(text);
-
-  if (rule) {
-    const messages = await rule.handler(userId);
-    await replyMessage(event.replyToken, messages);
-    return;
-  }
-
-  // 關鍵字沒匹配 → 走對話路徑 dispatch（Phase 3.1 MVP：Q1→Q2→Q3）
+  // 代碼領取 + A 軌關鍵字比對已在 handleEvent 層處理（繞過 TEST_MODE）
+  // 到這裡代表：白名單用戶，訊息不是代碼也不是 A 軌關鍵字 → 走對話路徑
   const handled = await handleConversationPath(event, userId, text);
   if (handled) return;
 
