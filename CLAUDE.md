@@ -2,6 +2,15 @@
 
 > 每次開新對話請先讀這份。
 
+## 🚀 Session 啟動必讀（按順序）
+
+1. **`用戶旅程.md`** — A 軌 + B 軌 + 銜接鉤子 + 當前開放範圍矩陣 + 斷點清單。**不要再問「這個流程怎麼走」**，讀這份 2 分鐘就定位
+2. 本檔（Schema 對齊 + 技術架構 + 設計決策）
+3. `指揮中心.md` — 最近異動 + 待同步項目
+4. `契約_對話路徑.md` v6.1（Q1-Q4 狀態機）+ `契約_Q5轉換漏斗.md` v2.3（Q5+/apply+applications）
+
+Supabase 直連：**三 Bot 共用一個專案**，ref `fnlkhxnfaylhqhystmbr`（Dashboard 顯示名 coach-line-bot），MCP `mcp__supabase__execute_sql` 直接可用。
+
 ## 專案概述
 
 在一休的官方 LINE 帳號「一休陪你健康瘦」上建立的輕量 Bot。
