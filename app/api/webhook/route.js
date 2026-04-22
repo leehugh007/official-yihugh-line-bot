@@ -24,6 +24,7 @@ import { renderTemplate } from '../../../lib/templates.js';
 import {
   CHOICE_TO_PATH,
   isMainChoice,
+  detectMultiChoice,
   extractWeights,
   pickWeightDiffCondition,
   parseQ3Choice,
@@ -705,7 +706,21 @@ async function handleConversationPath(event, userId, text) {
   // === 分支 2：Q2→Q3（stage === 2，用戶選 A/B/C/D）===
   if (stage === 2) {
     const choice = isMainChoice(text);
-    if (!choice) return false; // 沒選 → 靜默（Phase 3.2 再接 AI 分類「其他狀況」）
+    if (!choice) {
+      // Phase 3.3: 偵測複選（AB / ABD / A,B ...）→ 引導選單一
+      // 不接敘述式複選（「選 A 跟 B」）— 這種交給未來 AI 分類
+      const multi = detectMultiChoice(text);
+      if (multi) {
+        const letters = multi.join('、');
+        await replyMessage(event.replyToken, [
+          textMessage(
+            `選 ${letters} 的話，每個都蠻常見的。先挑「最困擾你」或「最想先處理」的那一個就好，其他之後再聊。回 A/B/C/D 其中一個給我。`
+          ),
+        ]);
+        return true;
+      }
+      return false; // 其他自由文字 → 靜默（Phase 3.2 再接 AI 分類「其他狀況」）
+    }
 
     const pathVal = CHOICE_TO_PATH[choice] ?? 'other';
     const q3Tpl = await getTemplate(pathVal, 3, 'q3');
