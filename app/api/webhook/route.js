@@ -212,7 +212,38 @@ async function handleEvent(event) {
       // 其他（貼圖、影片、檔案等，stage ≠ 6/7）→ 不回覆
       break;
     }
+    case 'postback':
+      // Q5 契約 v2.3 Ch.0.2：Q5 軟邀請 Quick Reply「有問題想問」→ handoff
+      // Phase 4.2 之後，visit-followup 等多入口也會進來（Ch.11.5）
+      await handlePostback(event, userId);
+      break;
   }
+}
+
+// ============================================================
+// Postback 事件（Q5 契約 v2.3 Ch.0.2 / Ch.6.1.1）
+// ============================================================
+async function handlePostback(event, userId) {
+  const rawData = event.postback?.data || '';
+  const params = new URLSearchParams(rawData);
+  const action = params.get('action');
+
+  if (action === 'handoff_from_q5') {
+    // 用戶按 Q5 軟邀請的「有問題想問」→ stage=5 + notify 婉馨/一休
+    await recordInteraction(userId);
+    const ok = await triggerHandoff(userId, 'q5_followup');
+    if (ok) {
+      // 契約 Ch.6.1.1 stage=6/7 專屬 handoff 文案
+      const message = textMessage(
+        '我有看到你的問題。這個我請 fifi 直接跟你聊，她看過你剛剛跟我聊的內容，會知道你在哪個階段，等等會主動找你。\n\n先不急著決定要不要進課程，把問題問清楚再說。'
+      );
+      await replyMessage(event.replyToken, [message]);
+    }
+    return;
+  }
+
+  // 未知 action → 靜默（未來擴 visit-followup 等新入口時再加 branch）
+  console.log('[Postback] unknown action, ignored:', { userId, rawData });
 }
 
 // ============================================================
