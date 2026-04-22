@@ -1,21 +1,41 @@
-// Q5 契約 v2.3 Ch.0.9：/apply LIFF Context 驗證（方案 A）
+// Q5 契約 v2.3 Ch.0.9：/apply LIFF 驗證（簡化版 v2）
 //
-// 為什麼要 LIFF 驗證：
-//   Q5 軟邀請 Quick Reply「看看做法」會帶 URL ?userid=U_A 進 /apply。
-//   如果用戶 U_A 把 URL 分享給朋友 U_B，U_B 在 /apply 填表 → 若不驗證
-//   會以 U_A 身份 INSERT application + 寫 stage=7，污染北極星量測 baseline。
-//   第四輪 yi-challenge D1 洞，post-review 升級為前置 PR。
+// ## 為什麼改成這版（2026-04-23 實測修正）
 //
-// 為什麼走方案 A 不走方案 B：
-//   方案 B（deep link redirect）只擋瀏覽器直訪，不防 LINE-to-LINE 分享
-//   （朋友把 deep link 轉貼到自己 LINE 打開，LIFF 綁朋友身份但 URL userid 仍是原 A）。
-//   方案 A 在 SDK 層比對 liff.getContext().userId === URL ?userid，才是真 anti-sharing。
+// 原版兩個問題：
 //
-// 範圍（Phase 4.0）：
-//   - LIFF init + context 驗證
-//   - 瀏覽器直訪 → redirect LINE deep link
-//   - URL userId 不等於 LIFF context userId → mismatch 提示
-//   - 驗證通過 → placeholder 頁（Phase 4.1 才補 landing 五章 + visit 紀錄）
+// 1. **isInClient() redirect loop（桌面 LINE 會爆）**：
+//    原 code 若 !liff.isInClient() → redirect 到 liff.line.me/{LIFF_ID}
+//    但 LINE 桌面 app 的內建瀏覽器 isInClient() 可能回 false，
+//    redirect 後 LINE app 開啟還是桌面 → 還是 false → 無限 loop（「載入中」卡死）。
+//    修：移除 isInClient redirect 邏輯，LIFF init 成功就放行。
+//
+// 2. **LINE 2024 policy 下 userId 比對永遠失敗**：
+//    LINE 2024 強制 LIFF 建在 LINE Login channel 下（禁止在 Messaging API channel）。
+//    Login channel 的 userId namespace 跟 Messaging API namespace **刻意不同 hash**。
+//    URL userid（webhook 寫的 Messaging API ID）≠ liff.getContext().userId（Login ID）。
+//    即使綁了 Linked LINE Official Account（= 舊版 Bot link feature）也沒提供
+//    cross-namespace mapping，只有 friendship 查詢 + add friend 推促。
+//    修：移除 userId 一致性比對。URL userid 保留當 attribution。
+//
+// ## 簡化版保留什麼
+//
+//    - LIFF init（讓 /apply 可在 LINE 內 Full size 開啟）
+//    - LIFF SDK 可用（Phase 4.1 可能用 closeWindow / shareTargetPicker）
+//    - URL userid 當 attribution（server 側存報名時用）
+//    - LIFF_ID 未設 / LIFF init 失敗 → 友善錯誤頁 + retry + contact
+//
+// ## 不再保留
+//
+//    - isInClient 判斷（誤判 loop 風險 > 實際擋瀏覽器直訪的效益）
+//    - userId 比對（做不到）
+//    - 非 LINE 瀏覽器 redirect（沒必要，桌面 / 外部 browser 直接看也 OK）
+//
+// ## LINE-to-LINE 分享污染
+//
+//    Phase 4.5 觀察期再評估：若觀察到 applications 重複 phone/email 嚴重，
+//    再加 signed token（/apply?userid=X&sig=<hmac>&ts=<ts>）或手機驗證碼。
+//    目前接受風險（Q5 只推給已做 Q4 的用戶，轉發機率低）。
 
 'use client';
 
@@ -41,51 +61,32 @@ export default function ApplyPage() {
         const liff = (await import('@line/liff')).default;
         await liff.init({ liffId: LIFF_ID });
 
-        // 瀏覽器直訪（非 LINE in-app browser）→ universal link
-        // 走 https://liff.line.me/{LIFF_ID} 而非 line://app/ scheme：
-        //   - iOS Safari 對 line:// custom scheme 在 cross-origin 有警告
-        //   - universal link 手機有 LINE app 會自動進 app，沒裝走 web LIFF
-        //   - iOS/Android/desktop 行為一致可預期
-        if (!liff.isInClient()) {
-          window.location.href = `https://liff.line.me/${LIFF_ID}${window.location.search}`;
-          return;
-        }
-
-        const context = liff.getContext();
-        if (!context || !context.userId) {
-          if (!cancelled) {
-            setView({ status: 'no_context', reason: 'liff.getContext() 未帶 userId' });
-          }
-          return;
-        }
+        // 不做 isInClient redirect（桌面 LINE 會 loop）
+        // 不做 userId 一致性比對（LINE 2024 policy 做不到）
+        // LIFF init 成功 = 放行，URL userid 當 attribution
 
         const urlParams = new URLSearchParams(window.location.search);
-        const urlUserId = urlParams.get('userid');
+        const urlUserId = urlParams.get('userid') || '';
         const source = urlParams.get('source') || 'unknown';
         const trigger = urlParams.get('trigger') || 'unknown';
 
-        // URL userId 必須存在且等於 LIFF userId（yi-challenge #4 洞）
-        // 原 `if (urlUserId && ...)` 會在 URL 沒帶 userid 時繞過驗證，
-        // 讓任何 LINE user 都能看頁 → 污染北極星 baseline。
-        // 修：沒帶 userid 也當 mismatch 擋下。
-        if (!urlUserId || urlUserId !== context.userId) {
-          if (!cancelled) {
-            setView({
-              status: 'url_mismatch',
-              contextUserId: context.userId,
-              urlUserId: urlUserId || '(missing)',
-            });
-          }
-          return;
+        // 盡力拿 LIFF context（若拿到可 log 用，debug 比對 namespace 差異）
+        let liffUserId = '';
+        try {
+          const ctx = liff.getContext();
+          liffUserId = ctx?.userId || '';
+        } catch (_) {
+          // 忽略 context 讀失敗，不影響主流程
         }
 
-        // 驗證通過
         if (!cancelled) {
           setView({
             status: 'verified',
-            userId: context.userId,
+            urlUserId,
+            liffUserId,
             source,
             trigger,
+            isInClient: liff.isInClient(),
           });
         }
       } catch (err) {
@@ -129,8 +130,8 @@ export default function ApplyPage() {
   };
   const btnSecondaryStyle = { ...btnStyle, background: '#f5f5f5', color: '#333' };
 
-  // yi-challenge #5 洞：錯誤態都要給用戶出路（retry + contact），不要死循環
-  const CONTACT_LINE_URL = 'https://line.me/R/oaMessage/%40sososo/?%E9%A0%81%E9%9D%A2%E6%89%93%E4%B8%8D%E9%96%8B';
+  const CONTACT_LINE_URL =
+    'https://line.me/R/oaMessage/%40sososo/?%E9%A0%81%E9%9D%A2%E6%89%93%E4%B8%8D%E9%96%8B';
 
   const ErrorActions = () => (
     <div style={{ marginTop: 20 }}>
@@ -158,34 +159,6 @@ export default function ApplyPage() {
     );
   }
 
-  if (view.status === 'no_context') {
-    return (
-      <div style={wrapperStyle}>
-        <h2>請從 LINE 開啟</h2>
-        <p>這個頁面必須從 LINE 裡的訊息點按鈕開啟，不要直接複製連結到瀏覽器。</p>
-        <ErrorActions />
-        <p style={mutedStyle}>reason: {view.reason}</p>
-      </div>
-    );
-  }
-
-  if (view.status === 'url_mismatch') {
-    return (
-      <div style={wrapperStyle}>
-        <h2>這個連結綁的是別人</h2>
-        <p>每個人的連結都是專屬的。如果你想看方案，回 LINE 傳「我想報名」給我，我另外給你一個。</p>
-        <a style={btnStyle} href="https://line.me/R/oaMessage/%40sososo/?%E6%88%91%E6%83%B3%E5%A0%B1%E5%90%8D">
-          回 LINE 傳「我想報名」
-        </a>
-        <p style={mutedStyle}>
-          URL userid: {view.urlUserId}
-          <br />
-          LIFF userid: {view.contextUserId}
-        </p>
-      </div>
-    );
-  }
-
   if (view.status === 'liff_error') {
     return (
       <div style={wrapperStyle}>
@@ -201,9 +174,13 @@ export default function ApplyPage() {
   return (
     <div style={wrapperStyle}>
       <h2>驗證通過</h2>
-      <p>你已經從 LINE 進入了，可以看到完整方案。</p>
+      <p>你已經進入 /apply 頁，可以看到完整方案（Phase 4.1 才會寫 landing 五章內容）。</p>
       <p style={mutedStyle}>
-        userId: {view.userId}
+        URL userid: {view.urlUserId || '(none)'}
+        <br />
+        LIFF userid: {view.liffUserId || '(none)'}
+        <br />
+        isInClient: {String(view.isInClient)}
         <br />
         source: {view.source} / trigger: {view.trigger}
       </p>
