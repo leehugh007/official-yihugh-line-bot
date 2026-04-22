@@ -34,7 +34,7 @@ import {
   triggerHandoff,
   handlePoliteEnd,
 } from '../../../lib/handoff.js';
-import { generateFinalFeedback } from '../../../lib/ai-classifier.js';
+import { generateFinalFeedback, verifyHandoffIntent } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 import supabase from '../../../lib/supabase.js';
 
@@ -600,15 +600,46 @@ async function handleConversationPath(event, userId, text) {
 
   // === Level 1 全域 Handoff（Phase 3.2a 新增，stage>=2 才觸發）===
   // 契約 6.1 + 6.4：want_enroll > asked_price > asked_family → stage=5 + notify 婉馨/一休
+  //
+  // Phase 3.3（方案 C）：關鍵字命中後加 AI 二次判斷避免誤觸
+  // 背景：「老婆煮家常菜」「家人聚餐」純 text.includes 會誤觸 asked_family
+  // 策略：關鍵字 fast path (0 cost) → 命中才打 Gemini 判斷真意圖 → fallback 保守觸發
   if (stage >= 2) {
     const reason = await matchGlobalHandoff(text);
     if (reason) {
-      const ok = await triggerHandoff(userId, reason);
-      if (ok) {
-        await replyMessage(event.replyToken, [
-          textMessage('好的，這邊我先請婉馨老師私下跟你聊會比較仔細～她會主動找你哦。'),
-        ]);
-        return true;
+      const verify = await verifyHandoffIntent({ text, reason });
+      console.log('[Handoff] keyword_hit + verify:', {
+        userId,
+        reason,
+        is_intent: verify.is_intent,
+        confidence: verify.confidence,
+        fallback: verify.fallback,
+      });
+
+      if (verify.is_intent) {
+        const ok = await triggerHandoff(userId, reason);
+        if (ok) {
+          const messages = [
+            textMessage('好的，這邊我先請婉馨老師私下跟你聊會比較仔細～她會主動找你哦。'),
+          ];
+          if (TEST_MODE && isInTestAllowlist(userId)) {
+            messages.push(
+              textMessage(
+                `[debug] Handoff 觸發：reason=${reason}, ai_verify=${verify.is_intent}(${verify.confidence})${verify.fallback ? ' [fallback]' : ''}`
+              )
+            );
+          }
+          await replyMessage(event.replyToken, messages);
+          return true;
+        }
+      } else {
+        // AI 判斷為誤觸（用戶只在描述情境），放行給下層 Q1-Q4 正常處理
+        console.log('[Handoff] suppressed by AI verify:', {
+          userId,
+          reason,
+          confidence: verify.confidence,
+          text: text.slice(0, 50),
+        });
       }
     }
   }
