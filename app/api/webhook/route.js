@@ -620,7 +620,7 @@ async function handleConversationPath(event, userId, text) {
         const ok = await triggerHandoff(userId, reason);
         if (ok) {
           const messages = [
-            textMessage('好的，這邊我先請婉馨老師私下跟你聊會比較仔細～她會主動找你哦。'),
+            textMessage('你這個問題值得好好聊，我請 fifi 助教私訊你，她會主動找你。'),
           ];
           if (TEST_MODE && isInTestAllowlist(userId)) {
             messages.push(
