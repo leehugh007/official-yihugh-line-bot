@@ -90,11 +90,57 @@ async function handleEvent(event) {
       if (claimed) return; // 代碼有效，已回覆
     }
 
+    // Phase 3.3: Handoff/禮貌結束 pre-check（放在 A 軌關鍵字之前）
+    // 根因：「我老公反對我瘦身」含『瘦身』→ matchKeyword 先命中 → 回代謝測驗 → handoff 沒機會跑
+    // 修法：stage>=2 用戶先走 Level 0（禮貌結束）+ Level 1（Handoff + 方案 C AI verify）
+    //       verify 判 false 或沒命中 → fall through 到 A 軌關鍵字 / 對話路徑 dispatch
+    const preUser = await getUser(userId);
+    const preStage = preUser?.path_stage ?? 0;
+    if (preUser && !preUser.is_blocked && preStage >= 2 && preStage !== 5) {
+      // Level 0 禮貌結束
+      if (await matchPoliteEnd(text)) {
+        await recordInteraction(userId);
+        await handlePoliteEnd(event, userId, replyMessage);
+        return;
+      }
+      // Level 1 Handoff + AI 二次判斷
+      const preReason = await matchGlobalHandoff(text);
+      if (preReason) {
+        const verify = await verifyHandoffIntent({ text, reason: preReason });
+        console.log('[Handoff] pre-keyword verify:', {
+          userId,
+          reason: preReason,
+          is_intent: verify.is_intent,
+          confidence: verify.confidence,
+          fallback: verify.fallback,
+        });
+        if (verify.is_intent) {
+          await recordInteraction(userId);
+          const ok = await triggerHandoff(userId, preReason);
+          if (ok) {
+            const messages = [
+              textMessage('你這個問題值得好好聊，我請 fifi 助教私訊你，她會主動找你。'),
+            ];
+            if (TEST_MODE && TEST_ALLOWLIST.includes(userId)) {
+              messages.push(
+                textMessage(
+                  `[debug] Handoff 觸發(pre-keyword)：reason=${preReason}, ai_verify=${verify.is_intent}(${verify.confidence})${verify.fallback ? ' [fallback]' : ''}`
+                )
+              );
+            }
+            await replyMessage(event.replyToken, messages);
+            return;
+          }
+        }
+        // verify 判 false → fall through（讓 A 軌關鍵字或對話路徑接）
+      }
+    }
+
     // A 軌關鍵字（繞過 TEST_MODE，跟代碼領取同等地位）
     const rule = matchKeyword(text);
     if (rule) {
       // 確保用戶檔案存在 + 記錄互動（對齊 handleTextMessage 的邏輯）
-      const existingUser = await getUser(userId);
+      const existingUser = preUser || (await getUser(userId));
       if (!existingUser) {
         const profile = await getProfile(userId);
         await upsertUser(userId, {
@@ -591,58 +637,9 @@ async function handleConversationPath(event, userId, text) {
 
   const stage = state.path_stage ?? 0;
 
-  // === Level 0 禮貌結束（Phase 3.2a 新增，任何 stage 都先檢查）===
-  // 契約 6.3：命中「太貴/沒預算/沒錢/先不用」→ 回禮貌話 + intent='low'，path_stage 保持
-  if (await matchPoliteEnd(text)) {
-    await handlePoliteEnd(event, userId, replyMessage);
-    return true;
-  }
-
-  // === Level 1 全域 Handoff（Phase 3.2a 新增，stage>=2 才觸發）===
-  // 契約 6.1 + 6.4：want_enroll > asked_price > asked_family → stage=5 + notify 婉馨/一休
-  //
-  // Phase 3.3（方案 C）：關鍵字命中後加 AI 二次判斷避免誤觸
-  // 背景：「老婆煮家常菜」「家人聚餐」純 text.includes 會誤觸 asked_family
-  // 策略：關鍵字 fast path (0 cost) → 命中才打 Gemini 判斷真意圖 → fallback 保守觸發
-  if (stage >= 2) {
-    const reason = await matchGlobalHandoff(text);
-    if (reason) {
-      const verify = await verifyHandoffIntent({ text, reason });
-      console.log('[Handoff] keyword_hit + verify:', {
-        userId,
-        reason,
-        is_intent: verify.is_intent,
-        confidence: verify.confidence,
-        fallback: verify.fallback,
-      });
-
-      if (verify.is_intent) {
-        const ok = await triggerHandoff(userId, reason);
-        if (ok) {
-          const messages = [
-            textMessage('你這個問題值得好好聊，我請 fifi 助教私訊你，她會主動找你。'),
-          ];
-          if (TEST_MODE && isInTestAllowlist(userId)) {
-            messages.push(
-              textMessage(
-                `[debug] Handoff 觸發：reason=${reason}, ai_verify=${verify.is_intent}(${verify.confidence})${verify.fallback ? ' [fallback]' : ''}`
-              )
-            );
-          }
-          await replyMessage(event.replyToken, messages);
-          return true;
-        }
-      } else {
-        // AI 判斷為誤觸（用戶只在描述情境），放行給下層 Q1-Q4 正常處理
-        console.log('[Handoff] suppressed by AI verify:', {
-          userId,
-          reason,
-          confidence: verify.confidence,
-          text: text.slice(0, 50),
-        });
-      }
-    }
-  }
+  // Phase 3.3: Level 0/1 handoff 已移到 handleEvent 的 A 軌關鍵字之前處理
+  // 原因：「我老公反對我瘦身」含『瘦身』會先被 matchKeyword 攔截，handoff 沒機會跑
+  // 詳見 handleEvent 內的 pre-keyword handoff block
 
   // === 分支 1：Q1→Q2（stage 0 或 1，用戶提供體重數字）===
   if (stage <= 1) {
