@@ -190,7 +190,16 @@ async function handleEvent(event) {
 
       // Q5 契約 v2.3 Ch.7.2：stage=6/7 非文字訊息（貼圖/影片/檔案/圖片）→ 軟 handoff
       // 觸發 q5_non_text_query，用戶用非文字表達在 /apply 附近的狀態 → 接回真人
-      if ((state?.path_stage === 6 || state?.path_stage === 7) && msgType !== 'text') {
+      //
+      // yi-challenge #2 洞修法：加 q5_sent_at 守門。Defense in depth —
+      //   避免 rollback race window 中「stage=6 但 Q5 其實沒送達」的用戶
+      //   被誤判為已進 Q5 軌。按 PR 0.10 新 rollback 策略 q5_sent_at 不會被清，
+      //   這個 guard 在 race window 極短的當下自動收斂，多一層防禦不花成本。
+      if (
+        (state?.path_stage === 6 || state?.path_stage === 7) &&
+        state?.q5_sent_at &&
+        msgType !== 'text'
+      ) {
         await recordInteraction(userId);
         const ok = await triggerHandoff(userId, 'q5_non_text_query');
         if (ok) {
