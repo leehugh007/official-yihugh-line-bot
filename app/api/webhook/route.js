@@ -68,8 +68,12 @@ export async function GET() {
 }
 
 // 測試模式：只回應白名單裡的人，其他人靜默
-// 準備正式上線時，把 TEST_MODE 改成 false 就好
-const TEST_MODE = true;
+// 2026-04-23 一休決策切 false：Phase 3.3 B 軌 Q1→Q4 全量開放
+// 斷點背景：A 軌菜單/地雷回覆末尾問體重，333/335 用戶已輸入回應但被 TEST_MODE 擋靜默
+// 現在 B 軌全開，用戶回體重會自動走 Q1→Q2→Q3→Q4 AI 回饋
+// stage=4 後再傳訊息目前仍靜默（Phase 4.2 Q5 未 wire，是預期行為，一休 OK 訊息有進 DB 可人工處理）
+// 未來：搬到 official_settings 表讓後台可開關（契約 v2.3 backlog）
+const TEST_MODE = false;
 const TEST_ALLOWLIST = [
   'U51808e2cc195967eba53701518e6f547', // 一休
   'U3edf3d2114ee03ad81cff1fd35c04600', // 婉馨
@@ -190,7 +194,16 @@ async function handleEvent(event) {
 
       // Q5 契約 v2.3 Ch.7.2：stage=6/7 非文字訊息（貼圖/影片/檔案/圖片）→ 軟 handoff
       // 觸發 q5_non_text_query，用戶用非文字表達在 /apply 附近的狀態 → 接回真人
-      if ((state?.path_stage === 6 || state?.path_stage === 7) && msgType !== 'text') {
+      //
+      // yi-challenge #2 洞修法：加 q5_sent_at 守門。Defense in depth —
+      //   避免 rollback race window 中「stage=6 但 Q5 其實沒送達」的用戶
+      //   被誤判為已進 Q5 軌。按 PR 0.10 新 rollback 策略 q5_sent_at 不會被清，
+      //   這個 guard 在 race window 極短的當下自動收斂，多一層防禦不花成本。
+      if (
+        (state?.path_stage === 6 || state?.path_stage === 7) &&
+        state?.q5_sent_at &&
+        msgType !== 'text'
+      ) {
         await recordInteraction(userId);
         const ok = await triggerHandoff(userId, 'q5_non_text_query');
         if (ok) {
