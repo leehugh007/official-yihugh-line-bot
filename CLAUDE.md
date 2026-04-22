@@ -66,6 +66,13 @@ official-yihugh-line-bot/
     └── migration_006_image_support.sql  # Storage bucket + 三張表加 image_url
 ```
 
+## 介面契約文件
+
+| 契約 | 版本 | 狀態 | 範圍 |
+|------|------|------|------|
+| `契約_對話路徑.md` | v6.1 | 定版（Phase 3.2c redesign 後） | Q1-Q4 + Handoff 狀態機 |
+| `契約_Q5轉換漏斗.md` | v2 | Phase 1 完成挑戰待第二輪驗證 | Q5 方案推進 + 自建 /apply + 追蹤「點了沒報名」+ 報名資料表 |
+
 ## 關鍵字規則
 
 | 關鍵字 | 回覆 |
