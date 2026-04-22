@@ -1493,22 +1493,22 @@ function buildPersonalizedReport(session, displayName) {
   const name = displayName ? displayName + '，' : '';
   const symptoms = session.q7_symptoms || [];
 
-  // ─── 訊息 1：診斷 + aha moment + 一步就好 ───
+  // ─── 訊息 1：診斷 + aha moment + 一步就好（方向 B：emoji 段首 + 精簡結尾）───
 
-  let msg1 = '';
+  let msg1 = `${name}你的代謝報告出來了\n\n`;
 
-  // 開頭：用她自己的症狀做診斷
+  // 🎯 你的狀況（用她自己的症狀做診斷；沒勾症狀用 tagline+description fallback）
   if (symptoms.length > 0) {
     msg1 +=
-      `${name}你的代謝報告出來了\n\n` +
+      `🎯 你的狀況\n` +
       `你提到了：\n` +
-      symptoms.map((s) => `・${s}`).join('\n') + '\n\n' +
+      symptoms.map((s) => `・${s}`).join('\n') + '\n' +
       `這些不是個別問題，它們都指向同一件事——\n` +
       `${type.symptomContext}\n\n`;
   } else {
     msg1 +=
-      `${name}你的代謝報告出來了\n\n` +
-      `「${type.tagline}」\n\n` +
+      `🎯 你的狀況\n` +
+      `「${type.tagline}」\n` +
       `${type.description}\n\n`;
   }
 
@@ -1517,23 +1517,17 @@ function buildPersonalizedReport(session, displayName) {
     msg1 += `你的體重波動模式也在反映同一件事——不是你不夠努力，是身體正在用它的方式告訴你：現在的方法需要調整。\n\n`;
   }
 
-  // aha moment：為什麼之前的方法沒用
-  msg1 +=
-    `━━━━━━━━━━━━━━━\n\n` +
-    `${type.ahaReason}\n\n`;
+  // 💭 為什麼之前沒用（aha moment）
+  msg1 += `💭 為什麼之前沒用\n${type.ahaReason}\n\n`;
 
-  // 核心認知
-  msg1 +=
-    `━━━━━━━━━━━━━━━\n\n` +
-    `💡 ${type.keyPoint}\n\n`;
+  // 💡 核心認知
+  msg1 += `💡 核心認知\n${type.keyPoint}\n\n`;
 
-  // 一步就好
-  msg1 +=
-    `不用一次改很多，先做一件事就好：\n\n` +
-    `👉 ${type.oneStep}\n\n` +
-    `這一步做穩了，再來調整其他的。\n\n` +
-    `有任何問題都可以直接問我 🙂\n` +
-    `我是一休，陪你健康的瘦一輩子`;
+  // 👉 先做這一件事
+  msg1 += `👉 先做這一件事\n${type.oneStep}\n\n`;
+
+  // 簽名（拿掉「這一步做穩了」+「有問題問我」兩句贅語）
+  msg1 += `我是一休，陪你健康的瘦一輩子`;
 
   // ─── 訊息 2：完整建議 + 類型頁連結 ───
   const msg2 =
@@ -1542,12 +1536,12 @@ function buildPersonalizedReport(session, displayName) {
     `\n\n想更了解「${type.name}」代謝的完整解析 👇\n` +
     type.typeUrl;
 
-  // ─── 訊息 3：互動引導（地雷/菜單/公斤數 三選一）───
+  // ─── 訊息 3：互動引導（精簡第三 bullet）───
   const msg3 =
-    `看完報告只是第一步，想繼續聊的話：\n\n` +
+    `看完報告，想繼續聊的話：\n\n` +
     `👉 回「地雷」— 我告訴你${type.trapTeaser}\n` +
     `👉 回「菜單」— 我告訴你${type.menuTeaser}\n` +
-    `👉 或直接告訴我你目前幾公斤、想瘦到幾公斤，我告訴你這個目標在你這個類型下要多久、該怎麼走`;
+    `👉 或告訴我「現在幾公斤、想瘦到幾公斤」，我幫你看時間跟怎麼走`;
 
   return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
 }
