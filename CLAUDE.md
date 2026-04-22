@@ -133,7 +133,7 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 | path | TEXT | — | [對話路徑] healthCheck/rebound/postpartum/eatOut/other |
 | path_stage | INTEGER | 0 | [對話路徑] 0=未進/1=Q1/2=Q2/3=Q3/4=Q4 |
 | last_user_reply_at | TIMESTAMPTZ | — | [對話路徑] 用戶最後主動回覆時間 |
-| ai_tags | JSONB | '{}' | [對話路徑] {痛點:[], 猶豫:[], 意願, 關注:[]} — 寫入禁 SQL jsonb_set、走 lib/users.js |
+| ai_tags | JSONB | '{}' | [對話路徑] {痛點:[], 猶豫:[], 意願, 關注:[]} + Phase 3.2c redesign 後 q3_choice/q3_condition_selected/q4_classified_at/q4_condition='ai_final_feedback' — 寫入禁 SQL jsonb_set、走 lib/users.js。⚠️ q3_choice/q3_condition_selected 尚未加入 ALLOWED_KEYS，Phase 3.3 前補 |
 | handoff_triggered_at | TIMESTAMPTZ | — | [對話路徑] 專人介入觸發時間 |
 | handoff_reason | TEXT | — | [對話路徑] want_enroll/asked_price/asked_family/high_intent/postpartum_returned/manual |
 | ai_tags_updated_at | TIMESTAMPTZ | — | [避坑補丁] ai_tags 14 天重估基準（抄阿算 insights） |
