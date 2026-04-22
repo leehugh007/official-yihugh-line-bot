@@ -183,14 +183,35 @@ async function handleEvent(event) {
     case 'unfollow':
       await markBlocked(userId);
       break;
-    case 'message':
-      if (event.message?.type === 'text') {
-        await handleTextMessage(event, userId);
-      } else if (event.message?.type === 'image') {
-        await handleImageMessage(event, userId);
+    case 'message': {
+      // Q5 契約 v2.3 Ch.0.7：pre-check 讀 state 一次，之後傳入 handler（減 DB read）
+      const msgType = event.message?.type;
+      const state = await getUserPathState(userId);
+
+      // Q5 契約 v2.3 Ch.7.2：stage=6/7 非文字訊息（貼圖/影片/檔案/圖片）→ 軟 handoff
+      // 觸發 q5_non_text_query，用戶用非文字表達在 /apply 附近的狀態 → 接回真人
+      if ((state?.path_stage === 6 || state?.path_stage === 7) && msgType !== 'text') {
+        await recordInteraction(userId);
+        const ok = await triggerHandoff(userId, 'q5_non_text_query');
+        if (ok) {
+          // TODO Phase 4.1：改走 getSettingTyped('q5_non_text_soft_handoff_text')
+          await replyMessage(event.replyToken, [
+            textMessage(
+              '我這邊只能看文字訊息，你的情況我請 fifi 助教直接跟你聊，她等等會主動找你。\n\n有什麼想先問的，你也可以直接打字告訴我。'
+            ),
+          ]);
+        }
+        break;
       }
-      // 其他（貼圖、影片、檔案等）→ 不回覆
+
+      if (msgType === 'text') {
+        await handleTextMessage(event, userId, state);
+      } else if (msgType === 'image') {
+        await handleImageMessage(event, userId, state);
+      }
+      // 其他（貼圖、影片、檔案等，stage ≠ 6/7）→ 不回覆
       break;
+    }
     case 'postback':
       // Q5 契約 v2.3 Ch.0.2：Q5 軟邀請 Quick Reply「有問題想問」→ handoff
       // Phase 4.2 之後，visit-followup 等多入口也會進來（Ch.11.5）
@@ -594,7 +615,7 @@ async function handleTdeeCodeClaim(event, userId, session) {
 // ============================================================
 // 文字訊息處理
 // ============================================================
-async function handleTextMessage(event, userId) {
+async function handleTextMessage(event, userId, state) {
   const text = event.message.text;
 
   // 檢查用戶是否已在資料庫（處理 Bot 上線前的舊用戶）
@@ -613,7 +634,8 @@ async function handleTextMessage(event, userId) {
 
   // 代碼領取 + A 軌關鍵字比對已在 handleEvent 層處理（繞過 TEST_MODE）
   // 到這裡代表：白名單用戶，訊息不是代碼也不是 A 軌關鍵字 → 走對話路徑
-  const handled = await handleConversationPath(event, userId, text);
+  // state 由 caller 傳入（Q5 契約 v2.3 Ch.0.7 避免重讀 DB）
+  const handled = await handleConversationPath(event, userId, text, state);
   if (handled) return;
 
   // 對話路徑也沒接到 → 靜默（一休/婉馨手動處理）
@@ -660,8 +682,9 @@ async function pickWeightDiffConditionWithSettings(diff) {
  * 對話路徑 dispatch（MVP 版本）
  * 回傳 true = 已處理（發出 reply），false = 未處理（讓 caller 靜默）
  */
-async function handleConversationPath(event, userId, text) {
-  const state = await getUserPathState(userId);
+async function handleConversationPath(event, userId, text, state) {
+  // state 由 caller 傳入（Q5 契約 v2.3 Ch.0.7 pre-check 讀一次，避免下游重讀）
+  // 注意：L745 state2 二讀保留 — 那是 updatePathStage(3) 之後要拿最新 state，不能共用
 
   // 封鎖用戶 / Stage 5 特例：Phase 3.1/3.2a 不接，留給 3.3 處理
   if (state.is_blocked) return false;
@@ -1005,9 +1028,9 @@ async function handleStage3ToQ4(event, userId, text, state) {
 // Phase 3.2c：圖片訊息處理（stage=3 引導用戶回數字）
 // ============================================================
 
-async function handleImageMessage(event, userId) {
+async function handleImageMessage(event, userId, state) {
   // Phase 3.2c 重設計：Q3 是 1/2/3/4 選項，stage=3 任一條 path 收到圖片都引導回數字
-  const state = await getUserPathState(userId);
+  // state 由 caller 傳入（Q5 契約 v2.3 Ch.0.7 pre-check 讀一次）
   if (!state) return;
   if (state.path_stage !== 3) return;
   if (!['healthCheck', 'rebound', 'postpartum', 'eatOut'].includes(state.path)) return;
