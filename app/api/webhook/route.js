@@ -26,6 +26,7 @@ import {
   isMainChoice,
   extractWeights,
   pickWeightDiffCondition,
+  parseQ3Choice,
 } from '../../../lib/conversation-path.js';
 import {
   matchPoliteEnd,
@@ -33,7 +34,7 @@ import {
   triggerHandoff,
   handlePoliteEnd,
 } from '../../../lib/handoff.js';
-import { classifyQ4Condition, generateMealFeedback } from '../../../lib/ai-classifier.js';
+import { generateFinalFeedback } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 import supabase from '../../../lib/supabase.js';
 
@@ -720,16 +721,6 @@ async function handleConversationPath(event, userId, text) {
 // Phase 3.2a stage=3 → stage=4 AI 分類（Code Gate E1-E2 + Gemini + ai_tags 寫入）
 // ============================================================
 
-/**
- * 非中文/英數字比率 → 判定純 emoji/符號（Code Gate E2）
- */
-function isMostlyNonTextual(text) {
-  const real = text.replace(/\s/g, '');
-  if (real.length === 0) return true;
-  const textual = real.match(/[\u4e00-\u9fa5A-Za-z0-9]/g) || [];
-  return textual.length / real.length < 0.3;
-}
-
 // AI 重入保護窗口：同一用戶 1h 內只打一次 Gemini
 // 目的：Q4 模板 is_active=false 時，每則訊息 stage 停在 3，若不保護會每則都打 AI
 const AI_REENTRY_WINDOW_MS = 60 * 60 * 1000;
@@ -740,8 +731,6 @@ function isInTestAllowlist(userId) {
 
 async function handleStage3ToQ4(event, userId, text, state) {
   // === Code Gate E0（Phase 3.2b）：stage=3 收到「像 Q1 體重格式」訊息 → 用戶想重來 ===
-  // 實測發現：stage=3 的用戶重打「我目前 170公分,78公斤,想瘦到70公斤」會被當 Q3 回覆餵 AI,
-  // AI 仍給 confidence=high 亂分類。偵測到體重格式 → 重置 stage=1 + 清 path + reply。
   const maybeWeights = extractWeights(text);
   if (maybeWeights) {
     await supabase
@@ -756,15 +745,15 @@ async function handleStage3ToQ4(event, userId, text, state) {
       })
       .eq('line_user_id', userId);
 
-    // 清 ai_tags 的 q4 flag（讓下次正常走完 AI 重分類）+ 重置 retry_count_q3
     await updateAiTags(userId, {
       q4_classified_at: null,
       q4_condition: null,
+      q3_choice: null,
+      q3_condition_selected: null,
       retry_count_q3: 0,
       _op: 'overwrite',
     });
 
-    // 推 q1_retry_weight 或 hardcoded 引導（Phase 3.2a 啟用的是 q1_retry_weight）
     const retryTpl = await getTemplate(null, 1, 'retry_weight');
     const msg = retryTpl
       ? await renderTemplate(retryTpl, {})
@@ -773,64 +762,52 @@ async function handleStage3ToQ4(event, userId, text, state) {
     const messages = [textMessage(msg)];
     if (TEST_MODE && isInTestAllowlist(userId)) {
       messages.push(
-        textMessage('[debug] Code Gate E0 觸發：偵測到 Q1 體重格式，已重置 stage=1+清 path+清 q4 flag。下一則體重會重走 Q1→Q2→Q3。')
+        textMessage('[debug] Code Gate E0 觸發：偵測到 Q1 體重格式，已重置 stage=1+清 path+清 q3/q4 flag。')
       );
     }
     await replyMessage(event.replyToken, messages);
     return true;
   }
 
-  // === Code Gate E1：字數過少 ===
-  const minChars = await getSettingTyped('min_msg_chars_for_ai');
-  const realChars = text.replace(/\s/g, '').length;
-  if (realChars < minChars) {
-    // Phase 3.2a 簡化：retry_count_q3++ 後靜默（path_×_retry 模板 Phase 3.2 後續啟用）
-    const newCount = (state.ai_tags?.retry_count_q3 ?? 0) + 1;
-    await updateAiTags(userId, {
-      retry_count_q3: newCount,
-      _op: 'overwrite',
-    });
-    // 白名單測試期推 debug 回覆，免一休看起來像 Bot 壞（實測 2026-04-21 發現缺口）
-    if (TEST_MODE && isInTestAllowlist(userId)) {
-      await replyMessage(event.replyToken, [
-        textMessage(
-          `[debug] Code Gate E1 擋下（字數 ${realChars} < ${minChars}，避免浪費 Gemini token）。\nretry_count_q3=${newCount}。請多打幾個字，例如「血糖紅字、有吃藥」。`
-        ),
-      ]);
-    }
-    return false;
-  }
-
-  // === Code Gate E2：純 emoji / 符號 ===
-  if (isMostlyNonTextual(text)) {
-    const newCount = (state.ai_tags?.retry_count_q3 ?? 0) + 1;
-    await updateAiTags(userId, {
-      retry_count_q3: newCount,
-      _op: 'overwrite',
-    });
-    if (TEST_MODE && isInTestAllowlist(userId)) {
-      await replyMessage(event.replyToken, [
-        textMessage(
-          `[debug] Code Gate E2 擋下（純 emoji/符號，AI 無法分類）。\nretry_count_q3=${newCount}。請用文字描述。`
-        ),
-      ]);
-    }
-    return false;
-  }
-
-  // === Phase 3.2c：eatOut 走 DYNAMIC path_d_ai_meal_feedback ===
+  // === Phase 3.2c 重設計：Q3 改 1/2/3/4 選項，不走 E1/E2 字數／emoji 檢查 ===
+  // （原 E1/E2 設計是防「自由打字太短」浪費 AI token；Q3 選項後這類檢查不適用）
   const { path } = state;
-  if (path === 'eatOut') {
-    return await handleEatOutMealFeedback(event, userId, text, state);
-  }
 
-  // === AI 適用性：只處理三條主流 path ===
-  if (!['healthCheck', 'rebound', 'postpartum'].includes(path)) {
-    // path=other 走 Phase 3.2 後續 path_e 邏輯
+  // path=other 或未選 → Phase 3.2 後續 path_e 邏輯
+  if (!['healthCheck', 'rebound', 'postpartum', 'eatOut'].includes(path)) {
     return false;
   }
 
-  // === 重入保護：若 1h 內已分類過，跳過 AI call（避免 Q4 模板 inactive 時無限重打）===
+  // === 解析 Q3 選項（1/2/3/4） ===
+  const parsed = parseQ3Choice(text, path);
+  if (!parsed) {
+    // 用戶沒回純數字 → 重問 Q3
+    const newCount = (state.ai_tags?.retry_count_q3 ?? 0) + 1;
+    await updateAiTags(userId, {
+      retry_count_q3: newCount,
+      _op: 'overwrite',
+    });
+
+    const q3Tpl = await getTemplate(path, 3, 'q3');
+    const q3Body = q3Tpl ? await renderTemplate(q3Tpl, {}) : '';
+    const retryPrefix = '先幫我用數字回一下就好（例如 1 或 2），我才看得出該怎麼幫你。\n\n';
+    const msg = q3Body ? retryPrefix + q3Body : retryPrefix;
+
+    const messages = [textMessage(msg)];
+    if (TEST_MODE && isInTestAllowlist(userId)) {
+      messages.push(
+        textMessage(
+          `[debug] Q3 選項未命中（text="${text.slice(0, 30)}"，path=${path}）。retry_count_q3=${newCount}。`
+        )
+      );
+    }
+    await replyMessage(event.replyToken, messages);
+    return true;
+  }
+
+  const { choice, cond, label } = parsed;
+
+  // === 重入保護：1h 內已產過 Q4 DYNAMIC 回饋 ===
   const lastClassifiedAt = state.ai_tags?.q4_classified_at;
   if (lastClassifiedAt) {
     const age = Date.now() - new Date(lastClassifiedAt).getTime();
@@ -841,11 +818,10 @@ async function handleStage3ToQ4(event, userId, text, state) {
         age_ms: age,
         last_condition: state.ai_tags?.q4_condition,
       });
-      // 白名單測試期額外回 debug，免一休誤判 Bot 壞（TEST_MODE 保護，不影響真實用戶）
       if (TEST_MODE && isInTestAllowlist(userId)) {
         await replyMessage(event.replyToken, [
           textMessage(
-            `[debug] 跳過 AI（1h 內已分類為 ${state.ai_tags?.q4_condition || '?'}）。Q4 模板未啟用，正式流程會等啟用後才推進。`
+            `[debug] 跳過 AI（1h 內已產過 Q4 回饋，上次 condition=${state.ai_tags?.q4_condition || '?'}）。DYNAMIC 模板 inactive 時正式流程會靜默。`
           ),
         ]);
       }
@@ -853,19 +829,30 @@ async function handleStage3ToQ4(event, userId, text, state) {
     }
   }
 
+  // === 寫 Q3 選項結果 ===
+  await updateAiTags(userId, {
+    q3_choice: choice,
+    q3_condition_selected: cond,
+    _op: 'overwrite',
+  });
+
+  // === 取 Q4 通用 DYNAMIC 模板 ===
+  const dynamicTpl = await getTemplate(null, 4, 'ai_final_feedback');
+
   // === AI call ===
-  const result = await classifyQ4Condition({
-    path,
+  const result = await generateFinalFeedback({
     current: state.current_weight,
     target: state.target_weight,
-    userText: text,
+    path,
+    q3Label: label,
+    metabolismType: state.metabolism_type || null,
   });
 
   if (!result.ok) {
-    console.error('[Stage3ToQ4] AI classify failed:', result.reason, { userId, path });
+    console.error('[Stage3ToQ4] generateFinalFeedback failed:', result.reason, { userId, path, label });
     if (TEST_MODE && isInTestAllowlist(userId)) {
       await replyMessage(event.replyToken, [
-        textMessage(`[debug] AI 分類失敗：${result.reason}`),
+        textMessage(`[debug] generateFinalFeedback 失敗：${result.reason}`),
       ]);
     }
     return false;
@@ -873,7 +860,7 @@ async function handleStage3ToQ4(event, userId, text, state) {
 
   const { output, fallback } = result;
 
-  // 寫 ai_tags（痛點/猶豫/意願/關注，_from_ai 自動 en→zh key mapping）
+  // 寫 ai_tags（Q3 選項後主要塞 intent，其他大多空陣列）
   if (output.ai_tags) {
     const r = await updateAiTags(userId, {
       ...output.ai_tags,
@@ -883,169 +870,16 @@ async function handleStage3ToQ4(event, userId, text, state) {
     if (!r.ok) console.error('[Stage3ToQ4] updateAiTags failed:', r.error);
   }
 
-  // confidence=low → fallback（Phase 3.2a 暫靜默，後續可推 path_×_retry_q3）
-  if (fallback) {
-    console.log('[Stage3ToQ4] low confidence fallback:', { userId, path });
-    if (TEST_MODE && isInTestAllowlist(userId)) {
-      await replyMessage(event.replyToken, [
-        textMessage(`[debug] AI 低信心分類（confidence=low），暫不推進 Q4。`),
-      ]);
-    }
-    return false;
-  }
-
-  const condition = Array.isArray(output.conditions) ? output.conditions[0] : null;
-  if (!condition) {
-    console.log('[Stage3ToQ4] no condition picked:', { userId, path });
-    return false;
-  }
-
-  // 寫 classify flag（不管 Q4 模板 active 與否都要寫，防下次訊息重打 AI）
+  // 寫 classify flag（防 1h 重打 AI）
   await updateAiTags(userId, {
     q4_classified_at: new Date().toISOString(),
-    q4_condition: condition,
+    q4_condition: 'ai_final_feedback',
     _op: 'overwrite',
   });
 
-  // 查 Q4 模板（is_active=true 才有結果）
-  const q4Tpl = await getTemplate(path, 4, condition);
-  if (!q4Tpl) {
-    // 模板未啟用 → 靜默（Phase 3.2a 啟用前這會是常態，ai_tags + classify flag 已寫入）
-    console.log('[Stage3ToQ4] Q4 template inactive:', { path, condition });
-    if (TEST_MODE && isInTestAllowlist(userId)) {
-      const intent = output.ai_tags?.intent || '?';
-      await replyMessage(event.replyToken, [
-        textMessage(
-          `[debug] AI 分類成功：\npath=${path} / condition=${condition} / intent=${intent} / confidence=${output.confidence}\n→ Q4 模板 is_active=false，正式流程會靜默。\nai_tags 已寫入 DB。`
-        ),
-      ]);
-    }
-    return false;
-  }
-
-  // 推進 stage=4 + 寫 last_user_reply_at
-  await supabase
-    .from('official_line_users')
-    .update({ last_user_reply_at: new Date().toISOString() })
-    .eq('line_user_id', userId);
-
-  const r = await updatePathStage(userId, 4);
-  if (!r.ok) {
-    console.error('[Stage3ToQ4] updatePathStage(4) failed:', r.error);
-    return false;
-  }
-
-  const q4Text = await renderTemplate(q4Tpl, {
-    current_weight: state.current_weight,
-    target_weight: state.target_weight,
-  });
-  await replyMessage(event.replyToken, [textMessage(q4Text)]);
-  return true;
-}
-
-// ============================================================
-// Phase 3.2c：eatOut DYNAMIC 餐點回饋（path_d_ai_meal_feedback）
-// ============================================================
-
-async function handleEatOutMealFeedback(event, userId, text, state) {
-  // === Code Gate E6：字數 < meal_min_chars + 無圖片 → 推 path_d_retry_meal_detail ===
-  // （E6' 的「圖片 + 無文字」情況在 handleImageMessage 處理）
-  const mealMinChars = await getSettingTyped('meal_min_chars');
-  const realChars = text.replace(/\s/g, '').length;
-  if (realChars < mealMinChars) {
-    const newCount = (state.ai_tags?.retry_count_q3 ?? 0) + 1;
-    await updateAiTags(userId, {
-      retry_count_q3: newCount,
-      _op: 'overwrite',
-    });
-
-    const retryTpl = await getTemplate('eatOut', 3, 'retry');
-    const fallbackMsg =
-      '具體一點比較好抓 —\n早餐大概吃什麼？午餐呢？晚餐呢？\n隨便寫都可以，我看得懂。';
-    const msg = retryTpl
-      ? await renderTemplate(retryTpl, {
-          current_weight: state.current_weight,
-          target_weight: state.target_weight,
-        })
-      : fallbackMsg;
-
-    const messages = [textMessage(msg)];
-    if (TEST_MODE && isInTestAllowlist(userId)) {
-      messages.push(
-        textMessage(
-          `[debug] Code Gate E6 擋下（字數 ${realChars} < ${mealMinChars}，path_d_retry_meal_detail ${retryTpl ? '啟用中' : '未啟用→fallback 文字'}）。retry_count_q3=${newCount}。`
-        )
-      );
-    }
-    await replyMessage(event.replyToken, messages);
-    return true;
-  }
-
-  // === 重入保護：若 1h 內已分類過 eatOut 回饋，跳過 AI call（避免 DYNAMIC 模板 inactive 時無限重打）===
-  const lastClassifiedAt = state.ai_tags?.q4_classified_at;
-  if (lastClassifiedAt) {
-    const age = Date.now() - new Date(lastClassifiedAt).getTime();
-    if (age < AI_REENTRY_WINDOW_MS && age >= 0) {
-      console.log('[EatOutMealFeedback] skip AI (1h reentry window):', {
-        userId,
-        age_ms: age,
-        last_condition: state.ai_tags?.q4_condition,
-      });
-      if (TEST_MODE && isInTestAllowlist(userId)) {
-        await replyMessage(event.replyToken, [
-          textMessage(
-            `[debug] 跳過 AI（1h 內已處理過 eatOut 回饋，上次 condition=${state.ai_tags?.q4_condition || '?'}）。DYNAMIC 模板未啟用時正式流程會靜默。`
-          ),
-        ]);
-      }
-      return false;
-    }
-  }
-
-  // === 取 DYNAMIC 模板（含 AI prompt 骨架）===
-  // 模板未啟用時：仍 call AI 讓白名單看到產物，但不推進 stage（契約 4.2：DYNAMIC 必須拿到 aiOutput 才能 render）
-  const dynamicTpl = await getTemplate('eatOut', 4, 'ai_meal_feedback');
-
-  // === AI call ===
-  const result = await generateMealFeedback({
-    current: state.current_weight,
-    target: state.target_weight,
-    userText: text,
-    promptSkeleton: dynamicTpl?.message_template,
-  });
-
-  if (!result.ok) {
-    console.error('[EatOutMealFeedback] AI generate failed:', result.reason, { userId });
-    if (TEST_MODE && isInTestAllowlist(userId)) {
-      await replyMessage(event.replyToken, [
-        textMessage(`[debug] generateMealFeedback 失敗：${result.reason}`),
-      ]);
-    }
-    return false;
-  }
-
-  const { output, fallback } = result;
-
-  // 寫 ai_tags（痛點/猶豫/意願/關注，_from_ai 自動 en→zh key mapping）
-  if (output.ai_tags) {
-    const r = await updateAiTags(userId, {
-      ...output.ai_tags,
-      _from_ai: true,
-      _op: 'append',
-    });
-    if (!r.ok) console.error('[EatOutMealFeedback] updateAiTags failed:', r.error);
-  }
-
-  // 寫 classify flag（不管模板 active 與否都寫，防下次訊息重打 AI）
-  await updateAiTags(userId, {
-    q4_classified_at: new Date().toISOString(),
-    q4_condition: 'ai_meal_feedback',
-    _op: 'overwrite',
-  });
-
-  // confidence=low / feedback_too_short → fallback 不推進
+  // fallback（confidence=low / feedback 過短） → 不推進
   if (fallback) {
-    console.log('[EatOutMealFeedback] low confidence / short fallback:', { userId });
+    console.log('[Stage3ToQ4] Q4 fallback:', { userId, path, label });
     if (TEST_MODE && isInTestAllowlist(userId)) {
       await replyMessage(event.replyToken, [
         textMessage(
@@ -1058,15 +892,12 @@ async function handleEatOutMealFeedback(event, userId, text, state) {
 
   // 模板未啟用 → TEST_MODE 預覽 AI 產出，不推進
   if (!dynamicTpl) {
-    console.log('[EatOutMealFeedback] DYNAMIC template inactive:', {
-      userId,
-      tpl: 'path_d_ai_meal_feedback',
-    });
+    console.log('[Stage3ToQ4] Q4 DYNAMIC inactive:', { userId, path, label });
     if (TEST_MODE && isInTestAllowlist(userId)) {
       const intent = output.ai_tags?.intent || '?';
       await replyMessage(event.replyToken, [
         textMessage(
-          `[debug] AI 生成飲食回饋成功：\nintent=${intent} / confidence=${output.confidence} / len=${output.feedback_text.length}\n→ DYNAMIC 模板 path_d_ai_meal_feedback is_active=false，正式流程會靜默。\nai_tags 已寫入 DB。`
+          `[debug] AI 生成 Q4 個人化回饋成功：\npath=${path} / Q3 選項=${label} / intent=${intent} / confidence=${output.confidence} / len=${output.feedback_text.length}\n→ DYNAMIC 模板 path_all_q4_feedback is_active=false，正式流程會靜默。\nai_tags 已寫入 DB。`
         ),
         textMessage(`[debug preview] ${output.feedback_text}`),
       ]);
@@ -1082,7 +913,7 @@ async function handleEatOutMealFeedback(event, userId, text, state) {
 
   const r = await updatePathStage(userId, 4);
   if (!r.ok) {
-    console.error('[EatOutMealFeedback] updatePathStage(4) failed:', r.error);
+    console.error('[Stage3ToQ4] updatePathStage(4) failed:', r.error);
     return false;
   }
 
@@ -1097,17 +928,18 @@ async function handleEatOutMealFeedback(event, userId, text, state) {
 }
 
 // ============================================================
-// Phase 3.2c：圖片訊息處理（Code Gate E6'）
+// Phase 3.2c：圖片訊息處理（stage=3 引導用戶回數字）
 // ============================================================
 
 async function handleImageMessage(event, userId) {
-  // 只在 path=eatOut + path_stage=3 時回覆「請打字」；其他狀態靜默
+  // Phase 3.2c 重設計：Q3 是 1/2/3/4 選項，stage=3 任一條 path 收到圖片都引導回數字
   const state = await getUserPathState(userId);
   if (!state) return;
-  if (state.path !== 'eatOut' || state.path_stage !== 3) return;
+  if (state.path_stage !== 3) return;
+  if (!['healthCheck', 'rebound', 'postpartum', 'eatOut'].includes(state.path)) return;
 
   await replyMessage(event.replyToken, [
-    textMessage('能不能也打字說一下你常吃什麼？圖片我看不到細節。'),
+    textMessage('先用數字回一下 Q3 就好（例如 1 或 2），我才看得出該怎麼幫你。'),
   ]);
 }
 
