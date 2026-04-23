@@ -973,7 +973,7 @@ async function handleConversationPath(event, userId, text, state) {
     if (ok) {
       await replyMessage(event.replyToken, [
         textMessage(
-          '我有看到你的問題。我這邊先跟 fifi 助教說，她會看你剛剛跟我聊的內容，等等主動找你 —— 你先不用急著回什麼。'
+          '我有看到你的訊息。\n\nfifi 助教會再跟你聊，看怎麼最好的協助你 —— 上班時間會陸續回，不會讓你等太久。'
         ),
       ]);
       return true;
