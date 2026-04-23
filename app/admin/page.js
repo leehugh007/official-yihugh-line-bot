@@ -2187,10 +2187,25 @@ function UsersTab({ usersData, search, filters, sources, page, onSearch, onFilte
 // 設定 Tab
 // ============================================================
 const SETTING_LABELS = {
+  // === 關鍵字自動回覆 ===
   seminar_info: { label: '說明會資訊', desc: '用戶傳「說明會」「直播」「講座」時的回覆' },
   pricing_info: { label: '課程方案', desc: '用戶傳「方案」「價格」「費用」時的回覆' },
   abc_info: { label: 'ABC 簡介', desc: '用戶傳「ABC」「怎麼瘦」「瘦身」時的回覆' },
   welcome_message: { label: '歡迎訊息', desc: '新用戶加入時的歡迎訊息（非測驗用戶）' },
+  // === Q5 軟邀請文案（契約 v2.4 Ch.8）===
+  q5_soft_invite_passive_text: {
+    label: 'Q5 被動軌文案（用戶 Q4 後剛回訊息時）',
+    desc: '用戶走完 Q4 後主動傳訊息 + AI 判斷為 continue 時推送。訊息後會附兩個 Quick Reply：「看看做法」「有問題想問」',
+  },
+  q5_soft_invite_active_text: {
+    label: 'Q5 主動軌文案（Q4 後 24h 無回應時）',
+    desc: 'Cron 自動推送給 Q4 後 24h 未主動回訊的用戶。文案不應 reference 具體對話內容（契約 B1d）',
+  },
+  // === /apply 頁設定 ===
+  apply_url_base: {
+    label: '/apply 頁 URL base',
+    desc: '生成 Q5 軟邀請連結的 base URL（例：https://official-yihugh-line-bot.vercel.app/apply）。換 domain 時改這裡',
+  },
 };
 
 function SettingsTab({ settings, onSave }) {
