@@ -953,7 +953,35 @@ async function handleConversationPath(event, userId, text, state) {
     return await handleStage3ToQ4(event, userId, text, state);
   }
 
-  // stage >= 4 → Phase 3.2 後續處理（outro / retry / handoff on_keyword_match）
+  // Phase 3.3 bridging (2026-04-23 晚)：Q5 未 wire，stage=4 自由文字 → 進 handoff
+  //
+  // 問題：Q4 AI 回饋末尾問「想不想聽聽她們當時是怎麼從這裡走出來的？」
+  //       用戶回「好」→ 原本 stage=4 return false 靜默 → 用戶被忽略 + 一休/婉馨沒收到通知
+  //
+  // 解法（Phase 4.2 Q5 wire 前臨時）：
+  //   stage=4 自由文字 → triggerHandoff(reason='q4_followup_before_q5_wire')
+  //   → 升 stage=5 + notify 一休+婉馨 + 回用戶「我有看到你的問題」
+  //
+  // 已排除情境（pre-check 接住，不會走到這裡）：
+  //   - 禮貌結束（「謝謝」「了解」）→ handlePoliteEnd 已處理
+  //   - 明確 handoff 關鍵字（「怎麼報名」「多少錢」）→ matchGlobalHandoff 已處理
+  //   到這裡 = stage=4 且自由文字 = 高意願訊號
+  //
+  // TODO Phase 4.2：Q5 classifier wire 上線後拿掉這段（stage=4 走 Q5 classifier 分流）
+  if (stage === 4) {
+    const ok = await triggerHandoff(userId, 'q4_followup_before_q5_wire');
+    if (ok) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          '我有看到你的問題。我這邊先跟 fifi 助教說，她會看你剛剛跟我聊的內容，等等主動找你 —— 你先不用急著回什麼。'
+        ),
+      ]);
+      return true;
+    }
+    return false;
+  }
+
+  // stage >= 5 → 靜默（handoff 已觸發，等人工處理）
   return false;
 }
 
