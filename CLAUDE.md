@@ -5,9 +5,10 @@
 ## 🚀 Session 啟動必讀（按順序）
 
 1. **`用戶旅程.md`** — A 軌 + B 軌 + 銜接鉤子 + 當前開放範圍矩陣 + 斷點清單。**不要再問「這個流程怎麼走」**，讀這份 2 分鐘就定位
-2. 本檔（Schema 對齊 + 技術架構 + 設計決策）
-3. `指揮中心.md` — 最近異動 + 待同步項目
-4. `契約_對話路徑.md` v6.1（Q1-Q4 狀態機）+ `契約_Q5轉換漏斗.md` v2.3（Q5+/apply+applications）
+2. **`交接_2026-04-23_Phase4.1-Session1完成.md`** — 最新交接文件，含當前 prod 狀態矩陣 + 下一 session 開工指令
+3. 本檔（Schema 對齊 + 技術架構 + 設計決策）
+4. `指揮中心.md` — 最近異動 + 待同步項目
+5. `契約_對話路徑.md` v6.1（Q1-Q4 狀態機）+ `契約_Q5轉換漏斗.md` **v2.4**（HMAC signed URL + Q5 + /apply + applications）
 
 Supabase 直連：**三 Bot 共用一個專案**，ref `fnlkhxnfaylhqhystmbr`（Dashboard 顯示名 coach-line-bot），MCP `mcp__supabase__execute_sql` 直接可用。
 
@@ -65,7 +66,7 @@ official-yihugh-line-bot/
 │   ├── users.js                   # 用戶 CRUD + 分層邏輯
 │   ├── tracking.js                # 連結追蹤（wrapLink/logClick）
 │   ├── config.js                  # 預設設定（說明會、歡迎訊息）
-│   ├── supabase.js                # Supabase client
+│   ├── supabase.js                # Supabase client（default export）
 │   ├── ai-classifier.js           # AI 分類器（Q4 綜合回饋 + Q5 intent）
 │   ├── conversation-path.js       # B 軌對話路徑（Q1-Q4 狀態機核心邏輯）
 │   ├── dynamic-templates.js       # 動態模板產生器（Q4 個人化回饋）
@@ -73,11 +74,15 @@ official-yihugh-line-bot/
 │   ├── official-settings.js       # DB settings 讀取（official_settings 表）
 │   ├── official-settings-defaults.js # settings 預設值
 │   ├── q5-state.js                # Q5 狀態 helper（updateQ5Intent/performQ5Transition）
+│   ├── q5-apply-url.js            # 🆕 Phase 4.1 HMAC signed URL helper（buildQ5ApplyUrl + verifyQ5ApplySig + shape whitelist + key version rotate）
 │   └── templates.js               # 訊息模板（代謝報告/地雷/菜單等）
 ├── app/
-│   ├── apply/                     # /apply LIFF landing page（Q5 報名入口）
+│   ├── apply/                     # /apply LIFF landing page（Q5 報名入口，Phase 4.1 Session 3 套 landing 五章）
 │   └── api/
-│       └── health/route.js        # Health check endpoint
+│       ├── health/route.js        # Health check endpoint
+│       └── apply/                 # 🆕 Phase 4.1
+│           ├── visit/route.js     # POST 驗 HMAC → stage 6→7 + q5_click_count + q5_clicked_at COALESCE
+│           └── submit/route.js    # POST 驗 HMAC + 表單 → submit_application RPC → stage=8
 └── supabase/
     ├── migration.sql              # 建表 SQL（001 基礎）
     ├── migration_002_sources.sql  # 來源管理表
@@ -90,7 +95,9 @@ official-yihugh-line-bot/
     ├── migration_009_phase3.2c_redesign.sql      # Phase 3.2c Q3 改選項 + Q4 DYNAMIC
     ├── migration_010_remove_q2_open_loop.sql     # Q2 末段 open loop 移除
     ├── migration_011_blocked_at.sql              # blocked_at 欄位
-    └── migration_012_q5_state_fields.sql         # Q5 狀態欄位（5 個）
+    ├── migration_012_q5_state_fields.sql         # Q5 狀態欄位（5 個）
+    ├── migration_013_q5_applications.sql         # 🆕 Phase 4.1 applications 表 + 3 欄 + 4 indexes
+    └── migration_014_submit_application_rpc.sql  # 🆕 Phase 4.1 submit_application PL/pgSQL RPC
 ```
 
 ## 介面契約文件
@@ -98,7 +105,7 @@ official-yihugh-line-bot/
 | 契約 | 版本 | 狀態 | 範圍 |
 |------|------|------|------|
 | `契約_對話路徑.md` | v6.1 | 定版（Phase 3.2c redesign 後） | Q1-Q4 + Handoff 狀態機 |
-| `契約_Q5轉換漏斗.md` | v2.3 | Phase 4.0 基建完成，Phase 4.1 待啟動 | Q5 方案推進 + 自建 /apply + 追蹤「點了沒報名」+ 報名資料表 |
+| `契約_Q5轉換漏斗.md` | **v2.4** | Phase 4.1 Session 1 完成（HMAC 升級），Session 2/3 待接 | Q5 方案推進 + 自建 /apply + HMAC signed URL + applications 表 + submit RPC + 追蹤「點了沒報名」 |
 
 ## 關鍵字規則
 
@@ -180,6 +187,44 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 | q5_active_invite_sent_at | TIMESTAMPTZ | — | [migration_012] 主動軌 cron 推 Q5 時間戳 |
 | q5_intent | TEXT | — | [migration_012] AI 分類結果：continue/decline/ai_failed |
 | q5_classified_at | TIMESTAMPTZ | — | [migration_012] q5_intent 最後寫入時間 |
+| q5_click_count | INTEGER | 0 NOT NULL | [migration_013] 總計點擊 /apply（含 LINE-to-LINE 分享污染，契約 v2.4 Ch.12.1a）|
+| q5_clicked_at | TIMESTAMPTZ | — | [migration_013] 首次點擊 /apply（COALESCE，北極星 unique 量測）|
+| q5_visit_followup_sent_at | TIMESTAMPTZ | — | [migration_013] cron/q5-visit-followup 推送時間 |
+
+### official_program_applications（migration_013，Phase 4.1 建立）
+
+| 欄位 | 型別 | 預設值 | 說明 |
+|------|------|--------|------|
+| id | BIGSERIAL PK | — | — |
+| line_user_id | TEXT | — | 允許 NULL（manual_offline 來源可無 LINE）|
+| real_name | TEXT NOT NULL | — | — |
+| phone | TEXT NOT NULL | — | 台灣手機 `09XXXXXXXX` |
+| email | TEXT NOT NULL | — | 格式驗證 |
+| address | TEXT NOT NULL | — | — |
+| gender | TEXT NOT NULL | — | CHECK in (male, female, other) |
+| age | INTEGER NOT NULL | — | CHECK 18-99 |
+| line_id | TEXT | — | 選填（沒透過 LINE URL 報名時手填）|
+| display_name | TEXT | — | LINE 顯示名 |
+| program_choice | TEXT NOT NULL | — | CHECK in (12weeks, 4weeks_trial) |
+| agreed_refund_policy | BOOLEAN NOT NULL | — | 必須 true |
+| source | TEXT NOT NULL | — | CHECK in (bot_q5, manual_offline, seminar, referral) |
+| status | TEXT NOT NULL | 'pending' | CHECK in (pending, paid, cancelled) |
+| submitted_at | TIMESTAMPTZ NOT NULL | now() | — |
+| paid_at | TIMESTAMPTZ | — | — |
+| notify_sent_at | TIMESTAMPTZ | — | — |
+| notify_status | TEXT NOT NULL | 'pending' | CHECK in (pending, sent, failed, dead_letter) |
+| notes | TEXT | — | — |
+
+Indexes（**不加 UNIQUE** — 契約 Ch.2.1 明訂，支援家庭共用 LINE + 同人多次報名）：
+`idx_apps_line_user` partial WHERE NOT NULL / `idx_apps_submitted` DESC / `idx_apps_status` / `idx_apps_phone`
+
+### submit_application RPC（migration_014，PL/pgSQL）
+
+`submit_application(p_line_user_id, p_real_name, p_phone, ...共 12 參數)` → `submit_application_result`
+- 先 SELECT path 驗用戶存在，不存在 `RAISE P0002 user_not_found`
+- INSERT applications（status=pending / notify_status=pending）
+- UPDATE official_line_users (path_stage=8, enrolled_at=COALESCE, enrolled_from_path=COALESCE)
+- 回傳 `(application_id, enrolled_at, other_apps_count, other_phone_count)` 給 client 警示重複
 
 ### official_reply_templates（migration_007，Phase 1 建立）
 | 欄位 | 型別 | 預設值 | 說明 |
@@ -329,9 +374,15 @@ Partial index: `(path, stage, condition) WHERE is_active = true` — webhook 每
 21. **Handoff 方案 C** — AI 二次判斷 + 關鍵字雙層攔截。觸發後 push 通知一休+婉馨（寫死 userId），不中斷用戶體驗
 22. **Q4 DYNAMIC 綜合回饋** — ai-classifier.js 產生個人化回饋，取代固定模板。禁客服腔、必有 conviction
 23. **A 軌關鍵字繞過 TEST_MODE** — 代碼領取 + 地雷/菜單/報告等 A 軌功能全量開放，不受 TEST_MODE 限制
-24. **LIFF 簡化版** — /apply 只做 LIFF init，不驗 userId（LINE 2024 policy 做不到 server-side 驗證）。Phase 4.1 改用 HMAC signed URL
+24. **LIFF 簡化版** — /apply 只做 LIFF init，不驗 userId（LINE 2024 policy 做不到 server-side 驗證）
 25. **Q5 前置基建** — blocked_at + q5_* 5 欄位先建，performQ5Transition 尚未 wire（Phase 4.2）
 26. **postback 支援** — webhook 加 case 'postback'，Q5 按鈕用 postback 而非 URL，可追蹤+觸發 handoff
+27. **HMAC signed URL（Phase 4.1 Session 1）** — 取代 LIFF userId 驗證（LINE 2024 policy 做不到）。lib/q5-apply-url.js 是 URL 產+驗唯一入口。canonical payload 字母序固定、shape whitelist 擋 payload injection（`trigger=passive&userid=U_victim`）、timingSafeEqual 防 timing attack、clock skew 5min、key version rotate（雙驗期 ≥ 25h）。不擋 LINE-to-LINE 分享污染（一休決策 Phase 4.5 觀察期再評估）
+28. **HMAC Secret 走 Vercel env 不走 DB（Phase 4.1 Session 1）** — `Q5_APPLY_SIGNING_SECRET_V{n}` / `KEY_VERSION` / `SIG_MAX_AGE_SEC` 三個 env。理由：secret 不適合放 DB；max_age 走 env 避免 verify 熱路徑打 Supabase 50-200ms
+29. **/api/apply/* body 不走 query（Phase 4.1 Session 1）** — POST body 每欄 primitive check 擋 array injection（`body={userid:['A','B']}`），query 在不同 parser 行為不一致
+30. **錯誤 response 泛化（Phase 4.1 Session 1）** — HMAC 失敗所有 reason 統一回 `{error: 'invalid_signature'}` + 400，避免攻擊者 enum secret version / payload 結構；內部 console.warn 記錄真實 reason 供 debug
+31. **Applications 不加 UNIQUE（Phase 4.1 Session 1）** — 支援家庭共用 LINE（老公+老婆共一個 userId 分別報名）+ 同 phone 二人各報一方案。Phase 4.5 觀察重複率嚴重再加手機驗證碼
+32. **submit_application 原子 RPC（Phase 4.1 Session 1）** — PL/pgSQL 一次 transaction 做 INSERT applications + UPDATE users stage=8 + COALESCE 保護 enrolled_at/enrolled_from_path。含 `IF NOT FOUND RAISE P0002` 擋 UPDATE 0 rows 靜默成功
 
 ## 漏斗流程
 
@@ -377,14 +428,19 @@ Partial index: `(path, stage, condition) WHERE is_active = true` — webhook 每
 - `SUPABASE_KEY` — 與阿算共用
 - `ADMIN_SECRET` — 後台密碼（official-bot-2026）
 - `NEXT_PUBLIC_LIFF_ID` — LIFF app ID（2009872928-plrAZYbN）
+- `Q5_APPLY_SIGNING_SECRET_V1` — 🆕 Phase 4.1 HMAC secret（openssl rand -base64 48 生）
+- `Q5_APPLY_SIGNING_KEY_VERSION` — 🆕 Phase 4.1 當前 signing key version（`1`）
+- `Q5_APPLY_SIG_MAX_AGE_SEC` — 🆕 Phase 4.1 URL 過期秒數（`86400`）
 - 測試→正式切換：只要換 LINE 的兩個環境變數 + 更新 webhook URL
 
 ## 待做（依優先順序）
 
 1. ~~TEST_MODE 改 false~~ ✅ 2026-04-23 PR #29 完成
-2. **Phase 4.1**：migration_013 + /apply 五章表單 + submit RPC + HMAC signed URL 驗 server 側
-3. **Phase 4.2**：Q5 classifier wire — performQ5Transition 接上 ai-classifier
-4. 婉馨填入排程文章內容和連結（後台操作）
-5. 舊模板升級 Flex 按鈕（後台編輯）
-6. 追蹤漏斗優化後轉換率（對比 19% baseline，見 `ABC瘦身業務/代謝測驗漏斗追蹤.md`）
-7. 未來：TEST_MODE 改到 official_settings 表，後台可開關
+2. ~~**Phase 4.1 Session 1**：migration_013/014 + SETTING_SCHEMA 三處同步 + HMAC helper + /api/apply/*~~ ✅ 2026-04-23 PR #32 完成
+3. **Phase 4.1 Session 2**：`scripts/gen-q5-url.js`（dev-only 手動產 signed URL 測 happy path）+ `__tests__/q5-state.test.js` stateful mock（yi-challenge #6）
+4. **Phase 4.1 Session 3**：/apply landing 五章 copy（先 `/yi-voice` 審 → SSR 套進 app/apply/page.js）
+5. **Phase 4.2**：Q5 classifier wire — `lib/q5-classifier.js` + `lib/q5-message.js`（用 buildQ5ApplyUrl）+ webhook stage=4 分支 + performQ5Transition + 3 handler state 簽名
+6. 婉馨填入排程文章內容和連結（後台操作）
+7. 舊模板升級 Flex 按鈕（後台編輯）
+8. 追蹤漏斗優化後轉換率（對比 19% baseline，見 `ABC瘦身業務/代謝測驗漏斗追蹤.md`）
+9. 未來：TEST_MODE 改到 official_settings 表，後台可開關
