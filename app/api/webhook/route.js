@@ -155,6 +155,21 @@ async function handleEvent(event) {
       }
       await recordInteraction(userId);
 
+      // Phase 3.3 bug fix (2026-04-23)：A 軌命中 → 用戶有瘦身意圖，stage=0 upgrade 到 1
+      // A 軌 handler 末尾會問「告訴我你目前幾公斤、想瘦到幾公斤」，用戶有機率回自由文字
+      // （「就是想瘦」「我不知道體重」etc），靠 stage=1 讓 handleConversationPath 能接住。
+      // stage>=1 不動（不 regress 正在走 B 軌的用戶）
+      const preStageForUpgrade = preUser?.path_stage ?? 0;
+      if (preStageForUpgrade === 0) {
+        await supabase
+          .from('official_line_users')
+          .update({
+            path_stage: 1,
+            path_stage_updated_at: new Date().toISOString(),
+          })
+          .eq('line_user_id', userId);
+      }
+
       const messages = await rule.handler(userId);
       await replyMessage(event.replyToken, messages);
       return;
@@ -712,7 +727,25 @@ async function handleConversationPath(event, userId, text, state) {
   // === 分支 1：Q1→Q2（stage 0 或 1，用戶提供體重數字）===
   if (stage <= 1) {
     const weights = extractWeights(text);
-    if (!weights) return false; // 沒數字 → 靜默
+    if (!weights) {
+      // Phase 3.3 bug fix (2026-04-23)：stage=1 自由文字 → 輕量引導（原本 return false 靜默）
+      // stage=0 維持靜默（保護新用戶：沒走過 A 軌的新加好友打招呼不該被硬塞「要兩個數字」）
+      // stage=1 = A 軌命中後 upgrade 過（見 L144-161 matchKeyword 分支），用戶明確在 Q1 階段
+      if (stage === 1) {
+        const retryTpl = await getTemplate(null, 1, 'retry_weight');
+        if (retryTpl) {
+          const msg = await renderTemplate(retryTpl, {});
+          await replyMessage(event.replyToken, [textMessage(msg)]);
+          await supabase
+            .from('official_line_users')
+            .update({ last_user_reply_at: new Date().toISOString() })
+            .eq('line_user_id', userId);
+          return true;
+        }
+        console.error('[ConversationPath] stage=1 fallback: q1_retry_weight template missing/inactive');
+      }
+      return false; // stage=0 或 template 缺失 → 靜默
+    }
 
     const { current, target } = weights;
 
@@ -786,7 +819,41 @@ async function handleConversationPath(event, userId, text, state) {
         ]);
         return true;
       }
-      return false; // 其他自由文字 → 靜默（Phase 3.2 再接 AI 分類「其他狀況」）
+
+      // Phase 3.3 bug fix (2026-04-23)：stage=2 自由文字 fallback
+      // 原本 return false 靜默 → 用戶卡住（許莎拉「就是想瘦」案例）
+
+      // 2a. 命中 extractWeights（鬼打牆重傳體重 or 第一次 Q2 漏看選項）→ 重推 path_choice
+      const maybeWeights = extractWeights(text);
+      if (maybeWeights) {
+        const tpl = await getTemplate(null, 2, 'path_choice');
+        if (tpl) {
+          const txt = await renderTemplate(tpl, {
+            current_weight: state.current_weight,
+            target_weight: state.target_weight,
+          });
+          await replyMessage(event.replyToken, [
+            textMessage('體重我記下了。先給我一個字母 A / B / C / D 就好，這樣我才知道怎麼幫你。'),
+            textMessage(txt),
+          ]);
+          await supabase
+            .from('official_line_users')
+            .update({ last_user_reply_at: new Date().toISOString() })
+            .eq('line_user_id', userId);
+          return true;
+        }
+        console.error('[ConversationPath] stage=2 weights fallback: path_choice template missing/inactive');
+      }
+
+      // 2b. 其他自由文字（「就是想瘦」「我不知道」etc）→ 輕量引導
+      await replyMessage(event.replyToken, [
+        textMessage('先給我一個字母 A / B / C / D 就好 — 或直接講你最困擾的狀況是什麼，我看看。'),
+      ]);
+      await supabase
+        .from('official_line_users')
+        .update({ last_user_reply_at: new Date().toISOString() })
+        .eq('line_user_id', userId);
+      return true;
     }
 
     const pathVal = CHOICE_TO_PATH[choice] ?? 'other';
