@@ -1,23 +1,23 @@
 // Q5 契約 v2.4 Ch.0.9 + Ch.11.3：/apply landing + 報名
 //
-// v4.1（2026-04-23 晚）視覺強化：
-//   - Hero 區漸層 + 大字 + 引號裝飾
-//   - 章節 h2 加 emoji + 綠色下劃線
-//   - Ch.2 自述段落加段落分隔裝飾
-//   - Ch.3 學員卡加左綠 accent bar + 體重變化大字
-//   - Ch.4「買兩個東西」用對比卡片 + 勾勾列表 + 大數字強調
-//   - Ch.5 方案 A 加「⭐ 推薦」徽章 + 價格視覺強化
-//   - 退費條款接一休定版文案（有條款 + conviction + 官網連結）
-//   - 關鍵句加黃色 highlight background
+// v4.2（2026-04-23 晚）整合說明會簡報素材：
+//   - Ch.2 加科學段（被鎖住/冷凍庫/附加價值）
+//   - Ch.4 細節升級：買兩個 framing 保留，內層改「四大系統」(知識/營養/運動/支持)
+//     + 三大堅持 (不依賴產品/不挨餓/不受時空限制)
+//     + 市面主流比拼表（瘦瘦針/手術/代餐/ABC）
+//   - Ch.5 加雙人早鳥 $3,333/人 anchor 卡（限雙人團報，CTA 回 LINE 人工走，不改 form enum）
+//   - 6 月班開放報名中（不寫具體日期）
+//   - 「業界平均 10%」改「一般節食減重平均只有 10%」
 //
-// v4 copy（文字層）骨架在 apply頁landing規劃.md，本檔只改樣式 + 退費條款。
+// 視覺層（v4.1 保留）：
+//   - Hero 漸層 + badge + 大字
+//   - 章節 h2 emoji + 綠色下劃線
+//   - Ch.3 storyCard 左綠 accent
+//   - Ch.4 anchorCard 數字圓圈 + Bullet list
+//   - Ch.5 planCard 推薦徽章
 //
-// 技術架構：
-//   - 'use client'：全 React state，LIFF init 背景跑
-//   - 五章 copy 立即 render（不等 LIFF），改善首屏體驗
-//   - LIFF init 成功 → fire-and-forget POST /api/apply/visit
-//   - URL 少任何 HMAC param → 表單 disable + 顯示「回 LINE 取得專屬連結」
-//   - 送出表單 → POST /api/apply/submit（RPC 原子寫 applications + stage=8）
+// 雙人早鳥不進 form enum（program_choice 仍只接 12weeks / 4weeks_trial），
+// 避免動 schema / RPC。視覺顯示「限雙人團報 → 回 LINE 找 fifi 辦」走人工。
 
 'use client';
 
@@ -27,17 +27,19 @@ const LIFF_ID = process.env.NEXT_PUBLIC_LIFF_ID || '';
 const HMAC_KEYS = ['userid', 'source', 'trigger', 'kv', 'ts', 'sig'];
 const CONTACT_LINE_URL =
   'https://line.me/R/oaMessage/%40sososo/?%E6%88%91%E8%A6%81%E5%A0%B1%E5%90%8D';
+const DUO_CONTACT_URL =
+  'https://line.me/R/oaMessage/%40sososo/?%E9%9B%99%E4%BA%BA%E6%97%A9%E9%B3%A5';
 const PROGRAM_URL = 'https://abcmetabolic.com/program';
 
 // ==================== Design tokens ====================
 const C = {
-  primary: '#06c755', // LINE green
+  primary: '#06c755',
   primaryDark: '#0b6e39',
   primaryLight: '#f0fff5',
   accent: '#0d5c3a',
-  warm: '#fef7ec', // 柔和奶油底色
+  warm: '#fef7ec',
   warmBorder: '#f4e0b8',
-  highlight: '#fff3cd', // 關鍵句黃色 highlight
+  highlight: '#fff3cd',
   text: '#1a1a1a',
   textMid: '#3a3a3a',
   textLight: '#757575',
@@ -45,6 +47,8 @@ const C = {
   borderLight: '#eeeeee',
   error: '#e4572e',
   errorBg: '#fff0ee',
+  cold: '#e8f1f8',
+  coldBorder: '#b8d4e8',
 };
 
 const S = {
@@ -59,11 +63,7 @@ const S = {
     fontSize: 16,
     background: '#fafafa',
   },
-  inner: {
-    padding: '0 20px',
-  },
 
-  // ---- Hero（漸層 block，突破 inner padding）----
   hero: {
     background: `linear-gradient(180deg, ${C.warm} 0%, #fff 100%)`,
     padding: '60px 24px 48px',
@@ -96,30 +96,12 @@ const S = {
     margin: '0 auto 28px',
     maxWidth: 540,
   },
-  heroCTA: {
-    fontSize: 14,
-    color: C.textLight,
-    margin: 0,
-  },
-  heroArrow: {
-    fontSize: 24,
-    color: C.primary,
-    marginTop: 16,
-    animation: 'bounce 2s infinite',
-  },
+  heroCTA: { fontSize: 14, color: C.textLight, margin: 0 },
+  heroArrow: { fontSize: 24, color: C.primary, marginTop: 16 },
 
-  // ---- Section headings ----
-  section: {
-    padding: '56px 20px 16px',
-  },
-  h2Wrapper: {
-    marginBottom: 32,
-  },
-  h2Emoji: {
-    fontSize: 32,
-    display: 'block',
-    marginBottom: 8,
-  },
+  section: { padding: '56px 20px 16px' },
+  h2Wrapper: { marginBottom: 32 },
+  h2Emoji: { fontSize: 32, display: 'block', marginBottom: 8 },
   h2: {
     fontSize: 26,
     lineHeight: 1.35,
@@ -136,7 +118,6 @@ const S = {
     borderRadius: 2,
     marginTop: 14,
   },
-
   h3: {
     fontSize: 19,
     lineHeight: 1.45,
@@ -144,19 +125,9 @@ const S = {
     margin: '28px 0 10px',
     color: C.text,
   },
-
-  para: {
-    margin: '0 0 14px',
-    color: C.textMid,
-  },
-  paraGap: {
-    marginTop: 32,
-  },
-
-  emphasis: {
-    fontWeight: 700,
-    color: C.text,
-  },
+  para: { margin: '0 0 14px', color: C.textMid },
+  paraGap: { marginTop: 32 },
+  emphasis: { fontWeight: 700, color: C.text },
   highlight: {
     background: C.highlight,
     padding: '2px 4px',
@@ -164,7 +135,6 @@ const S = {
     fontWeight: 700,
     color: C.text,
   },
-
   quoteBlock: {
     borderLeft: `3px solid ${C.primary}`,
     background: C.primaryLight,
@@ -174,8 +144,14 @@ const S = {
     color: C.textMid,
     fontSize: 16,
   },
+  coldBox: {
+    background: C.cold,
+    border: `1px solid ${C.coldBorder}`,
+    borderRadius: 10,
+    padding: '18px 20px',
+    margin: '20px 0',
+  },
 
-  // ---- Ch.3 學員卡 ----
   storyCard: {
     background: '#fff',
     borderLeft: `4px solid ${C.primary}`,
@@ -184,12 +160,7 @@ const S = {
     margin: '20px 0',
     boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
   },
-  storyName: {
-    fontSize: 18,
-    fontWeight: 700,
-    margin: '0 0 4px',
-    color: C.text,
-  },
+  storyName: { fontSize: 18, fontWeight: 700, margin: '0 0 4px', color: C.text },
   storyWeight: {
     fontSize: 15,
     color: C.primaryDark,
@@ -197,7 +168,6 @@ const S = {
     margin: '0 0 14px',
   },
 
-  // ---- Ch.4 錨點卡 ----
   anchorCard: {
     background: '#fff',
     border: `1px solid ${C.borderLight}`,
@@ -234,12 +204,7 @@ const S = {
     margin: 0,
     lineHeight: 1.4,
   },
-  bulletItem: {
-    display: 'flex',
-    gap: 10,
-    margin: '10px 0',
-    color: C.textMid,
-  },
+  bulletItem: { display: 'flex', gap: 10, margin: '10px 0', color: C.textMid },
   bulletDot: {
     color: C.primary,
     fontWeight: 800,
@@ -247,13 +212,71 @@ const S = {
     fontSize: 18,
     lineHeight: '24px',
   },
-  bigNumber: {
-    fontSize: 22,
-    fontWeight: 800,
-    color: C.primaryDark,
+  bigNumber: { fontSize: 22, fontWeight: 800, color: C.primaryDark },
+
+  systemItem: {
+    padding: '14px 0',
+    borderTop: `1px dashed ${C.borderLight}`,
+  },
+  systemHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 4,
+  },
+  systemEmoji: { fontSize: 22 },
+  systemName: { fontSize: 16, fontWeight: 700, color: C.text },
+  systemDesc: {
+    fontSize: 15,
+    color: C.textMid,
+    margin: '4px 0 0',
+    lineHeight: 1.7,
   },
 
-  // ---- Ch.5 方案卡 ----
+  compareWrap: { margin: '28px 0 8px', overflowX: 'auto' },
+  compareTable: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: 14,
+    background: '#fff',
+    borderRadius: 10,
+    overflow: 'hidden',
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+  },
+  compareTh: {
+    background: '#f2f2f2',
+    color: C.text,
+    fontWeight: 700,
+    padding: '12px 10px',
+    textAlign: 'left',
+    borderBottom: `2px solid ${C.border}`,
+  },
+  compareTd: {
+    padding: '12px 10px',
+    borderBottom: `1px solid ${C.borderLight}`,
+    color: C.textMid,
+    verticalAlign: 'top',
+  },
+  compareTdAbc: {
+    padding: '12px 10px',
+    borderBottom: `1px solid ${C.borderLight}`,
+    background: C.primaryLight,
+    color: C.text,
+    fontWeight: 600,
+  },
+  compareX: { color: C.error, fontWeight: 800 },
+  compareCheck: { color: C.primary, fontWeight: 800 },
+
+  batchBadge: {
+    display: 'inline-block',
+    padding: '6px 14px',
+    background: '#fff3cd',
+    color: '#8a6d0e',
+    borderRadius: 999,
+    fontSize: 13,
+    fontWeight: 700,
+    margin: '0 0 20px',
+  },
   planCard: {
     position: 'relative',
     background: '#fff',
@@ -269,11 +292,28 @@ const S = {
     background: C.primaryLight,
     boxShadow: '0 4px 12px rgba(6, 199, 85, 0.15)',
   },
+  planCardDuo: {
+    border: `2px dashed ${C.warmBorder}`,
+    background: C.warm,
+    cursor: 'default',
+  },
   planBadge: {
     position: 'absolute',
     top: -12,
     left: 20,
     background: C.primary,
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: 700,
+    padding: '4px 12px',
+    borderRadius: 999,
+    letterSpacing: 0.5,
+  },
+  planBadgeDuo: {
+    position: 'absolute',
+    top: -12,
+    left: 20,
+    background: '#d49a0b',
     color: '#fff',
     fontSize: 13,
     fontWeight: 700,
@@ -287,6 +327,12 @@ const S = {
     marginLeft: 30,
     color: C.text,
   },
+  planTitleDuo: {
+    fontSize: 18,
+    fontWeight: 700,
+    marginTop: 6,
+    color: C.text,
+  },
   planPrice: {
     fontSize: 30,
     fontWeight: 800,
@@ -294,11 +340,7 @@ const S = {
     margin: '10px 0 2px',
   },
   planMeta: { color: C.textLight, fontSize: 13, margin: '0 0 14px' },
-  planBulletList: {
-    listStyle: 'none',
-    padding: 0,
-    margin: '14px 0 0',
-  },
+  planBulletList: { listStyle: 'none', padding: 0, margin: '14px 0 0' },
   planBullet: {
     display: 'flex',
     gap: 10,
@@ -306,13 +348,8 @@ const S = {
     color: C.textMid,
     fontSize: 15,
   },
-  planCheckIcon: {
-    color: C.primary,
-    fontWeight: 800,
-    flexShrink: 0,
-  },
+  planCheckIcon: { color: C.primary, fontWeight: 800, flexShrink: 0 },
 
-  // ---- 退費條款 box（v4.1 新定版）----
   refundBox: {
     background: C.warm,
     border: `1px solid ${C.warmBorder}`,
@@ -333,7 +370,6 @@ const S = {
     marginRight: 4,
   },
 
-  // ---- Form ----
   form: {
     background: '#fff',
     border: `1px solid ${C.border}`,
@@ -341,7 +377,13 @@ const S = {
     padding: '24px 22px',
     margin: '28px 0',
   },
-  label: { display: 'block', fontWeight: 600, margin: '14px 0 6px', fontSize: 15, color: C.text },
+  label: {
+    display: 'block',
+    fontWeight: 600,
+    margin: '14px 0 6px',
+    fontSize: 15,
+    color: C.text,
+  },
   input: {
     width: '100%',
     padding: '11px 14px',
@@ -392,6 +434,17 @@ const S = {
     fontSize: 15,
     margin: '4px 8px 4px 0',
   },
+  btnDuo: {
+    display: 'inline-block',
+    padding: '10px 18px',
+    background: '#d49a0b',
+    color: '#fff',
+    textDecoration: 'none',
+    borderRadius: 8,
+    fontSize: 14,
+    fontWeight: 700,
+    marginTop: 10,
+  },
   warnBox: {
     background: C.warm,
     border: `1px solid ${C.warmBorder}`,
@@ -441,7 +494,6 @@ function extractHmacParams() {
   return out;
 }
 
-// 章節 heading 共用
 function SectionHeading({ emoji, title }) {
   return (
     <div style={S.h2Wrapper}>
@@ -452,7 +504,6 @@ function SectionHeading({ emoji, title }) {
   );
 }
 
-// 學員故事卡
 function StoryCard({ name, weight, children }) {
   return (
     <div style={S.storyCard}>
@@ -463,7 +514,6 @@ function StoryCard({ name, weight, children }) {
   );
 }
 
-// 勾勾 bullet
 function Bullet({ children }) {
   return (
     <p style={S.bulletItem}>
@@ -473,7 +523,18 @@ function Bullet({ children }) {
   );
 }
 
-// ==================== Main ====================
+function SystemItem({ emoji, name, children }) {
+  return (
+    <div style={S.systemItem}>
+      <div style={S.systemHeader}>
+        <span style={S.systemEmoji}>{emoji}</span>
+        <span style={S.systemName}>{name}</span>
+      </div>
+      <p style={S.systemDesc}>{children}</p>
+    </div>
+  );
+}
+
 export default function ApplyPage() {
   const [liffReady, setLiffReady] = useState(false);
   const [liffDisplayName, setLiffDisplayName] = useState('');
@@ -560,7 +621,6 @@ export default function ApplyPage() {
       setSubmitErr('這個頁面需要在 LINE 裡開啟。請回到 LINE 傳訊息告訴一休。');
       return;
     }
-
     setSubmitting(true);
     try {
       const payload = {
@@ -712,8 +772,37 @@ export default function ApplyPage() {
           <br />
           沒有剝奪感。每一口放進嘴裡的食物，都是你發自內心想吃，也是有意識的選擇。
         </div>
+
+        {/* v4.2 新增科學段 */}
+        <p style={{ ...S.para, ...S.paraGap }}>
+          那時候我才回頭看，才懂之前那些方法為什麼沒用 ——
+        </p>
+        <p style={S.para}>
+          <span style={S.emphasis}>
+            不是我意志力輸，是我的身體根本不在「會瘦」的狀態。
+          </span>
+        </p>
+        <div style={S.coldBox}>
+          <p style={{ ...S.para, margin: '0 0 10px', fontWeight: 700, color: C.text }}>
+            你的身體不是壞掉，是<span style={S.highlight}>被鎖住了</span>：
+          </p>
+          <p style={{ ...S.para, margin: 0 }}>
+            慢性發炎、胰島素阻抗、能量工廠停擺 —— 脂肪被鎖在「冷凍庫」裡，怎麼挖都挖不出來。
+          </p>
+        </div>
+        <p style={S.para}>
+          這時候再去少吃、再去運動，只是在消耗一個已經過勞的身體，不是在瘦。
+        </p>
+        <p style={{ ...S.para, marginTop: 18 }}>所以方法是反過來的 ——</p>
+        <p style={S.para}>
+          不是逼身體用力，是先把鎖打開。給它營養、讓它不發炎、讓代謝機器自己轉。
+        </p>
+        <p style={S.para}>
+          <span style={S.highlight}>瘦下來，只是身體變健康之後的「附加價值」。</span>
+        </p>
+
         <p style={{ ...S.para, marginTop: 18 }}>
-          這個方法，我後來叫它 <span style={S.highlight}>ABC 代謝力重建</span>。
+          這個方法，我後來叫它 <span style={S.emphasis}>ABC 代謝力重建</span>。
         </p>
 
         <p style={{ ...S.para, ...S.paraGap }}>因為我胖過、我痛過、我受過苦。</p>
@@ -721,7 +810,7 @@ export default function ApplyPage() {
           也因為我胖過，我才有辦法解決跟曾經的我一樣、還在痛苦裡的人。
         </p>
         <p style={S.para}>
-          過去 4 年，我們幫助超過{' '}
+          過去 4 年，我們幫助超過
           <span style={S.bigNumber}>3,000</span> 個學員，
           一起瘦掉超過 <span style={S.bigNumber}>三萬公斤</span>。
         </p>
@@ -799,32 +888,41 @@ export default function ApplyPage() {
           <span style={S.emphasis}>你在買兩個東西。</span>
         </p>
 
+        {/* 買第一個：四大支援系統 */}
         <div style={S.anchorCard}>
           <div style={S.anchorHeader}>
             <div style={S.anchorNum}>1</div>
-            <h3 style={S.anchorTitle}>你在買我的系統、我的教學、我的團隊</h3>
+            <h3 style={S.anchorTitle}>你在買一整套支援系統</h3>
           </div>
-          <p style={S.para}>你不是買一套「我拍一拍上傳」的錄播課。</p>
-          <p style={S.para}>你買的是：</p>
-          <Bullet>
-            <span style={S.emphasis}>我</span>，每週親自直播帶你，
-            <span style={S.emphasis}>12 堂直播 + 24 堂錄播</span>
-            ，從代謝原理講到每天的選擇。
-          </Bullet>
-          <Bullet>
-            <span style={S.emphasis}>15 位國家高考合格的營養師</span>，
-            每天看你的餐、回你的問題。不是一個月看一次，<span style={S.highlight}>是每天</span>。
-          </Bullet>
-          <Bullet>
+          <p style={S.para}>你不是買一套「拍一拍上傳」的錄播課。</p>
+          <p style={{ ...S.para, marginBottom: 6 }}>
+            你買的是這 <span style={S.emphasis}>4 個互相撐住</span>的系統：
+          </p>
+
+          <SystemItem emoji="📚" name="知識系統">
+            我每週親自直播帶你 —— <span style={S.emphasis}>12 堂直播 + 24 堂錄播</span>
+            ，從代謝原理講到每天的選擇。不是上完就放著的課，是走一季的陪伴。
+          </SystemItem>
+
+          <SystemItem emoji="🥗" name="營養系統">
+            <span style={S.emphasis}>15 位國家高考合格的營養師</span>
+            ，每天看你的餐、回你的問題。
+            不是一個月看一次，<span style={S.highlight}>是每天</span>。
+          </SystemItem>
+
+          <SystemItem emoji="🏃" name="運動系統">
             <span style={S.emphasis}>150+ 堂運動課</span>
-            ，教練線上帶、有強度分層、有姿勢矯正。
-          </Bullet>
-          <Bullet>
-            <span style={S.emphasis}>一整班的學員陪你走</span>
-            。有教練、有助教、有班長。不是你一個人跟網路課對話。
-          </Bullet>
+            ，教練線上帶、有強度分層、有姿勢矯正。零基礎到進階都有自己的路徑。
+          </SystemItem>
+
+          <SystemItem emoji="🤝" name="支持系統">
+            一整班的學員陪你走。有
+            <span style={S.emphasis}>教練、助教、班長</span>。
+            不是你一個人跟網路課對話，是一群人一起往同一個方向走。
+          </SystemItem>
         </div>
 
+        {/* 買第二個：被驗證過的方法 */}
         <div style={S.anchorCard}>
           <div style={S.anchorHeader}>
             <div style={S.anchorNum}>2</div>
@@ -835,13 +933,32 @@ export default function ApplyPage() {
             更重要的是 —— <span style={S.bigNumber}>維持率 70%</span>。
           </p>
           <p style={S.para}>
-            市場上多數減肥法，平均維持率是 <span style={S.emphasis}>10%</span>。
+            一般節食減重平均只有 <span style={S.emphasis}>10%</span> 的維持率。
             也就是 10 個瘦下來的人，9 個會胖回去。
           </p>
           <p style={S.para}>
             這個方法的學員，<span style={S.highlight}>10 個裡面有 7 個沒有復胖</span>。
           </p>
-          <p style={{ ...S.para, marginTop: 18 }}>這是這個方法的重點：</p>
+
+          <p style={{ ...S.para, marginTop: 22, fontWeight: 700, color: C.text }}>
+            為什麼做得到？因為這個方法堅持三件事：
+          </p>
+          <Bullet>
+            <span style={S.emphasis}>不依賴產品</span>
+            。拒絕瘦瘦針、減肥藥、代餐。只用真正的天然食物。
+          </Bullet>
+          <Bullet>
+            <span style={S.emphasis}>不挨餓</span>
+            。食物是啟動代謝的燃料 —— 每一餐都要吃得滿足。
+          </Bullet>
+          <Bullet>
+            <span style={S.emphasis}>不受時空限制</span>
+            。無論你是全外食、家庭主婦、應酬多、過年過節，這套系統都能融入你的真實生活。
+          </Bullet>
+
+          <p style={{ ...S.para, marginTop: 22, fontWeight: 700, color: C.text }}>
+            結果是 ——
+          </p>
           <Bullet>
             <span style={S.emphasis}>不算熱量</span>。每一餐都吃飽。
           </Bullet>
@@ -854,6 +971,55 @@ export default function ApplyPage() {
             。方法進你身體裡，不用隨身帶著食譜過日子。
           </Bullet>
         </div>
+
+        {/* 市面比拼 */}
+        <h3 style={{ ...S.h3, marginTop: 40, textAlign: 'center' }}>
+          ⚖️ 比一比市面主流減重法
+        </h3>
+        <div style={S.compareWrap}>
+          <table style={S.compareTable}>
+            <thead>
+              <tr>
+                <th style={S.compareTh}>方法</th>
+                <th style={S.compareTh}>問題</th>
+                <th style={S.compareTh}>長期？</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={S.compareTd}>瘦瘦針（Ozempic）</td>
+                <td style={S.compareTd}>高風險、停藥幾乎 100% 復胖、高成本</td>
+                <td style={{ ...S.compareTd, textAlign: 'center' }}>
+                  <span style={S.compareX}>✕</span>
+                </td>
+              </tr>
+              <tr>
+                <td style={S.compareTd}>減重手術</td>
+                <td style={S.compareTd}>不可逆副作用、仍要看飲食習慣、極高成本</td>
+                <td style={{ ...S.compareTd, textAlign: 'center' }}>
+                  <span style={S.compareX}>✕</span>
+                </td>
+              </tr>
+              <tr>
+                <td style={S.compareTd}>直銷代餐</td>
+                <td style={S.compareTd}>依賴單一產品、停掉就反彈、每月 $1–6 萬</td>
+                <td style={{ ...S.compareTd, textAlign: 'center' }}>
+                  <span style={S.compareX}>✕</span>
+                </td>
+              </tr>
+              <tr>
+                <td style={S.compareTdAbc}>ABC 代謝力重建</td>
+                <td style={S.compareTdAbc}>治本無副作用、重建代謝、長期投資</td>
+                <td style={{ ...S.compareTdAbc, textAlign: 'center' }}>
+                  <span style={S.compareCheck}>✓</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p style={{ ...S.para, marginTop: 18, fontSize: 14, color: C.textLight }}>
+          差別不是「你選哪個」，是「你要一次搞定，還是繼續試」。
+        </p>
 
         <p style={{ ...S.para, ...S.paraGap }}>
           你過去花在瘦身上的錢，加一加，會比這筆多。
@@ -868,6 +1034,9 @@ export default function ApplyPage() {
       <section style={S.section}>
         <SectionHeading emoji="🌿" title="如果你準備好了" />
         <p style={S.para}>如果你看到這裡還沒關掉，我想你已經準備好了。</p>
+        <div>
+          <span style={S.batchBadge}>📅 6 月班｜開放報名中</span>
+        </div>
 
         {/* 方案 A */}
         <div
@@ -943,13 +1112,33 @@ export default function ApplyPage() {
           <p style={S.para}>一休直播課 + 營養師看餐 + 運動課，體驗一個月。</p>
         </div>
 
-        {/* 退費條款（v4.1 新定版 — 一休給的文案）*/}
+        {/* 方案 C — 雙人早鳥 anchor */}
+        <div style={{ ...S.planCard, ...S.planCardDuo }}>
+          <span style={S.planBadgeDuo}>👯 雙人早鳥</span>
+          <p style={S.planTitleDuo}>12 週完整版｜雙人團報</p>
+          <p style={S.planPrice}>NT$ 3,333 / 人</p>
+          <p style={S.planMeta}>兩人同行報名，每人只要 $3,333</p>
+          <p style={S.para}>
+            <span style={S.emphasis}>限雙人團報</span>
+            。找一個想一起改變的人，兩個人互相撐著走完，比自己一個人容易得多。
+          </p>
+          <p style={S.para}>
+            內容跟 12 週完整版一樣，每人都有自己的直播 / 營養師看餐 / 運動課 / 班級。
+          </p>
+          <a style={S.btnDuo} href={DUO_CONTACT_URL}>
+            回 LINE 找 fifi 團報 →
+          </a>
+          <p style={{ ...S.para, fontSize: 13, color: C.textLight, marginTop: 12, marginBottom: 0 }}>
+            雙人團報走人工處理（確認兩邊身分 + 匯款分配），不走這個報名表。
+          </p>
+        </div>
+
+        {/* 退費條款 */}
         <div style={S.refundBox}>
           <p style={S.refundTitle}>報名之後可以退費嗎？</p>
           <p style={S.para}>
             <span style={S.refundYes}>可以。</span>
-            還沒上課前可以全額退（扣手續費）。
-            開始上課後，當月不退，剩餘的可以退。
+            還沒上課前可以全額退（扣手續費）。開始上課後，當月不退，剩餘的可以退。
           </p>
           <p style={{ ...S.para, marginTop: 14, color: C.text }}>
             但請不要抱著「反正可以退」的試試看心態來參加 ——
