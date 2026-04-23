@@ -823,26 +823,89 @@ async function handleConversationPath(event, userId, text, state) {
       // Phase 3.3 bug fix (2026-04-23)：stage=2 自由文字 fallback
       // 原本 return false 靜默 → 用戶卡住（許莎拉「就是想瘦」案例）
 
-      // 2a. 命中 extractWeights（鬼打牆重傳體重 or 第一次 Q2 漏看選項）→ 重推 path_choice
+      // 2a. 命中 extractWeights（重傳體重）→ 當「修正數字意圖」處理
+      //
+      // Phase 3.3 incident fix (2026-04-23 晚)：
+      //   PR #35 第一版只重推 path_choice 沒更新 DB current/target，
+      //   結果用戶第一次打錯（或 LINE 收回 + 重發正確數字）時，DB 仍卡在舊值，
+      //   Q4 AI 用錯的 target 產出離譜 diff（KCw 案例：打 58→33 收回改 58→50，
+      //   Bot Q4 回「想瘦 25 公斤」來自舊 target=33）。
+      //
+      // 修法：更新 DB current/target + 用新 diff 重推 Q2 weight_diff 模板 + path_choice，
+      //       讓 Bot 對「修正後的數字」有認知，下游 Q4 AI 拿到對的 target。
+      //       不升 stage（已是 2），只更新數字。
       const maybeWeights = extractWeights(text);
       if (maybeWeights) {
-        const tpl = await getTemplate(null, 2, 'path_choice');
-        if (tpl) {
-          const txt = await renderTemplate(tpl, {
-            current_weight: state.current_weight,
-            target_weight: state.target_weight,
-          });
-          await replyMessage(event.replyToken, [
-            textMessage('體重我記下了。先給我一個字母 A / B / C / D 就好，這樣我才知道怎麼幫你。'),
-            textMessage(txt),
-          ]);
-          await supabase
-            .from('official_line_users')
-            .update({ last_user_reply_at: new Date().toISOString() })
-            .eq('line_user_id', userId);
-          return true;
+        const { current, target } = maybeWeights;
+
+        // 打反（target >= current）→ 走 Q1 target_invalid（抄 stage<=1 分支 L720-734）
+        if (target >= current) {
+          const invalidTpl = await getTemplate(null, 1, 'weight_target_invalid');
+          if (invalidTpl) {
+            const invText = await renderTemplate(invalidTpl, {
+              current_weight: current,
+              target_weight: target,
+            });
+            await replyMessage(event.replyToken, [textMessage(invText)]);
+            await supabase
+              .from('official_line_users')
+              .update({ last_user_reply_at: new Date().toISOString() })
+              .eq('line_user_id', userId);
+            return true;
+          }
         }
-        console.error('[ConversationPath] stage=2 weights fallback: path_choice template missing/inactive');
+
+        // 正常修正：更新 DB + 用新 diff 重推 Q2 + path_choice
+        const diff = current - target;
+        const condition = await pickWeightDiffConditionWithSettings(diff);
+        const q2Tpl = await getTemplate(null, 2, condition);
+        if (!q2Tpl) {
+          console.error(
+            '[ConversationPath] stage=2 weight retry: q2 template missing/inactive:',
+            condition
+          );
+          // fallback：至少重推 path_choice（不升 diff 訊息）+ 更新 DB
+        }
+
+        await supabase
+          .from('official_line_users')
+          .update({
+            current_weight: current,
+            target_weight: target,
+            last_user_reply_at: new Date().toISOString(),
+          })
+          .eq('line_user_id', userId);
+
+        const messages = [textMessage('體重我更新一下 ——')];
+        if (q2Tpl) {
+          const q2Text = await renderTemplate(q2Tpl, {
+            current_weight: current,
+            target_weight: target,
+          });
+          messages.push(textMessage(q2Text));
+          if (q2Tpl.chain_next_id) {
+            const nextTpl = await getTemplate(null, 2, 'path_choice');
+            if (nextTpl) {
+              const nextText = await renderTemplate(nextTpl, {
+                current_weight: current,
+                target_weight: target,
+              });
+              messages.push(textMessage(nextText));
+            }
+          }
+        } else {
+          // q2 模板缺失 → 至少推 path_choice
+          const pcTpl = await getTemplate(null, 2, 'path_choice');
+          if (pcTpl) {
+            const pcText = await renderTemplate(pcTpl, {
+              current_weight: current,
+              target_weight: target,
+            });
+            messages.push(pcText && textMessage(pcText));
+          }
+        }
+        await replyMessage(event.replyToken, messages.filter(Boolean));
+        return true;
       }
 
       // 2b. 其他自由文字（「就是想瘦」「我不知道」etc）→ 輕量引導
