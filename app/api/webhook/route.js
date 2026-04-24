@@ -26,6 +26,7 @@ import {
   isMainChoice,
   detectMultiChoice,
   extractWeights,
+  extractPartialWeight,
   pickWeightDiffCondition,
   parseQ3Choice,
 } from '../../../lib/conversation-path.js';
@@ -728,9 +729,52 @@ async function handleConversationPath(event, userId, text, state) {
   if (stage <= 1) {
     const weights = extractWeights(text);
     if (!weights) {
-      // Phase 3.3 bug fix (2026-04-23)：stage=1 自由文字 → 輕量引導（原本 return false 靜默）
-      // stage=0 維持靜默（保護新用戶：沒走過 A 軌的新加好友打招呼不該被硬塞「要兩個數字」）
-      // stage=1 = A 軌命中後 upgrade 過（見 L144-161 matchKeyword 分支），用戶明確在 Q1 階段
+      // Q1 漏接修復 (2026-04-24)：extractWeights 雙數字抓不到 → 試 extractPartialWeight
+      //
+      // 設計邏輯（一休定調）：
+      //   stage=0 ≠ 一律靜默。stage=0 只是入口設計的副作用，任何用戶表達瘦身意圖
+      //   （瘦X公斤 / 想瘦到 X / 我現在 X / X 公斤）都該被接住 + upgrade 到 stage=1。
+      //   純新加好友打招呼「你好」「哈囉」等沒瘦身線索的訊息才維持靜默。
+      //
+      // stage=0 用 strict mode：拒絕純單數字「52」「2024」（防「2024 年」誤觸）
+      // stage=1 用 loose mode：純數字預設 current（已被 Bot 問過體重，可信任）
+      const partial = extractPartialWeight(text, { mode: stage === 1 ? 'loose' : 'strict' });
+      if (partial) {
+        // stage=0 有瘦身線索 → upgrade 到 1（讓用戶下次打字走 stage=1 分流）
+        if (stage === 0) {
+          await supabase
+            .from('official_line_users')
+            .update({
+              path_stage: 1,
+              path_stage_updated_at: new Date().toISOString(),
+            })
+            .eq('line_user_id', userId);
+        }
+
+        // 挑對應 template condition：diff > target > current（優先序）
+        const condition = partial.diff != null
+          ? 'partial_diff'
+          : partial.target != null
+            ? 'partial_target'
+            : 'partial_current';
+        const tpl = await getTemplate(null, 1, condition);
+        if (tpl) {
+          const msg = await renderTemplate(tpl, partial);
+          await replyMessage(event.replyToken, [textMessage(msg)]);
+          // 不寫 current_weight / target_weight 進 DB（未確認的資訊不入庫，等雙數字才寫）
+          await supabase
+            .from('official_line_users')
+            .update({ last_user_reply_at: new Date().toISOString() })
+            .eq('line_user_id', userId);
+          return true;
+        }
+        console.error('[ConversationPath] partial template missing/inactive:', condition);
+        // template 缺失 → 降級走 retry_weight（僅 stage=1 走，stage=0 靜默）
+      }
+
+      // 純自由文字 fallback（無任何部分資訊）
+      // stage=0 沒瘦身線索 → 靜默（保護純打招呼新用戶）
+      // stage=1 → retry_weight（給具體範例讓用戶照抄）
       if (stage === 1) {
         const retryTpl = await getTemplate(null, 1, 'retry_weight');
         if (retryTpl) {
@@ -744,7 +788,7 @@ async function handleConversationPath(event, userId, text, state) {
         }
         console.error('[ConversationPath] stage=1 fallback: q1_retry_weight template missing/inactive');
       }
-      return false; // stage=0 或 template 缺失 → 靜默
+      return false; // stage=0 無線索 or template 缺失 → 靜默
     }
 
     const { current, target } = weights;
