@@ -740,18 +740,80 @@ async function handleConversationPath(event, userId, text, state) {
       // stage=1 用 loose mode：純數字預設 current（已被 Bot 問過體重，可信任）
       const partial = extractPartialWeight(text, { mode: stage === 1 ? 'loose' : 'strict' });
       if (partial) {
-        // stage=0 有瘦身線索 → upgrade 到 1（讓用戶下次打字走 stage=1 分流）
+        // 寫 partial 到 DB（跨訊息記憶）+ 合併檢查是否雙數字齊全進 Q2
+        //
+        // 設計（一休 2026-04-24 定調）：
+        //   partial 抓到就寫 DB — current/target 各自分別記憶。
+        //   用戶分兩則訊息給資訊（「想瘦到70」→ 寫 target=70；「現在78」→ 寫 current=78）
+        //   第二則寫完後合併檢查 → 雙數字齊全 → 直接進 Q2，不再反問。
+        //   避免之前「partial 不寫 DB → 鬼打牆」的情境。
+        //
+        //   stage=0 → 同時 upgrade 到 1（讓用戶下次打字走 loose mode）
+        //   partial.diff 不寫 DB（沒對應欄位；用戶下次補 current 後走新一輪 partial）
+        const dbUpdates = {
+          last_user_reply_at: new Date().toISOString(),
+        };
         if (stage === 0) {
-          await supabase
-            .from('official_line_users')
-            .update({
-              path_stage: 1,
-              path_stage_updated_at: new Date().toISOString(),
-            })
-            .eq('line_user_id', userId);
+          dbUpdates.path_stage = 1;
+          dbUpdates.path_stage_updated_at = new Date().toISOString();
+        }
+        if (partial.current != null) dbUpdates.current_weight = partial.current;
+        if (partial.target != null) dbUpdates.target_weight = partial.target;
+        await supabase
+          .from('official_line_users')
+          .update(dbUpdates)
+          .eq('line_user_id', userId);
+
+        // 合併 state + partial 檢查雙數字
+        const currentAfter = partial.current ?? state.current_weight ?? null;
+        const targetAfter = partial.target ?? state.target_weight ?? null;
+
+        if (currentAfter != null && targetAfter != null) {
+          // 雙數字齊全 → 轉手給 Q2 流程（對齊 L805+ 的 Q2 邏輯）
+          // 打反（target >= current）→ q1_target_invalid
+          if (targetAfter >= currentAfter) {
+            const invalidTpl = await getTemplate(null, 1, 'weight_target_invalid');
+            if (invalidTpl) {
+              const invText = await renderTemplate(invalidTpl, {
+                current_weight: currentAfter,
+                target_weight: targetAfter,
+              });
+              await replyMessage(event.replyToken, [textMessage(invText)]);
+              return true;
+            }
+          } else {
+            // 正常 → Q2 體重差距回饋 + chain path_choice
+            const q2Diff = currentAfter - targetAfter;
+            const q2Cond = await pickWeightDiffConditionWithSettings(q2Diff);
+            const q2Tpl = await getTemplate(null, 2, q2Cond);
+            if (q2Tpl) {
+              const r = await updatePathStage(userId, 2);
+              if (!r.ok) console.error('[ConversationPath] partial→Q2 updatePathStage(2) failed:', r.error);
+
+              const q2Text = await renderTemplate(q2Tpl, {
+                current_weight: currentAfter,
+                target_weight: targetAfter,
+              });
+              const messages = [textMessage(q2Text)];
+              if (q2Tpl.chain_next_id) {
+                const nextTpl = await getTemplate(null, 2, 'path_choice');
+                if (nextTpl) {
+                  const nextText = await renderTemplate(nextTpl, {
+                    current_weight: currentAfter,
+                    target_weight: targetAfter,
+                  });
+                  messages.push(textMessage(nextText));
+                }
+              }
+              await replyMessage(event.replyToken, messages);
+              return true;
+            }
+            console.error('[ConversationPath] partial→Q2 template missing/inactive:', q2Cond);
+            // fall through：降回反問 partial template
+          }
         }
 
-        // 挑對應 template condition：diff > target > current（優先序）
+        // 只有單一數字（或 target_invalid template 缺失）→ 反問對應缺項
         const condition = partial.diff != null
           ? 'partial_diff'
           : partial.target != null
@@ -759,21 +821,12 @@ async function handleConversationPath(event, userId, text, state) {
             : 'partial_current';
         const tpl = await getTemplate(null, 1, condition);
         if (tpl) {
-          // 直接字串替換不走 renderTemplate。
-          // 原因：renderTemplate 期待 user.current_weight / user.target_weight，
-          //       {diff} 會自動計算 Math.abs(target - current)。
-          //       partial 物件的 key 是 current/target/diff（沒有 _weight 後綴），
-          //       且 diff 場景下 current/target 都 null，auto-計算會 NaN → 壞 template。
+          // 直接字串替換不走 renderTemplate（partial 物件 key 不匹配 user.*_weight）
           let msg = tpl.message_template;
           if (partial.current != null) msg = msg.replaceAll('{current}', String(partial.current));
           if (partial.target != null) msg = msg.replaceAll('{target}', String(partial.target));
           if (partial.diff != null) msg = msg.replaceAll('{diff}', String(partial.diff));
           await replyMessage(event.replyToken, [textMessage(msg)]);
-          // 不寫 current_weight / target_weight 進 DB（未確認的資訊不入庫，等雙數字才寫）
-          await supabase
-            .from('official_line_users')
-            .update({ last_user_reply_at: new Date().toISOString() })
-            .eq('line_user_id', userId);
           return true;
         }
         console.error('[ConversationPath] partial template missing/inactive:', condition);
