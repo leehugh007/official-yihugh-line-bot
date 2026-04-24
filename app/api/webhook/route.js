@@ -302,11 +302,16 @@ async function handlePostback(event, userId) {
   }
 
   if (action === 'q4_maybe') {
-    // 再考慮看看 → 溫和回覆，不動 stage / intent（她可能想想後改變主意）
+    // 再考慮看看 → 也接真人，標 q4_maybe reason，婉馨知道她在考慮中、主動先分享學員故事
     await recordInteraction(userId);
-    await replyMessage(event.replyToken, [
-      textMessage('ok，那你再想想。想聊再來找我就好，不急。'),
-    ]);
+    const ok = await triggerHandoff(userId, 'q4_maybe');
+    if (ok) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          '好，沒問題。我請 fifi 助教聯絡你，她可以先分享一些學員的故事給你看——你再決定也來得及。\n上班時間會陸續回，不會讓你等太久。'
+        ),
+      ]);
+    }
     return;
   }
 
