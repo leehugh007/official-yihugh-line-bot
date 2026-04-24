@@ -385,8 +385,10 @@ Partial index: `(path, stage, condition) WHERE is_active = true` — webhook 每
 32. **submit_application 原子 RPC（Phase 4.1 Session 1）** — PL/pgSQL 一次 transaction 做 INSERT applications + UPDATE users stage=8 + COALESCE 保護 enrolled_at/enrolled_from_path。含 `IF NOT FOUND RAISE P0002` 擋 UPDATE 0 rows 靜默成功
 33. **A 軌命中後 stage=0→1 upgrade（Phase 3.3 bug fix, PR #35）** — matchKeyword 命中時 stage=0 用戶自動升 1，讓 stage=1 fallback 能精準對「經過 A 軌」用戶生效。stage>=1 不動（不 regress 正在走 B 軌的用戶）。純新加好友打招呼仍 stage=0 → 繼續靜默避免誤回。
 34. **stage=1/2 自由文字 fallback（Phase 3.3 bug fix, PR #35+38）** — stage=1 沒命中 weights 回 q1_retry_weight template；stage=2 命中 weights 當「修正意圖」更新 DB + 重推 Q2 weight_diff + path_choice；stage=2 其他自由文字輕量引導 A/B/C/D。stage=3 retry_count_q3 機制不動。stage=0 維持靜默保護新用戶。
-35. **stage=4 Q4 後 bridging（Phase 3.3 temporary, PR #40+41）** — stage=4 自由文字 → triggerHandoff(reason='q4_followup_before_q5_wire') → 升 stage=5 + notify 一休+婉馨 + 回用戶「我有看到你的訊息。fifi 助教會再跟你聊，看怎麼最好的協助你 — 上班時間會陸續回，不會讓你等太久。」**Phase 4.2 Q5 classifier wire 後拿掉**（code TODO 已標，改走 Q5 classifier 分流）。
+35. **stage=4 Q4 後 bridging → Q5 classifier（Phase 4.2 PR #50）** — 原 Phase 3.3 bridging (triggerHandoff q4_followup_before_q5_wire) 在 Phase 4.2 拿掉，改走 Q5 classifier AI 分流：continue → performQ5Transition(passive) + pushQ5SoftInvite / decline → updateQ5Intent 靜默 / ai_failed → updateQ5Intent + 保持 stage=4。5 error path 全 fallback 到 ai_failed。失敗路徑（race_lost / push_failed）靜默，cron 會接手。
 36. **雙人早鳥 landing anchor（v4.2, PR #39）** — NT$ 3,333/人（限雙人團報）顯示為橘色虛線 anchor card，CTA「回 LINE 找 fifi 團報」走人工。**不進 form enum**（program_choice 仍只接 12weeks / 4weeks_trial）避免改 schema + RPC + /api/apply/submit 白名單。
+37. **Q5 classifier 抄 verifyHandoffIntent pattern（Phase 4.2 PR #49）** — lib/q5-classifier.js 的 try-catch 跟 lib/ai-classifier.js verifyHandoffIntent 同構（callGemini + validateQ5Intent + 5 error path 全 return ai_failed）。callGemini 從 ai-classifier.js export 共用避免 duplicate fetch/abort 邏輯。gemini_no_key 額外 console.error CRITICAL（TODO Phase 4.3 接 telegram 告警）。
+38. **Cron q5-maintenance 4 段合併一路（Phase 4.2 PR C）** — `/api/cron/q5-maintenance` 每小時跑（`0 * * * *`），四段獨立 try/catch：主動軌（Ch.5.1b）/ visit-followup（Ch.5.4）/ reset stage=6>48h（Ch.5.5）/ notify retry applications（Ch.5.6）。maxDuration 60s，concurrency 10（比 drip 20 保守顧 AI cost + LINE rate）。q5_test_mode_cron=true 時主動軌+visit-followup 跳過 TEST_ALLOWLIST（一休+婉馨 dev 帳號）。合併 132+ 人若 >45s 再拆路由（契約 Ch.4.3 backup plan）。
 
 ## 漏斗流程
 
@@ -442,7 +444,7 @@ Partial index: `(path, stage, condition) WHERE is_active = true` — webhook 每
 1. ~~TEST_MODE 改 false~~ ✅ 2026-04-23 PR #29 完成
 2. ~~**Phase 4.1 Session 1**：migration_013/014 + SETTING_SCHEMA 三處同步 + HMAC helper + /api/apply/*~~ ✅ 2026-04-23 PR #32 完成
 3. ~~**Phase 4.1 Session 2/3**：gen-q5-url.js + queue mock + landing v4.2~~ ✅ 2026-04-23 PR #34+35+36+38+39+40+41 完成（含 3 件 incident 修復）
-4. **Phase 4.2**：Q5 classifier wire — `lib/q5-classifier.js` + `lib/q5-message.js`（用 buildQ5ApplyUrl）+ webhook stage=4 分支 + performQ5Transition + 3 handler state 簽名 + handoff.js stage=6/7 專屬文案 + Cron q5-maintenance。**wire 完後拿掉 stage=4 bridging（code TODO 已標）**
+4. ~~**Phase 4.2**：Q5 classifier wire~~ ✅ 2026-04-24 PR #49 (A helpers) + #50 (B webhook wire) + PR C (cron maintenance) 全 merged。stage=4 bridging 已拿掉，postback q4_continue 改走 Q5 軟邀請，cron 每小時運行。下一步觀察 Phase 4.5 baseline 再調優文案 / 頻率
 5. 補推舊 333 被擋用戶（Phase 4.2 Q5 完整後才推）
 6. 婉馨填入排程文章內容和連結（後台操作）
 7. 舊模板升級 Flex 按鈕（後台編輯）
