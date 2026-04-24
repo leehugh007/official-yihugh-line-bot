@@ -277,18 +277,24 @@ async function handlePostback(event, userId) {
 
   // 2026-04-24：Q4 AI 回饋末尾 Quick Reply 三按鈕
   // 「想聽聽 / 再考慮看看 / 不想」— 提前 capture 用戶意願，省去自由文字 classify
-  // Phase 4.2 Q5 classifier wire 上線後，q4_continue 改走 performQ5Transition（現在先走 bridging）
+  //
+  // Phase 4.2 Q5 wire（取代 bridging triggerHandoff('q4_continue')）：
+  //   用戶按「想聽聽」= 高意願明確訊號 → 直接走 Q5 軟邀請（跟被動軌 stage=4 continue 等價）
+  //   走 passive 軌（用戶主動觸發 = 被動軌定義）
   if (action === 'q4_continue') {
-    // 想聽聽 → 走 stage=4 bridging triggerHandoff（現況）
-    // TODO Phase 4.2：改走 performQ5Transition + pushQ5SoftInvite
     await recordInteraction(userId);
-    const ok = await triggerHandoff(userId, 'q4_continue');
-    if (ok) {
-      await replyMessage(event.replyToken, [
-        textMessage(
-          '好，我請 fifi 助教再跟你聊她們的故事 ——\n上班時間會陸續回，不會讓你等太久。'
-        ),
-      ]);
+    const result = await performQ5Transition({
+      userId,
+      source: 'passive',
+      pushFn: (uid) => pushQ5SoftInvite(uid, 'passive'),
+    });
+    if (result.ok) {
+      await updateQ5Intent(userId, 'continue');
+      // 不額外 reply — pushQ5SoftInvite 已透過 push API 送 Q5 軟邀請
+    } else {
+      console.warn('[Postback q4_continue] performQ5Transition failed:', result.reason, { userId });
+      // race_lost（cron 先推）/ push_failed_rollback → 靜默
+      // 不動 q5_intent 讓下次用戶傳自由文字（stage=4 handler）還能重試
     }
     return;
   }
