@@ -276,11 +276,30 @@ async function handlePostback(event, userId) {
   // 2026-04-24：Q4 AI 回饋末尾 Quick Reply 三按鈕
   // 「想聽聽 / 再考慮看看 / 不想」— 提前 capture 用戶意願，省去自由文字 classify
   //
-  // Phase 4.2 Q5 wire（取代 bridging triggerHandoff('q4_continue')）：
-  //   用戶按「想聽聽」= 高意願明確訊號 → 直接走 Q5 軟邀請（跟被動軌 stage=4 continue 等價）
-  //   走 passive 軌（用戶主動觸發 = 被動軌定義）
+  // Phase 4.2 Q5 wire + PR #52 restricted gate：
+  //   q5_restricted_to_test_users=true（預設）→ 一般用戶走 PR #48 原設計 triggerHandoff
+  //                                              測試用戶走 Q5 軟邀請
+  //   q5_restricted_to_test_users=false         → 全量走 Q5 軟邀請
+  //   關閉原因：/apply 頁未完整 + 報名流程未定，先限測試用戶實測（一休 2026-04-24 決策）
   if (action === 'q4_continue') {
     await recordInteraction(userId);
+
+    const restricted = await getSettingTyped('q5_restricted_to_test_users');
+    const isTestUser = TEST_ALLOWLIST.includes(userId);
+    if (restricted && !isTestUser) {
+      // 一般用戶：PR #48 原設計 triggerHandoff + fifi 訊息
+      const ok = await triggerHandoff(userId, 'q4_continue');
+      if (ok) {
+        await replyMessage(event.replyToken, [
+          textMessage(
+            '好，我請 fifi 助教再跟你聊她們的故事 ——\n上班時間會陸續回，不會讓你等太久。'
+          ),
+        ]);
+      }
+      return;
+    }
+
+    // 測試用戶（或 restricted=false）：Phase 4.2 Q5 軟邀請
     const result = await performQ5Transition({
       userId,
       source: 'passive',
@@ -1115,25 +1134,43 @@ async function handleConversationPath(event, userId, text, state) {
     return await handleStage3ToQ4(event, userId, text, state);
   }
 
-  // === 分支 4：stage=4 被動軌（契約 v2.4 Ch.5.1a — Phase 4.2 wire）===
+  // === 分支 4：stage=4 被動軌（契約 v2.4 Ch.5.1a — Phase 4.2 wire + PR #52 restricted gate）===
   //
-  // 取代 Phase 3.3 bridging（triggerHandoff q4_followup_before_q5_wire）。
-  // 現在走 Q5 classifier AI 分流：continue / decline / ai_failed。
+  // q5_restricted_to_test_users=true（預設）：
+  //   - 一般用戶 → Phase 3.3 bridging（triggerHandoff q4_followup_before_q5_wire + fifi 訊息）
+  //   - 測試用戶 → Q5 classifier 分流（continue / decline / ai_failed）
+  // q5_restricted_to_test_users=false：
+  //   - 全量走 Q5 classifier 分流
+  //
+  // 關閉原因：/apply 頁未完整 + 報名流程未定，先限測試用戶實測（一休 2026-04-24 決策）
   //
   // pre-check 已排除：禮貌結束（handlePoliteEnd）+ handoff 關鍵字（matchGlobalHandoff）
-  // 到這裡 = stage=4 自由文字，未被上面接住 = 可能想繼續聊 or 結束聊
-  //
-  // 觸發條件（契約 Ch.5.1a）：
-  //   1. text.trim().length >= q5_intent_min_text_chars (2)  → 太短（「好」單字）靜默避免 AI 浪費
-  //   2. state.q5_intent IS NULL                             → 已分類過不重跑 AI
-  //
-  // 分流處理：
-  //   continue → performQ5Transition(passive) + updateQ5Intent('continue') + pushQ5SoftInvite
-  //   decline  → updateQ5Intent('decline') + 靜默（主動軌 SQL 會排除，不再推）
-  //   ai_failed→ updateQ5Intent('ai_failed') + 保持 stage=4（主動軌 SQL 也排除）
-  //
-  // 失敗靜默：race_lost / push_failed_rollback 都不回 fallback（cron 會接手，避免雙重訊息）
   if (stage === 4) {
+    const restricted = await getSettingTyped('q5_restricted_to_test_users');
+    const isTestUser = TEST_ALLOWLIST.includes(userId);
+    if (restricted && !isTestUser) {
+      // 一般用戶：恢復 Phase 3.3 bridging
+      const ok = await triggerHandoff(userId, 'q4_followup_before_q5_wire');
+      if (ok) {
+        await replyMessage(event.replyToken, [
+          textMessage(
+            '我有看到你的訊息。\n\nfifi 助教會再跟你聊，看怎麼最好的協助你 —— 上班時間會陸續回，不會讓你等太久。'
+          ),
+        ]);
+        return true;
+      }
+      return false;
+    }
+
+    // 測試用戶（或 restricted=false）：Phase 4.2 Q5 classifier 分流
+    // 觸發條件（契約 Ch.5.1a）：
+    //   1. text.trim().length >= q5_intent_min_text_chars (2)  → 太短靜默避免 AI 浪費
+    //   2. state.q5_intent IS NULL                             → 已分類過不重跑 AI
+    // 分流：
+    //   continue → performQ5Transition(passive) + updateQ5Intent + pushQ5SoftInvite
+    //   decline  → updateQ5Intent 靜默
+    //   ai_failed→ updateQ5Intent 保持 stage=4（主動軌 SQL 排除）
+    // 失敗靜默：race_lost / push_failed_rollback 不回 fallback
     const minChars = (await getSettingTyped('q5_intent_min_text_chars')) ?? 2;
     if (text.trim().length < minChars) {
       return false; // 太短，靜默

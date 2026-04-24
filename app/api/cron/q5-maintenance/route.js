@@ -123,7 +123,9 @@ async function runWithConcurrency(tasks, concurrency = CONCURRENCY) {
 // ============================================================
 async function runActiveFollowup() {
   const hours = (await getSettingTyped('q5_active_followup_hours')) ?? 24;
-  const testModeCron = await getSettingTyped('q5_test_mode_cron');
+  // PR #52：restricted=true 時 cron 只推 TEST_ALLOWLIST（一休+婉馨）
+  // restricted=false 時全量推（不限制 line_user_id）
+  const restricted = await getSettingTyped('q5_restricted_to_test_users');
   const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
   // PostgREST JSONB 比對較侷限，先寬鬆 SELECT 再在 JS 層過濾 ai_tags 條件。
@@ -135,9 +137,8 @@ async function runActiveFollowup() {
     .is('q5_sent_at', null)
     .eq('is_blocked', false);
 
-  if (testModeCron === true) {
-    // PostgREST: .not('col', 'in', '("v1","v2")')
-    query = query.not('line_user_id', 'in', `("${TEST_ALLOWLIST.join('","')}")`);
+  if (restricted === true) {
+    query = query.in('line_user_id', TEST_ALLOWLIST);
   }
 
   const { data: candidates, error } = await query.limit(500);
@@ -199,7 +200,8 @@ async function runActiveFollowup() {
 // ============================================================
 async function runVisitFollowup() {
   const hours = (await getSettingTyped('q5_visit_followup_hours')) ?? 24;
-  const testModeCron = await getSettingTyped('q5_test_mode_cron');
+  // PR #52：restricted=true 時只推 TEST_ALLOWLIST
+  const restricted = await getSettingTyped('q5_restricted_to_test_users');
   const text = await getSettingTyped('q5_visit_followup_text');
   if (!text || typeof text !== 'string') {
     console.warn('[q5-maintenance/visit_followup] q5_visit_followup_text missing, skip');
@@ -216,8 +218,8 @@ async function runVisitFollowup() {
     .lt('q5_clicked_at', cutoff)
     .eq('is_blocked', false);
 
-  if (testModeCron === true) {
-    query = query.not('line_user_id', 'in', `("${TEST_ALLOWLIST.join('","')}")`);
+  if (restricted === true) {
+    query = query.in('line_user_id', TEST_ALLOWLIST);
   }
 
   const { data: candidates, error } = await query.limit(500);
