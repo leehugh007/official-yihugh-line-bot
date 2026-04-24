@@ -759,7 +759,15 @@ async function handleConversationPath(event, userId, text, state) {
             : 'partial_current';
         const tpl = await getTemplate(null, 1, condition);
         if (tpl) {
-          const msg = await renderTemplate(tpl, partial);
+          // 直接字串替換不走 renderTemplate。
+          // 原因：renderTemplate 期待 user.current_weight / user.target_weight，
+          //       {diff} 會自動計算 Math.abs(target - current)。
+          //       partial 物件的 key 是 current/target/diff（沒有 _weight 後綴），
+          //       且 diff 場景下 current/target 都 null，auto-計算會 NaN → 壞 template。
+          let msg = tpl.message_template;
+          if (partial.current != null) msg = msg.replaceAll('{current}', String(partial.current));
+          if (partial.target != null) msg = msg.replaceAll('{target}', String(partial.target));
+          if (partial.diff != null) msg = msg.replaceAll('{diff}', String(partial.diff));
           await replyMessage(event.replyToken, [textMessage(msg)]);
           // 不寫 current_weight / target_weight 進 DB（未確認的資訊不入庫，等雙數字才寫）
           await supabase
