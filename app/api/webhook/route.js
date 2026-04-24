@@ -1013,9 +1013,37 @@ async function handleConversationPath(event, userId, text, state) {
         return true;
       }
 
-      // 2b. 其他自由文字（「就是想瘦」「我不知道」etc）→ 輕量引導
+      // 2b. 其他自由文字（2026-04-24 定調：不能靜默，也不能欺騙用戶）
+      //
+      // template q2_path_choice 末尾寫「或有其他狀況直接講，我看看」— 要真的接住。
+      // 短訊息（< 5 字，如「嗯」「好」「不知道」「就是想瘦」）→ 輕量引導回選項
+      // 長訊息（>= 5 字，有實質內容）→ 視為「我有特殊狀況不在 A-D」→ 寫 ai_tags + triggerHandoff
+      //   理由：「其他狀況」千百種，規則化分類成本 >> 直接讓 fifi 接手，用戶體驗好
+      const trimmed = text.trim();
+      if (trimmed.length >= 5) {
+        // 寫進 ai_tags 供婉馨看（path_stage=5 handoff 後她會看 admin 對話）
+        await updateAiTags(userId, {
+          q2_free_text_note: trimmed.slice(0, 200),
+          q2_free_text_at: new Date().toISOString(),
+          _op: 'overwrite',
+        });
+
+        const ok = await triggerHandoff(userId, 'q2_free_text');
+        if (ok) {
+          await replyMessage(event.replyToken, [
+            textMessage(
+              '你的狀況我記下來了 ——\n\nfifi 助教會再跟你聊，看怎麼最好的協助你 —— 上班時間會陸續回，不會讓你等太久。'
+            ),
+          ]);
+          return true;
+        }
+        // triggerHandoff 失敗（極少見 DB 錯）→ 降級回輕量引導
+        console.error('[ConversationPath] stage=2 free_text triggerHandoff failed');
+      }
+
+      // 短訊息 or handoff 失敗 → 輕量引導
       await replyMessage(event.replyToken, [
-        textMessage('先給我一個字母 A / B / C / D 就好 — 或直接講你最困擾的狀況是什麼，我看看。'),
+        textMessage('先給我一個字母 A / B / C / D 就好。'),
       ]);
       await supabase
         .from('official_line_users')
