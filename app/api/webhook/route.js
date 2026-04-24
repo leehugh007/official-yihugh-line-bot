@@ -39,6 +39,10 @@ import {
 import { generateFinalFeedback, verifyHandoffIntent } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 import supabase from '../../../lib/supabase.js';
+// Phase 4.2 Q5 wire
+import { classifyQ5Intent } from '../../../lib/q5-classifier.js';
+import { pushQ5SoftInvite } from '../../../lib/q5-message.js';
+import { performQ5Transition, updateQ5Intent } from '../../../lib/q5-state.js';
 
 export async function POST(request) {
   try {
@@ -1107,31 +1111,58 @@ async function handleConversationPath(event, userId, text, state) {
     return await handleStage3ToQ4(event, userId, text, state);
   }
 
-  // Phase 3.3 bridging (2026-04-23 晚)：Q5 未 wire，stage=4 自由文字 → 進 handoff
+  // === 分支 4：stage=4 被動軌（契約 v2.4 Ch.5.1a — Phase 4.2 wire）===
   //
-  // 問題：Q4 AI 回饋末尾問「想不想聽聽她們當時是怎麼從這裡走出來的？」
-  //       用戶回「好」→ 原本 stage=4 return false 靜默 → 用戶被忽略 + 一休/婉馨沒收到通知
+  // 取代 Phase 3.3 bridging（triggerHandoff q4_followup_before_q5_wire）。
+  // 現在走 Q5 classifier AI 分流：continue / decline / ai_failed。
   //
-  // 解法（Phase 4.2 Q5 wire 前臨時）：
-  //   stage=4 自由文字 → triggerHandoff(reason='q4_followup_before_q5_wire')
-  //   → 升 stage=5 + notify 一休+婉馨 + 回用戶「我有看到你的問題」
+  // pre-check 已排除：禮貌結束（handlePoliteEnd）+ handoff 關鍵字（matchGlobalHandoff）
+  // 到這裡 = stage=4 自由文字，未被上面接住 = 可能想繼續聊 or 結束聊
   //
-  // 已排除情境（pre-check 接住，不會走到這裡）：
-  //   - 禮貌結束（「謝謝」「了解」）→ handlePoliteEnd 已處理
-  //   - 明確 handoff 關鍵字（「怎麼報名」「多少錢」）→ matchGlobalHandoff 已處理
-  //   到這裡 = stage=4 且自由文字 = 高意願訊號
+  // 觸發條件（契約 Ch.5.1a）：
+  //   1. text.trim().length >= q5_intent_min_text_chars (2)  → 太短（「好」單字）靜默避免 AI 浪費
+  //   2. state.q5_intent IS NULL                             → 已分類過不重跑 AI
   //
-  // TODO Phase 4.2：Q5 classifier wire 上線後拿掉這段（stage=4 走 Q5 classifier 分流）
+  // 分流處理：
+  //   continue → performQ5Transition(passive) + updateQ5Intent('continue') + pushQ5SoftInvite
+  //   decline  → updateQ5Intent('decline') + 靜默（主動軌 SQL 會排除，不再推）
+  //   ai_failed→ updateQ5Intent('ai_failed') + 保持 stage=4（主動軌 SQL 也排除）
+  //
+  // 失敗靜默：race_lost / push_failed_rollback 都不回 fallback（cron 會接手，避免雙重訊息）
   if (stage === 4) {
-    const ok = await triggerHandoff(userId, 'q4_followup_before_q5_wire');
-    if (ok) {
-      await replyMessage(event.replyToken, [
-        textMessage(
-          '我有看到你的訊息。\n\nfifi 助教會再跟你聊，看怎麼最好的協助你 —— 上班時間會陸續回，不會讓你等太久。'
-        ),
-      ]);
+    const minChars = (await getSettingTyped('q5_intent_min_text_chars')) ?? 2;
+    if (text.trim().length < minChars) {
+      return false; // 太短，靜默
+    }
+    if (state?.q5_intent != null) {
+      return false; // 已分類過，不重跑 AI
+    }
+
+    const result = await classifyQ5Intent({ userText: text });
+
+    if (result.intent === 'continue') {
+      const transition = await performQ5Transition({
+        userId,
+        source: 'passive',
+        pushFn: (uid) => pushQ5SoftInvite(uid, 'passive'),
+      });
+      if (transition.ok) {
+        await updateQ5Intent(userId, 'continue');
+      } else {
+        console.warn('[stage=4 Q5] performQ5Transition failed:', transition.reason, { userId });
+        // 不 updateQ5Intent('continue') — 讓下一則訊息 q5_intent 仍 NULL 可重試
+      }
       return true;
     }
+
+    if (result.intent === 'decline') {
+      await updateQ5Intent(userId, 'decline');
+      return false; // 靜默（不回 polite end — Q4 AI 已做完整說明，再告別太冗）
+    }
+
+    // ai_failed — 寫 intent 供主動軌 SQL 排除，保持 stage=4
+    await updateQ5Intent(userId, 'ai_failed');
+    console.warn('[stage=4 Q5] ai_failed', { userId, error: result.error });
     return false;
   }
 
