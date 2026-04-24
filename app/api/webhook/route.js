@@ -271,6 +271,45 @@ async function handlePostback(event, userId) {
     return;
   }
 
+  // 2026-04-24：Q4 AI 回饋末尾 Quick Reply 三按鈕
+  // 「想聽聽 / 再考慮看看 / 不想」— 提前 capture 用戶意願，省去自由文字 classify
+  // Phase 4.2 Q5 classifier wire 上線後，q4_continue 改走 performQ5Transition（現在先走 bridging）
+  if (action === 'q4_continue') {
+    // 想聽聽 → 走 stage=4 bridging triggerHandoff（現況）
+    // TODO Phase 4.2：改走 performQ5Transition + pushQ5SoftInvite
+    await recordInteraction(userId);
+    const ok = await triggerHandoff(userId, 'q4_continue');
+    if (ok) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          '好，我請 fifi 助教再跟你聊她們的故事 ——\n上班時間會陸續回，不會讓你等太久。'
+        ),
+      ]);
+    }
+    return;
+  }
+
+  if (action === 'q4_decline') {
+    // 不想 → 記 intent=low + polite end reply，不升 stage（保持 4，之後主動軌 SQL 會 skip）
+    await recordInteraction(userId);
+    await updateAiTags(userId, { intent: 'low', _from_ai: true, _op: 'overwrite' }).catch(
+      (err) => console.error('[Postback q4_decline] updateAiTags failed:', err?.message)
+    );
+    await replyMessage(event.replyToken, [
+      textMessage('好的，了解了。如果未來想聊再來找我就好，不打擾你。'),
+    ]);
+    return;
+  }
+
+  if (action === 'q4_maybe') {
+    // 再考慮看看 → 溫和回覆，不動 stage / intent（她可能想想後改變主意）
+    await recordInteraction(userId);
+    await replyMessage(event.replyToken, [
+      textMessage('ok，那你再想想。想聊再來找我就好，不急。'),
+    ]);
+    return;
+  }
+
   // 未知 action → 靜默（未來擴 visit-followup 等新入口時再加 branch）
   console.log('[Postback] unknown action, ignored:', { userId, rawData });
 }
@@ -1301,7 +1340,47 @@ async function handleStage3ToQ4(event, userId, text, state) {
     { current_weight: state.current_weight, target_weight: state.target_weight },
     { feedback_text: output.feedback_text }
   );
-  await replyMessage(event.replyToken, [textMessage(feedbackText)]);
+
+  // 2026-04-24：Q4 回饋末尾「想不想聽聽她們當時是怎麼從這裡走出來的？」
+  // 加 Quick Reply 三按鈕降低用戶打字阻力 + 提前 capture Q5 intent
+  // 三按鈕 postback：q4_continue / q4_maybe / q4_decline（handlePostback 處理）
+  // 用戶沒按 QR 直接打自由文字 → 走現有 stage=4 bridging（不影響）
+  const q4Msg = {
+    type: 'text',
+    text: feedbackText,
+    quickReply: {
+      items: [
+        {
+          type: 'action',
+          action: {
+            type: 'postback',
+            label: '想聽聽',
+            data: 'action=q4_continue',
+            displayText: '想聽聽',
+          },
+        },
+        {
+          type: 'action',
+          action: {
+            type: 'postback',
+            label: '再考慮看看',
+            data: 'action=q4_maybe',
+            displayText: '再考慮看看',
+          },
+        },
+        {
+          type: 'action',
+          action: {
+            type: 'postback',
+            label: '不想',
+            data: 'action=q4_decline',
+            displayText: '不想',
+          },
+        },
+      ],
+    },
+  };
+  await replyMessage(event.replyToken, [q4Msg]);
   return true;
 }
 
