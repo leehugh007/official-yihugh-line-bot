@@ -227,12 +227,10 @@ async function handleEvent(event) {
         await recordInteraction(userId);
         const ok = await triggerHandoff(userId, 'q5_non_text_query');
         if (ok) {
-          // TODO Phase 4.1：改走 getSettingTyped('q5_non_text_soft_handoff_text')
-          await replyMessage(event.replyToken, [
-            textMessage(
-              '我這邊只能看文字訊息，你的情況我請 fifi 助教直接跟你聊，她等等會主動找你。\n\n有什麼想先問的，你也可以直接打字告訴我。'
-            ),
-          ]);
+          // Phase 4.2 B-3：改讀 setting（contract v2.4 Ch.0.7/Ch.8）
+          // 後台可編輯，defaults 在 lib/official-settings-defaults.js
+          const nonTextText = await getSettingTyped('q5_non_text_soft_handoff_text');
+          await replyMessage(event.replyToken, [textMessage(nonTextText)]);
         }
         break;
       }
