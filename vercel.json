@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/drip",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/q5-maintenance",
+      "schedule": "0 * * * *"
     }
   ]
 }
