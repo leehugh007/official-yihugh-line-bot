@@ -725,6 +725,15 @@ export default function ApplyPage() {
         <div style={S.heroArrow}>↓</div>
       </section>
 
+      {/* ==================== Hero 情緒鉤 (land001) ==================== */}
+      <section style={{ padding: '8px 20px 0', textAlign: 'center' }}>
+        <img
+          src="/images/landing/land001.png"
+          alt="「你不是控制不了，是身體壞掉了」—— 情緒插畫"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '0 auto', borderRadius: 12 }}
+        />
+      </section>
+
       {/* ==================== 第二章 可能性 ==================== */}
       <section style={S.section}>
         <SectionHeading emoji="💭" title="我知道，因為我走過" />
@@ -760,6 +769,12 @@ export default function ApplyPage() {
         <p style={S.para}>近 20 年，我什麼方式都試過 —— 節食、斷食、代餐、瘋狂運動。</p>
         <p style={S.para}>每一個都瘦過。每一個都復胖了。</p>
 
+        <img
+          src="/images/landing/land002.png"
+          alt="「我已經試到不知道還能試什麼了」—— 節食/運動/暴食循環插畫"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
+
         <p style={{ ...S.para, ...S.paraGap }}>
           我受夠減肥的苦了。吃著不愛吃的東西，做著痛苦的運動。
         </p>
@@ -782,6 +797,13 @@ export default function ApplyPage() {
             不是我意志力輸，是我的身體根本不在「會瘦」的狀態。
           </span>
         </p>
+
+        <img
+          src="/images/landing/land003.png"
+          alt="「不是你不自律，是身體卡在會瘦的狀態」—— 身體被鎖住插畫"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
+
         <div style={S.coldBox}>
           <p style={{ ...S.para, margin: '0 0 10px', fontWeight: 700, color: C.text }}>
             你的身體不是壞掉，是<span style={S.highlight}>被鎖住了</span>：
@@ -800,6 +822,12 @@ export default function ApplyPage() {
         <p style={S.para}>
           <span style={S.highlight}>瘦下來，只是身體變健康之後的「附加價值」。</span>
         </p>
+
+        <img
+          src="/images/landing/land004.png"
+          alt="「你不用再用力，身體自己會開始變瘦」—— 解鎖後的狀態插畫"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
 
         <p style={{ ...S.para, marginTop: 18 }}>
           這個方法，我後來叫它 <span style={S.emphasis}>ABC 代謝力重建</span>。
@@ -824,6 +852,12 @@ export default function ApplyPage() {
         <SectionHeading emoji="🌸" title="她們做到了" />
         <p style={S.para}>你不用相信我。看看她們。</p>
 
+        <img
+          src="/images/landing/land005.png"
+          alt="「她沒有更努力，她只是換對方法」—— 學員 -20 公斤 before/after"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
+
         <StoryCard name="沛蓁" weight="85 → 67 kg（−18 kg）">
           <p style={S.para}>
             她煮雞湯要征服老公的胃。結果老公的胃是征服了，外人卻把她認成老公的媽媽。
@@ -833,6 +867,12 @@ export default function ApplyPage() {
           </p>
           <div style={S.quoteBlock}>「以前我從來沒想過減肥可以吃飽。」</div>
         </StoryCard>
+
+        <img
+          src="/images/landing/land008.png"
+          alt="沛蓁：她曾經被誤認是他媽媽 —— before/after 對比"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
 
         <StoryCard name="慧蘭" weight="53 歲，比 7 年前更年輕">
           <p style={S.para}>她先生胃痛，查出來是癌症，三週就走了。</p>
@@ -845,6 +885,12 @@ export default function ApplyPage() {
             「不再需要零食、不再跟食物打架」—— 她說這是她這輩子想都沒想過會有的感覺。
           </div>
         </StoryCard>
+
+        <img
+          src="/images/landing/land007.png"
+          alt="慧蘭：53 歲，她還在變瘦 —— before/after 對比"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
 
         <StoryCard name="俐臻" weight="127 → 65 kg（一年 −62 kg）">
           <p style={S.para}>她原本連穿襪子都要女兒幫忙彎腰。</p>
@@ -863,6 +909,12 @@ export default function ApplyPage() {
           <p style={S.para}>三個月瘦十公斤。更重要的是，她家人也跟著改變了。</p>
         </StoryCard>
 
+        <img
+          src="/images/landing/land006.png"
+          alt="溫溫：產後肚子真的回得去 —— 產後 before/after 對比"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
+
         <StoryCard name="美美" weight="拒絕抽脂的那個選擇">
           <p style={S.para}>
             她姐姐做過切胃手術。瘦下來，又胖回去，而且胖了更多。
@@ -871,6 +923,12 @@ export default function ApplyPage() {
           <div style={S.quoteBlock}>「我不要再走一次我姐的路。」</div>
           <p style={{ ...S.para, marginTop: 14 }}>她選擇用這個方法，一次做對。</p>
         </StoryCard>
+
+        <img
+          src="/images/landing/land009.png"
+          alt="美美：她原本已經準備去抽脂 —— before/after 對比"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
 
         <p style={{ ...S.para, marginTop: 36 }}>我知道每個人的處境不一樣。</p>
         <p style={S.para}>
@@ -888,6 +946,12 @@ export default function ApplyPage() {
           <span style={S.emphasis}>你在買兩個東西。</span>
         </p>
 
+        <img
+          src="/images/landing/land010.png"
+          alt="「這不是一門課的費用，你在買兩個東西」—— 支援系統 + 被驗證過的方法"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
+
         {/* 買第一個：四大支援系統 */}
         <div style={S.anchorCard}>
           <div style={S.anchorHeader}>
@@ -898,6 +962,12 @@ export default function ApplyPage() {
           <p style={{ ...S.para, marginBottom: 6 }}>
             你買的是這 <span style={S.emphasis}>4 個互相撐住</span>的系統：
           </p>
+
+          <img
+            src="/images/landing/land012.png"
+            alt="「12 週，四大系統」—— 一休親授課 / 營養師看餐 / 線上運動課 / 團體陪伴"
+            style={{ width: '100%', maxWidth: 400, display: 'block', margin: '20px auto 28px', borderRadius: 12 }}
+          />
 
           <SystemItem emoji="📚" name="知識系統">
             我每週親自直播帶你 —— <span style={S.emphasis}>12 堂直播 + 24 堂錄播</span>
@@ -920,6 +990,12 @@ export default function ApplyPage() {
             <span style={S.emphasis}>教練、助教、班長</span>。
             不是你一個人跟網路課對話，是一群人一起往同一個方向走。
           </SystemItem>
+
+          <img
+            src="/images/landing/land011.png"
+            alt="「你不是買錄播課，你買的是一整季真人陪伴」—— 休校長直播 / 營養師看餐 / 教練帶練 / 同學同行"
+            style={{ width: '100%', maxWidth: 400, display: 'block', margin: '24px auto 4px', borderRadius: 12 }}
+          />
         </div>
 
         {/* 買第二個：被驗證過的方法 */}
@@ -939,6 +1015,12 @@ export default function ApplyPage() {
           <p style={S.para}>
             這個方法的學員，<span style={S.highlight}>10 個裡面有 7 個沒有復胖</span>。
           </p>
+
+          <img
+            src="/images/landing/land013.png"
+            alt="「真正重要的不是瘦下來，是不要再胖回去」—— 一般節食 10 個 9 個復胖 vs ABC 10 個 7 個沒復胖"
+            style={{ width: '100%', maxWidth: 400, display: 'block', margin: '24px auto', borderRadius: 12 }}
+          />
 
           <p style={{ ...S.para, marginTop: 22, fontWeight: 700, color: C.text }}>
             為什麼做得到？因為這個方法堅持三件事：
@@ -1028,6 +1110,12 @@ export default function ApplyPage() {
         <p style={S.para}>
           <span style={S.highlight}>這一筆，買的是「不用再試了」。</span>
         </p>
+
+        <img
+          src="/images/landing/land014.png"
+          alt="「過去那些錢買的是再試一次，這一筆買的是不用再試了」—— 代餐/節食/醫美/健身卡/保健品失敗單據"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto 0', borderRadius: 12 }}
+        />
       </section>
 
       {/* ==================== 第五章 方案 + 報名 ==================== */}
