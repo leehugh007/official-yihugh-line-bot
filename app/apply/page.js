@@ -712,7 +712,7 @@ export default function ApplyPage() {
               }}
             >
               <span style={{ color: C.textLight, fontSize: 14 }}>帳戶名稱</span>
-              <span style={{ ...S.emphasis, fontSize: 16 }}>亞偍涐斯股份有限公司</span>
+              <span style={{ ...S.emphasis, fontSize: 16 }}>亞偍洣斯股份有限公司</span>
             </p>
             <p
               style={{
@@ -1050,6 +1050,12 @@ export default function ApplyPage() {
             她學會的不是「怎麼瘦」，是<span style={S.emphasis}>怎麼溫柔對自己</span>。
           </p>
         </StoryCard>
+
+        <img
+          src="/images/landing/land016.png"
+          alt="俐臻：「她曾經覺得，胖是她的命」—— 127→65 kg before/after，學會的是溫柔對自己"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
+        />
 
         <StoryCard name="溫溫" weight="產後三個月 −10 kg">
           <p style={S.para}>她生完小孩之後，陷在暴食跟自責的循環裡三年。</p>
