@@ -8,6 +8,13 @@ import { multicastMessage, pushMessage, textMessage, pushFlexMessage } from '../
 import { getUsersBySegment, getAllActiveUsers } from '../../../lib/users.js';
 import { wrapLink } from '../../../lib/tracking.js';
 import { sendScheduledPush } from '../../../lib/push.js';
+import {
+  listApplications,
+  getApplicationFull,
+  markApplicationPaid,
+  markApplicationCancelled,
+  updatePaymentInfo,
+} from '../../../lib/applications.js';
 
 function unauthorized() {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -40,6 +47,10 @@ export async function GET(request) {
       return handleGetSources();
     case 'settings':
       return handleGetSettings();
+    case 'applications':
+      return handleGetApplications(searchParams);
+    case 'application':
+      return handleGetApplicationFull(searchParams);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -89,6 +100,12 @@ export async function POST(request) {
       return handleAddDripStep(data);
     case 'delete_drip_step':
       return handleDeleteDripStep(data);
+    case 'mark_application_paid':
+      return handleMarkApplicationPaid(data);
+    case 'cancel_application':
+      return handleCancelApplication(data);
+    case 'update_application_payment':
+      return handleUpdateApplicationPayment(data);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -880,4 +897,82 @@ async function handleDeleteDripStep({ step_number }) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
+}
+
+// ============================================================
+// Applications（Phase 4.5 報名管理）
+// ============================================================
+
+async function handleGetApplications(searchParams) {
+  const filterRaw = (searchParams.get('filter') || 'all').toLowerCase();
+  const FILTER_ALLOWED = new Set(['all', 'pending', 'paid', 'cancelled']);
+  const filter = FILTER_ALLOWED.has(filterRaw) ? filterRaw : 'all';
+
+  const limit = Math.min(parseInt(searchParams.get('limit') || '50', 10) || 50, 200);
+  const offset = Math.max(parseInt(searchParams.get('offset') || '0', 10) || 0, 0);
+
+  try {
+    const { rows, total } = await listApplications({ filter, limit, offset });
+    return NextResponse.json({ ok: true, rows, total, filter, limit, offset });
+  } catch (err) {
+    console.error('[admin/applications] error:', err);
+    return NextResponse.json({ error: err?.message || 'list_failed' }, { status: 500 });
+  }
+}
+
+async function handleGetApplicationFull(searchParams) {
+  const id = parseInt(searchParams.get('id') || '', 10);
+  if (!Number.isInteger(id) || id < 1) {
+    return NextResponse.json({ error: 'invalid_id' }, { status: 400 });
+  }
+  try {
+    const app = await getApplicationFull(id);
+    if (!app) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    return NextResponse.json({ ok: true, application: app });
+  } catch (err) {
+    console.error('[admin/application] error:', err);
+    return NextResponse.json({ error: err?.message || 'fetch_failed' }, { status: 500 });
+  }
+}
+
+async function handleMarkApplicationPaid(data) {
+  const { id, last5, amount, date, marked_by } = data || {};
+  const idInt = parseInt(id, 10);
+  const result = await markApplicationPaid(idInt, { last5, amount, date, marked_by });
+  if (!result.ok) {
+    const status =
+      result.error === 'invalid_transition' || result.error === 'race_lost' ? 409 :
+      result.error === 'not_found' ? 404 :
+      400;
+    return NextResponse.json({ error: result.error, detail: result.detail }, { status });
+  }
+  return NextResponse.json(result);
+}
+
+async function handleCancelApplication(data) {
+  const { id, notes, marked_by } = data || {};
+  const idInt = parseInt(id, 10);
+  const result = await markApplicationCancelled(idInt, { notes, marked_by });
+  if (!result.ok) {
+    const status =
+      result.error === 'invalid_transition' || result.error === 'race_lost' ? 409 :
+      result.error === 'not_found' ? 404 :
+      400;
+    return NextResponse.json({ error: result.error, detail: result.detail }, { status });
+  }
+  return NextResponse.json(result);
+}
+
+async function handleUpdateApplicationPayment(data) {
+  const { id, last5, amount, date, notes, marked_by } = data || {};
+  const idInt = parseInt(id, 10);
+  const result = await updatePaymentInfo(idInt, { last5, amount, date, notes, marked_by });
+  if (!result.ok) {
+    const status =
+      result.error === 'race_lost' ? 409 :
+      result.error === 'not_found' ? 404 :
+      400;
+    return NextResponse.json({ error: result.error, detail: result.detail }, { status });
+  }
+  return NextResponse.json(result);
 }

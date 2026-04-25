@@ -267,6 +267,26 @@ export default function AdminPage() {
   const [usersPage, setUsersPage] = useState(1);
   const [sources, setSources] = useState([]);
 
+  // 報名管理（Phase 4.5）
+  const [applicationsData, setApplicationsData] = useState(null);
+  const [applicationsFilter, setApplicationsFilter] = useState('all'); // all|pending|paid|cancelled
+  const [markedBy, setMarkedBy] = useState(
+    typeof window !== 'undefined'
+      ? sessionStorage.getItem('admin_marked_by') || 'yixiu'
+      : 'yixiu'
+  );
+
+  const loadApplications = useCallback(async (filter = 'all') => {
+    const params = new URLSearchParams({
+      action: 'applications',
+      filter,
+      secret: sessionStorage.getItem('admin_secret') || '',
+    });
+    const res = await fetch(`/api/admin?${params}`);
+    const data = await res.json();
+    setApplicationsData(data);
+  }, []);
+
   const loadUsers = useCallback(async (page = 1, search = '', filters = {}) => {
     const params = new URLSearchParams({
       action: 'users',
@@ -517,6 +537,15 @@ export default function AdminPage() {
           用戶
         </button>
         <button
+          style={tab === 'applications' ? styles.tabActive : styles.tab}
+          onClick={() => {
+            setTab('applications');
+            if (!applicationsData) loadApplications(applicationsFilter);
+          }}
+        >
+          📝 報名
+        </button>
+        <button
           style={tab === 'settings' ? styles.tabActive : styles.tab}
           onClick={() => setTab('settings')}
         >
@@ -660,6 +689,63 @@ export default function AdminPage() {
               await apiPost({ action: 'delete_source', id });
               loadSources();
             }}
+          />
+        </div>
+      )}
+
+      {/* 報名 Tab（Phase 4.5）*/}
+      {tab === 'applications' && (
+        <div style={styles.section}>
+          <h2 style={styles.sectionTitle}>📝 報名管理</h2>
+          <p style={styles.sectionDesc}>
+            查看 /apply 表單送出的報名資料、標記已付款、編輯匯款資訊
+          </p>
+          <ApplicationsTab
+            data={applicationsData}
+            filter={applicationsFilter}
+            markedBy={markedBy}
+            onMarkedByChange={(v) => {
+              setMarkedBy(v);
+              sessionStorage.setItem('admin_marked_by', v);
+            }}
+            onFilterChange={(f) => {
+              setApplicationsFilter(f);
+              loadApplications(f);
+            }}
+            onMarkPaid={async ({ id, last5, amount, date }) => {
+              const res = await apiPost({
+                action: 'mark_application_paid',
+                id, last5, amount, date, marked_by: markedBy,
+              });
+              if (res?.ok) {
+                loadApplications(applicationsFilter);
+                return { ok: true };
+              }
+              return { ok: false, error: res?.error || 'unknown' };
+            }}
+            onCancel={async ({ id, notes }) => {
+              const res = await apiPost({
+                action: 'cancel_application',
+                id, notes, marked_by: markedBy,
+              });
+              if (res?.ok) {
+                loadApplications(applicationsFilter);
+                return { ok: true };
+              }
+              return { ok: false, error: res?.error || 'unknown' };
+            }}
+            onEditPayment={async ({ id, last5, amount, date, notes }) => {
+              const res = await apiPost({
+                action: 'update_application_payment',
+                id, last5, amount, date, notes, marked_by: markedBy,
+              });
+              if (res?.ok) {
+                loadApplications(applicationsFilter);
+                return { ok: true };
+              }
+              return { ok: false, error: res?.error || 'unknown' };
+            }}
+            onReload={() => loadApplications(applicationsFilter)}
           />
         </div>
       )}
@@ -2256,6 +2342,394 @@ function SettingsTab({ settings, onSave }) {
       })}
     </div>
   );
+}
+
+// ============================================================
+// ApplicationsTab — Phase 4.5 報名管理（列表 + 篩選 + mark paid + 編輯）
+// ============================================================
+function ApplicationsTab({
+  data,
+  filter,
+  markedBy,
+  onMarkedByChange,
+  onFilterChange,
+  onMarkPaid,
+  onCancel,
+  onEditPayment,
+  onReload,
+}) {
+  const [editingId, setEditingId] = useState(null);
+  const [editMode, setEditMode] = useState(null); // 'mark_paid' | 'cancel' | 'edit'
+  const [form, setForm] = useState({ last5: '', amount: '', date: '', notes: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [errMsg, setErrMsg] = useState('');
+
+  if (!data) {
+    return <p style={{ color: '#888' }}>載入中...</p>;
+  }
+
+  if (data.error) {
+    return <p style={{ color: '#ef4444' }}>載入失敗：{data.error}</p>;
+  }
+
+  const rows = data.rows || [];
+
+  const startEdit = (row, mode) => {
+    setEditingId(row.id);
+    setEditMode(mode);
+    setErrMsg('');
+    if (mode === 'mark_paid') {
+      setForm({
+        last5: row.payment_last5_masked ? '' : '',
+        amount: row.payment_amount != null ? String(row.payment_amount) : '',
+        date: row.payment_date || todayStr(),
+        notes: row.notes || '',
+      });
+    } else if (mode === 'cancel') {
+      setForm({ last5: '', amount: '', date: '', notes: row.notes || '' });
+    } else {
+      setForm({
+        last5: '',
+        amount: row.payment_amount != null ? String(row.payment_amount) : '',
+        date: row.payment_date || '',
+        notes: row.notes || '',
+      });
+    }
+  };
+
+  const closeEdit = () => {
+    setEditingId(null);
+    setEditMode(null);
+    setForm({ last5: '', amount: '', date: '', notes: '' });
+    setErrMsg('');
+  };
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    setErrMsg('');
+    let result;
+    try {
+      if (editMode === 'mark_paid') {
+        if (!/^\d{1,5}$/.test(form.last5)) {
+          setErrMsg('後五碼請填數字');
+          setSubmitting(false);
+          return;
+        }
+        if (!form.amount || parseFloat(form.amount) <= 0) {
+          setErrMsg('金額必填且 > 0');
+          setSubmitting(false);
+          return;
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) {
+          setErrMsg('日期格式 YYYY-MM-DD');
+          setSubmitting(false);
+          return;
+        }
+        result = await onMarkPaid({
+          id: editingId,
+          last5: form.last5,
+          amount: form.amount,
+          date: form.date,
+        });
+      } else if (editMode === 'cancel') {
+        if (!confirm(`確認取消報名 #${editingId}？`)) {
+          setSubmitting(false);
+          return;
+        }
+        result = await onCancel({ id: editingId, notes: form.notes || undefined });
+      } else {
+        result = await onEditPayment({
+          id: editingId,
+          last5: form.last5 || undefined,
+          amount: form.amount || undefined,
+          date: form.date || undefined,
+          notes: form.notes || undefined,
+        });
+      }
+      if (result?.ok) {
+        closeEdit();
+      } else {
+        setErrMsg(result?.error || '操作失敗');
+      }
+    } catch (err) {
+      setErrMsg(err?.message || '操作失敗');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div>
+      {/* 我是誰 */}
+      <div style={{ ...appBox, marginBottom: 16 }}>
+        <span style={{ fontSize: 13, color: '#666', marginRight: 12 }}>我是：</span>
+        {[
+          { v: 'yixiu', label: '一休' },
+          { v: 'wanxin', label: '婉馨' },
+        ].map((opt) => (
+          <button
+            key={opt.v}
+            onClick={() => onMarkedByChange(opt.v)}
+            style={{
+              ...appBtn,
+              ...(markedBy === opt.v ? appBtnActive : {}),
+              marginRight: 8,
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <span style={{ fontSize: 12, color: '#999', marginLeft: 12 }}>
+          （影響操作 audit log）
+        </span>
+      </div>
+
+      {/* 篩選 */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[
+          { v: 'all', label: '全部' },
+          { v: 'pending', label: '待付款' },
+          { v: 'paid', label: '已付款' },
+          { v: 'cancelled', label: '已取消' },
+        ].map((opt) => (
+          <button
+            key={opt.v}
+            onClick={() => onFilterChange(opt.v)}
+            style={{
+              ...appBtn,
+              ...(filter === opt.v ? appBtnActive : {}),
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <button onClick={onReload} style={{ ...appBtn, marginLeft: 'auto' }}>🔄 重整</button>
+      </div>
+
+      {/* 計數 */}
+      <p style={{ fontSize: 13, color: '#666', margin: '0 0 16px' }}>
+        共 {data.total || 0} 筆（顯示 {rows.length} 筆）
+      </p>
+
+      {/* 列表 */}
+      {rows.length === 0 ? (
+        <p style={{ color: '#999' }}>沒有資料</p>
+      ) : (
+        rows.map((row) => (
+          <div key={row.id} style={appCard}>
+            {/* 主資訊 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>
+                  #{row.id} {row.real_name}
+                  <span style={{ ...appBadge(row.status), marginLeft: 8 }}>
+                    {statusLabel(row.status)}
+                  </span>
+                </div>
+                <div style={{ fontSize: 13, color: '#555' }}>
+                  {planLabel(row.program_choice)} · 📞 {row.phone} · ✉️ {row.email}
+                </div>
+                {row.address && (
+                  <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>📍 {row.address}</div>
+                )}
+                <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>
+                  {row.gender === 'male' ? '男' : row.gender === 'female' ? '女' : '其他'} · {row.age} 歲
+                  {row.line_id && ` · LINE ID: ${row.line_id}`}
+                </div>
+              </div>
+              <div style={{ textAlign: 'right', fontSize: 12, color: '#888' }}>
+                <div>提交：{fmtDate(row.submitted_at)}</div>
+                {row.paid_at && <div>付款：{fmtDate(row.paid_at)}</div>}
+                {row.paid_marked_by && <div>標記者：{row.paid_marked_by}</div>}
+              </div>
+            </div>
+
+            {/* 匯款資訊 */}
+            {(row.payment_last5_masked || row.payment_amount != null || row.payment_date) && (
+              <div style={{ marginTop: 10, padding: '8px 12px', background: '#fff8e1', borderRadius: 6, fontSize: 13 }}>
+                💰 後五碼 <strong>{row.payment_last5_masked || '—'}</strong>
+                {' · '}金額 <strong>{row.payment_amount != null ? `NT$ ${row.payment_amount}` : '—'}</strong>
+                {' · '}匯款日 <strong>{row.payment_date || '—'}</strong>
+              </div>
+            )}
+
+            {row.notes && (
+              <div style={{ marginTop: 6, fontSize: 13, color: '#666' }}>📝 {row.notes}</div>
+            )}
+
+            {/* 操作 */}
+            {editingId !== row.id && (
+              <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+                {row.status === 'pending' && (
+                  <button onClick={() => startEdit(row, 'mark_paid')} style={{ ...appBtn, ...appBtnPrimary }}>
+                    ✅ 標記已付款
+                  </button>
+                )}
+                {row.status !== 'cancelled' && (
+                  <button onClick={() => startEdit(row, 'edit')} style={appBtn}>📝 編輯</button>
+                )}
+                {row.status !== 'cancelled' && (
+                  <button onClick={() => startEdit(row, 'cancel')} style={{ ...appBtn, ...appBtnDanger }}>
+                    🗑 取消報名
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 編輯 form（inline 展開） */}
+            {editingId === row.id && (
+              <div style={{ marginTop: 12, padding: 12, background: '#f9fafb', borderRadius: 8 }}>
+                <p style={{ margin: '0 0 10px', fontWeight: 600 }}>
+                  {editMode === 'mark_paid' ? '✅ 標記為已付款' :
+                   editMode === 'cancel' ? '🗑 取消報名' : '📝 編輯匯款資訊'}
+                </p>
+                {(editMode === 'mark_paid' || editMode === 'edit') && (
+                  <>
+                    <label style={appLabel}>
+                      匯款後五碼 {editMode === 'mark_paid' && <span style={{ color: '#ef4444' }}>*</span>}
+                    </label>
+                    <input
+                      type="text"
+                      value={form.last5}
+                      onChange={(e) => setForm({ ...form, last5: e.target.value })}
+                      placeholder={editMode === 'edit' && !form.last5 ? '保留原值請留空' : '例：12345'}
+                      style={appInput}
+                      maxLength={5}
+                    />
+                    <label style={appLabel}>
+                      匯款金額（含手續費）{editMode === 'mark_paid' && <span style={{ color: '#ef4444' }}>*</span>}
+                    </label>
+                    <input
+                      type="number"
+                      value={form.amount}
+                      onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                      placeholder="例：11400"
+                      style={appInput}
+                      step="0.01"
+                    />
+                    <label style={appLabel}>
+                      匯款日期 {editMode === 'mark_paid' && <span style={{ color: '#ef4444' }}>*</span>}
+                    </label>
+                    <input
+                      type="date"
+                      value={form.date}
+                      onChange={(e) => setForm({ ...form, date: e.target.value })}
+                      style={appInput}
+                    />
+                  </>
+                )}
+                <label style={appLabel}>備註</label>
+                <textarea
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  placeholder="選填"
+                  style={{ ...appInput, minHeight: 60, fontFamily: 'inherit' }}
+                  maxLength={500}
+                />
+                {errMsg && <p style={{ color: '#ef4444', fontSize: 13, margin: '6px 0' }}>{errMsg}</p>}
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button
+                    onClick={handleSubmit}
+                    disabled={submitting}
+                    style={{ ...appBtn, ...appBtnPrimary, ...(submitting ? { opacity: 0.5 } : {}) }}
+                  >
+                    {submitting ? '處理中...' : '確認'}
+                  </button>
+                  <button onClick={closeEdit} style={appBtn} disabled={submitting}>取消</button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ApplicationsTab inline styles
+const appCard = {
+  background: '#fff',
+  border: '1px solid #e5e7eb',
+  borderRadius: 10,
+  padding: '14px 16px',
+  marginBottom: 12,
+};
+const appBox = {
+  background: '#f9fafb',
+  border: '1px solid #e5e7eb',
+  borderRadius: 8,
+  padding: '8px 12px',
+  display: 'inline-block',
+};
+const appBtn = {
+  padding: '6px 12px',
+  border: '1px solid #d1d5db',
+  borderRadius: 6,
+  background: '#fff',
+  cursor: 'pointer',
+  fontSize: 13,
+};
+const appBtnActive = {
+  background: '#2a9d6f',
+  color: '#fff',
+  borderColor: '#2a9d6f',
+};
+const appBtnPrimary = {
+  background: '#2a9d6f',
+  color: '#fff',
+  borderColor: '#2a9d6f',
+};
+const appBtnDanger = {
+  background: '#fff',
+  color: '#ef4444',
+  borderColor: '#ef4444',
+};
+const appLabel = {
+  display: 'block',
+  fontSize: 13,
+  fontWeight: 600,
+  margin: '8px 0 4px',
+  color: '#333',
+};
+const appInput = {
+  width: '100%',
+  padding: '8px 10px',
+  border: '1px solid #d1d5db',
+  borderRadius: 6,
+  fontSize: 14,
+  boxSizing: 'border-box',
+};
+const appBadge = (status) => ({
+  display: 'inline-block',
+  padding: '2px 8px',
+  borderRadius: 999,
+  fontSize: 12,
+  fontWeight: 600,
+  background:
+    status === 'paid' ? '#d1fae5' :
+    status === 'pending' ? '#fef3c7' :
+    status === 'cancelled' ? '#fee2e2' : '#e5e7eb',
+  color:
+    status === 'paid' ? '#065f46' :
+    status === 'pending' ? '#92400e' :
+    status === 'cancelled' ? '#991b1b' : '#374151',
+});
+
+function statusLabel(s) {
+  return s === 'pending' ? '待付款' : s === 'paid' ? '已付款' : s === 'cancelled' ? '已取消' : s;
+}
+function planLabel(p) {
+  return p === '12weeks' ? '12 週完整版' : p === '4weeks_trial' ? '4 週體驗版' : p;
+}
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // ============================================================
