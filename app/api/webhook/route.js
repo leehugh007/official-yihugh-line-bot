@@ -27,6 +27,7 @@ import {
   detectMultiChoice,
   extractWeights,
   extractPartialWeight,
+  detectIntentToLoseWeight,
   pickWeightDiffCondition,
   parseQ3Choice,
 } from '../../../lib/conversation-path.js';
@@ -905,20 +906,27 @@ async function handleConversationPath(event, userId, text, state) {
       }
 
       // 純自由文字 fallback（無任何部分資訊）
-      // stage=0 沒瘦身線索 → 靜默（保護純打招呼新用戶）
       // stage=1 → retry_weight（給具體範例讓用戶照抄）
-      if (stage === 1) {
+      // stage=0 + 純瘦身意圖（外部工具來、自由文字「我想瘦」）→ upgrade stage=1 + retry_weight
+      // stage=0 + 沒瘦身線索 → 靜默（保護純打招呼新用戶）
+      const intentToLose = stage === 0 && detectIntentToLoseWeight(text);
+      if (stage === 1 || intentToLose) {
         const retryTpl = await getTemplate(null, 1, 'retry_weight');
         if (retryTpl) {
           const msg = await renderTemplate(retryTpl, {});
           await replyMessage(event.replyToken, [textMessage(msg)]);
+          const dbUpdates = { last_user_reply_at: new Date().toISOString() };
+          if (intentToLose) {
+            dbUpdates.path_stage = 1;
+            dbUpdates.path_stage_updated_at = new Date().toISOString();
+          }
           await supabase
             .from('official_line_users')
-            .update({ last_user_reply_at: new Date().toISOString() })
+            .update(dbUpdates)
             .eq('line_user_id', userId);
           return true;
         }
-        console.error('[ConversationPath] stage=1 fallback: q1_retry_weight template missing/inactive');
+        console.error('[ConversationPath] retry_weight template missing/inactive (stage=' + stage + ', intent=' + intentToLose + ')');
       }
       return false; // stage=0 無線索 or template 缺失 → 靜默
     }
