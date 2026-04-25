@@ -1110,7 +1110,7 @@ export default function ApplyPage() {
           </div>
           <p style={S.para}>你不是買一套「拍一拍上傳」的錄播課。</p>
           <p style={{ ...S.para, marginBottom: 6 }}>
-            你買的是這 <span style={S.emphasis}>4 個互相撐住</span>的系統：
+            你買的是這 <span style={S.emphasis}>4 個缺一不可</span>的系統：
           </p>
 
           <img
@@ -1119,7 +1119,7 @@ export default function ApplyPage() {
             style={{ width: '100%', maxWidth: 400, display: 'block', margin: '20px auto 28px', borderRadius: 12 }}
           />
 
-          <SystemItem emoji="📚" name="知識系統">
+          <SystemItem emoji="📚" name="ABC 代謝力重建瘦身系統">
             我每週親自直播帶你 —— <span style={S.emphasis}>12 堂直播 + 24 堂錄播</span>
             ，從代謝原理講到每天的選擇。不是上完就放著的課，是走一季的陪伴。
           </SystemItem>
@@ -1358,7 +1358,7 @@ export default function ApplyPage() {
           <p style={S.planMeta}>12 週每人總價 $9,999｜<span style={{ ...S.highlight, fontSize: 13 }}>限定 5 組</span></p>
           <p style={S.para}>
             <span style={S.emphasis}>限雙人團報，6 月班只開 5 組</span>
-            。找一個想一起改變的人，兩個人互相撐著走完，比自己一個人容易得多。
+            。找一個想一起改變的人，兩個人一起走完，比一個人容易得多。
           </p>
           <p style={S.para}>
             內容跟 12 週完整版一樣，每人都有自己的直播 / 營養師看餐 / 運動課 / 班級。
