@@ -37,6 +37,7 @@ import {
   triggerHandoff,
   handlePoliteEnd,
 } from '../../../lib/handoff.js';
+import { notifyCrossToolUsage } from '../../../lib/cross-tool-signal.js';
 import { generateFinalFeedback, verifyHandoffIntent } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 import supabase from '../../../lib/supabase.js';
@@ -527,6 +528,7 @@ async function handleSugarCodeClaim(event, userId, session) {
   const profile = await getProfile(userId);
   const report = buildSugarReport(session, profile?.displayName || '');
   await replyMessage(event.replyToken, report);
+  await notifyCrossToolUsage(userId, profile?.displayName, 'sugar', existingUser?.source);
   return true;
 }
 
@@ -559,6 +561,7 @@ async function handleQuizCodeClaim(event, userId, session) {
   const profile = await getProfile(userId);
   const report = buildPersonalizedReport(session, profile?.displayName || '');
   await replyMessage(event.replyToken, report);
+  await notifyCrossToolUsage(userId, profile?.displayName, 'quiz', existingUser?.source);
   return true;
 }
 
@@ -597,6 +600,7 @@ async function handleProteinCodeClaim(event, userId, session) {
   const profile = await getProfile(userId);
   const strategy = buildProteinStrategy(session, profile?.displayName || '');
   await replyMessage(event.replyToken, strategy);
+  await notifyCrossToolUsage(userId, profile?.displayName, 'protein', existingUser?.source);
   return true;
 }
 
@@ -636,6 +640,7 @@ async function handleFattyLiverCodeClaim(event, userId, session) {
   const profile = await getProfile(userId);
   const report = buildFattyLiverReport(session, profile?.displayName || '');
   await replyMessage(event.replyToken, report);
+  await notifyCrossToolUsage(userId, profile?.displayName, 'fatty_liver', existingUser?.source);
   return true;
 }
 
@@ -673,6 +678,7 @@ async function handleBloodSugarCodeClaim(event, userId, session) {
   const profile = await getProfile(userId);
   const report = buildBloodSugarReport(session, profile?.displayName || '');
   await replyMessage(event.replyToken, report);
+  await notifyCrossToolUsage(userId, profile?.displayName, 'blood_sugar', existingUser?.source);
   return true;
 }
 
@@ -710,6 +716,7 @@ async function handleTdeeCodeClaim(event, userId, session) {
   const profile = await getProfile(userId);
   const report = buildTdeeReport(session, profile?.displayName || '');
   await replyMessage(event.replyToken, report);
+  await notifyCrossToolUsage(userId, profile?.displayName, 'tdee', existingUser?.source);
   return true;
 }
 
