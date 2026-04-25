@@ -31,21 +31,10 @@ import { pushMessage, textMessage } from '../../../../lib/line.js';
 import { getSettingTyped } from '../../../../lib/official-settings.js';
 import { performQ5Transition } from '../../../../lib/q5-state.js';
 import { pushQ5SoftInvite } from '../../../../lib/q5-message.js';
+import { NOTIFY_USER_IDS, TEST_ALLOWLIST } from '../../../../lib/constants.js';
 
 // 契約 Ch.4.3：maxDuration 60s
 export const maxDuration = 60;
-
-// TEST_ALLOWLIST：q5_test_mode_cron=true 時 cron 跳過（避免自動推給 dev 帳號）
-const TEST_ALLOWLIST = [
-  'U51808e2cc195967eba53701518e6f547', // 一休
-  'U3edf3d2114ee03ad81cff1fd35c04600', // 婉馨
-];
-
-// 通知收件者（抄 handoff.js NOTIFY_USER_IDS）
-const NOTIFY_USER_IDS = {
-  yixiu: 'U51808e2cc195967eba53701518e6f547',
-  wanxin: 'U3edf3d2114ee03ad81cff1fd35c04600',
-};
 
 // 並發 cap（比 drip 20 保守，AI cost + LINE rate limit）
 const CONCURRENCY = 10;
