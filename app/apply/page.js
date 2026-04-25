@@ -29,6 +29,9 @@ const CONTACT_LINE_URL =
   'https://line.me/R/oaMessage/%40sososo/?%E6%88%91%E8%A6%81%E5%A0%B1%E5%90%8D';
 const DUO_CONTACT_URL =
   'https://line.me/R/oaMessage/%40sososo/?%E9%9B%99%E4%BA%BA%E6%97%A9%E9%B3%A5';
+// Artemis 線上減重班官方 LINE（用於通知付款 + 核對帳務）
+const ARTEMIS_PAY_URL =
+  'https://line.me/R/oaMessage/%40artemis_fit/?%E6%88%91%E5%B7%B2%E5%AE%8C%E6%88%90%E5%8C%AF%E6%AC%BE%EF%BC%8C%E5%BE%8C%E4%BA%94%E7%A2%BC%EF%BC%9A';
 const PROGRAM_URL = 'https://abcmetabolic.com/program';
 
 // ==================== Design tokens ====================
@@ -672,27 +675,168 @@ export default function ApplyPage() {
   if (submitted) {
     return (
       <div style={S.page}>
-        <section style={{ ...S.hero, padding: '80px 24px 60px' }}>
+        <section style={{ ...S.hero, padding: '60px 24px 36px' }}>
           <span style={{ ...S.h2Emoji, fontSize: 48 }}>🌱</span>
           <h1 style={S.heroTitle}>收到了。</h1>
           <p style={S.heroSub}>
-            <span style={S.emphasis}>fifi 助教</span>會跟你聯絡，
+            接下來請<span style={S.emphasis}>完成匯款</span>，
             <br />
-            確認匯款方式跟開班資訊。
+            然後到 <span style={S.emphasis}>@artemis_fit</span> 告訴我們，
+            <br />
+            我們確認後就會把你加進班級。
           </p>
-          <p style={{ ...S.heroSub, fontSize: 15 }}>
-            如果你希望更快開始，可以
-            <span style={S.emphasis}>主動傳訊息</span>
-            告訴我們；
-            <br />
-            不然就等我們的訊息 —— 遇到假日可能會慢一點，
-            <br />
-            但我們一定會跟你聯絡。
-          </p>
-          <a style={{ ...S.btn, maxWidth: 280, margin: '20px auto 0' }} href={CONTACT_LINE_URL}>
-            回到 LINE 告訴我們
-          </a>
         </section>
+
+        {/* 匯款資訊 */}
+        <section style={{ ...S.section, paddingTop: 24 }}>
+          <SectionHeading emoji="💰" title="匯款資訊" />
+          <div
+            style={{
+              background: '#fff8e1',
+              border: '1px solid #f4d76e',
+              borderRadius: 10,
+              padding: '20px 22px',
+              margin: '8px 0 0',
+            }}
+          >
+            <p style={{ ...S.para, margin: '0 0 14px', fontSize: 13, color: C.textLight }}>
+              請於報名後 3 天內完成匯款
+            </p>
+            <p
+              style={{
+                margin: '8px 0',
+                display: 'flex',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 6,
+              }}
+            >
+              <span style={{ color: C.textLight, fontSize: 14 }}>帳戶名稱</span>
+              <span style={{ ...S.emphasis, fontSize: 16 }}>亞偍涐斯股份有限公司</span>
+            </p>
+            <p
+              style={{
+                margin: '8px 0',
+                display: 'flex',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 6,
+              }}
+            >
+              <span style={{ color: C.textLight, fontSize: 14 }}>銀行</span>
+              <span style={{ ...S.emphasis, fontSize: 16 }}>永豐銀行（807）德惠分行</span>
+            </p>
+            <p
+              style={{
+                margin: '8px 0 0',
+                display: 'flex',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 6,
+                alignItems: 'center',
+              }}
+            >
+              <span style={{ color: C.textLight, fontSize: 14 }}>帳號</span>
+              <span
+                style={{
+                  fontSize: 22,
+                  fontWeight: 800,
+                  color: C.error,
+                  letterSpacing: 0.5,
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                158-018-0006795-9
+              </span>
+            </p>
+          </div>
+        </section>
+
+        {/* 通知付款 */}
+        <section style={{ ...S.section, paddingTop: 0 }}>
+          <SectionHeading emoji="📨" title="匯款後通知我們" />
+          <p style={S.para}>
+            匯款完成後，請主動傳訊到「Artemis 線上減重班」官方 LINE：
+          </p>
+          <p
+            style={{
+              fontSize: 26,
+              fontWeight: 800,
+              color: C.primaryDark,
+              textAlign: 'center',
+              margin: '14px 0 12px',
+              letterSpacing: 0.5,
+            }}
+          >
+            @artemis_fit
+          </p>
+          <p style={S.para}>
+            告訴我們<span style={S.emphasis}>付款帳號後五碼</span>，我們確認後會把你加進班級。
+          </p>
+          <a style={{ ...S.btn, marginTop: 18 }} href={ARTEMIS_PAY_URL}>
+            加入 @artemis_fit 通知付款 →
+          </a>
+          <p
+            style={{
+              ...S.para,
+              fontSize: 13,
+              color: C.textLight,
+              marginTop: 14,
+              textAlign: 'center',
+            }}
+          >
+            遇到假日可能會慢一點，但我們一定會跟你聯絡。
+          </p>
+        </section>
+
+        {/* 完整退費條款 */}
+        <section style={S.section}>
+          <SectionHeading emoji="📋" title="退費注意事項" />
+          <div style={S.refundBox}>
+            <p style={S.para}>
+              如報名且付款完成後要取消課程，退款機制依下列辦法施行：
+            </p>
+            <ol
+              style={{
+                paddingLeft: 22,
+                margin: '14px 0 8px',
+                color: C.textMid,
+                lineHeight: 1.85,
+              }}
+            >
+              <li style={{ marginBottom: 8 }}>
+                開課前一天退費將內扣匯款手續費後退還報名費用。
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                報名一個月方案者，課程開始當日後即不退費。
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                報名三個月方案者，扣除已開課月數（按一個月方案原價費用計）並酌收人事處理費 10%，退還剩餘費用。
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                退款帳號如非提供永豐銀行之帳戶，產生之額外手續費須自行承擔。
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                無論何時申請取消活動報名，我們將統一於公司最近一次匯款日處理退還事宜。
+              </li>
+              <li style={{ marginBottom: 0 }}>
+                課程內容上述簡章已完整呈現，如還有問題請與我們詳細詢問是否符合自身需求。
+              </li>
+            </ol>
+            <p
+              style={{
+                ...S.para,
+                fontSize: 13,
+                color: C.textLight,
+                marginTop: 12,
+                marginBottom: 0,
+              }}
+            >
+              *開課月數：以 4 週為一個月。第一個月 1-4 週、第二個月 5-8 週、第三個月 9-12 週。
+            </p>
+          </div>
+        </section>
+
         <p style={S.signature}>我是一休，陪你健康的瘦一輩子。</p>
       </div>
     );
@@ -714,12 +858,12 @@ export default function ApplyPage() {
           <br />
           是照鏡子不用躲、跟孩子跑跳不會喘、
           <br />
-          夏天不用再躲衣服的日子。
+          夏天不用再穿長袖遮手臂的自己。
           <br />
           <br />
-          是不用再跟身體打仗，
+          是吃飯不用算熱量、不用每餐糾結「我可以吃什麼」、
           <br />
-          也不用再盤算「我今天可以吃什麼」的那種輕鬆。
+          也不用每天為了體重跟自己較勁的日子。
         </p>
         <p style={S.heroCTA}>如果這些是你要的，往下看。</p>
         <div style={S.heroArrow}>↓</div>
@@ -737,6 +881,12 @@ export default function ApplyPage() {
       {/* ==================== 第二章 可能性 ==================== */}
       <section style={S.section}>
         <SectionHeading emoji="💭" title="我知道，因為我走過" />
+
+        <img
+          src="/images/landing/land015.webp"
+          alt="一休本人 before/after：胖時的我 vs 瘦了 -25kg 之後的我"
+          style={{ width: '100%', maxWidth: 400, display: 'block', margin: '8px auto 28px', borderRadius: 12 }}
+        />
 
         <p style={S.para}>我不是天生瘦。</p>
         <p style={S.para}>
@@ -853,8 +1003,8 @@ export default function ApplyPage() {
         <p style={S.para}>你不用相信我。看看她們。</p>
 
         <img
-          src="/images/landing/land005.png"
-          alt="「她沒有更努力，她只是換對方法」—— 學員 -20 公斤 before/after"
+          src="/images/landing/land006.png"
+          alt="「產後肚子真的回得去」—— 學員產後 before/after"
           style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
         />
 
@@ -910,8 +1060,8 @@ export default function ApplyPage() {
         </StoryCard>
 
         <img
-          src="/images/landing/land006.png"
-          alt="溫溫：產後肚子真的回得去 —— 產後 before/after 對比"
+          src="/images/landing/land005.png"
+          alt="溫溫：「她沒有更努力，她只是換對方法」—— 不挨餓，讓身體自己變瘦"
           style={{ width: '100%', maxWidth: 400, display: 'block', margin: '32px auto', borderRadius: 12 }}
         />
 
@@ -1144,8 +1294,8 @@ export default function ApplyPage() {
             />
             <span style={S.planTitle}>代謝力重建 12 週完整版</span>
           </label>
-          <p style={S.planPrice}>NT$ 11,400</p>
-          <p style={S.planMeta}>平均每月 $3,800</p>
+          <p style={S.planPrice}>NT$ 3,800 <span style={{ fontSize: 18, fontWeight: 600 }}>/ 月</span></p>
+          <p style={S.planMeta}>12 週完整版 · 總價 $11,400</p>
           <p style={S.para}>
             這是多數學員選的版本。代謝重建需要時間 —— 四週打基礎，八週讓身體習慣，
             十二週讓它變成你的生活。
@@ -1204,10 +1354,10 @@ export default function ApplyPage() {
         <div style={{ ...S.planCard, ...S.planCardDuo }}>
           <span style={S.planBadgeDuo}>👯 雙人早鳥</span>
           <p style={S.planTitleDuo}>12 週完整版｜雙人團報</p>
-          <p style={S.planPrice}>NT$ 3,333 / 人</p>
-          <p style={S.planMeta}>兩人同行報名，每人只要 $3,333</p>
+          <p style={S.planPrice}>NT$ 3,333 <span style={{ fontSize: 18, fontWeight: 600 }}>/ 月 · 每人</span></p>
+          <p style={S.planMeta}>12 週每人總價 $9,999｜<span style={{ ...S.highlight, fontSize: 13 }}>限定 5 組</span></p>
           <p style={S.para}>
-            <span style={S.emphasis}>限雙人團報</span>
+            <span style={S.emphasis}>限雙人團報，6 月班只開 5 組</span>
             。找一個想一起改變的人，兩個人互相撐著走完，比自己一個人容易得多。
           </p>
           <p style={S.para}>
