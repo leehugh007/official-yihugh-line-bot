@@ -45,6 +45,8 @@ import supabase from '../../../lib/supabase.js';
 import { classifyQ5Intent } from '../../../lib/q5-classifier.js';
 import { pushQ5SoftInvite } from '../../../lib/q5-message.js';
 import { performQ5Transition, updateQ5Intent } from '../../../lib/q5-state.js';
+// Phase 4.6 Q4→Q5 中間層學員故事
+import { replyStoryFlex, getStoryByPath } from '../../../lib/q5-story.js';
 
 export async function POST(request) {
   try {
@@ -286,6 +288,27 @@ async function handlePostback(event, userId) {
   if (action === 'q4_continue') {
     await recordInteraction(userId);
 
+    // Phase 4.6（2026-04-26）：Q4→Q5 中間插「path-specific 學員故事 Flex」
+    //   路徑命中 ABCD 4 種 → 推故事 Flex（hero image + body + 兩按鈕）
+    //     ├ 「想了解 ABC 在做什麼」→ URI 直接連 /apply（HMAC signed URL）
+    //     └ 「我再想想」→ postback q4_story_maybe handler
+    //   path=other/null 或 buildUrl/reply 失敗 → fallback 走原邏輯（restricted handoff or Q5 軟邀請）
+    //
+    // 設計：
+    //   - 不升 stage（保持 4）— 用戶按「想了解」進 /apply 才會升 6→7（Phase 4.1 visit endpoint）
+    //   - 不寫 q5_intent — 讓 stage=4 主動軌 cron 還能接（未來 Phase B 24h 早鳥也用）
+    //   - 對「path 命中」的用戶繞過 restricted gate（一休 2026-04-26 決策：
+    //     /apply 已 production ready，故事 Flex UX 比 fifi handoff 更好）
+    const userForStory = await getUser(userId);
+    const storyResult = await replyStoryFlex(event.replyToken, userId, userForStory?.path);
+    if (storyResult.ok) {
+      return;
+    }
+    if (storyResult.reason !== 'no_story_for_path') {
+      console.warn('[Postback q4_continue] replyStoryFlex failed:', storyResult.reason, { userId });
+    }
+    // 落到既有 fallback：path=other/null 或 Flex builder 失敗
+
     const restricted = await getSettingTyped('q5_restricted_to_test_users');
     const isTestUser = TEST_ALLOWLIST.includes(userId);
     if (restricted && !isTestUser) {
@@ -315,6 +338,16 @@ async function handlePostback(event, userId) {
       // race_lost（cron 先推）/ push_failed_rollback → 靜默
       // 不動 q5_intent 讓下次用戶傳自由文字（stage=4 handler）還能重試
     }
+    return;
+  }
+
+  // Phase 4.6: 「我再想想」按鈕（學員故事 Flex 內）
+  if (action === 'q4_story_maybe') {
+    await recordInteraction(userId);
+    await replyMessage(event.replyToken, [
+      textMessage('好，沒問題。如果之後想了解再來找我就好，不打擾你。'),
+    ]);
+    // 不動 stage、不動 q5_intent — 讓未來主動軌（cron 24h 早鳥）還能接
     return;
   }
 
