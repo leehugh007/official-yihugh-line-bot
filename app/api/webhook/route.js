@@ -341,7 +341,39 @@ async function handlePostback(event, userId) {
     return;
   }
 
-  // Phase 4.6: 「我再想想」按鈕（學員故事 Flex 內）
+  // Phase 4.6（2026-04-26）：學員故事 Flex 三按鈕 handlers
+  //   q4_story_interested：想了解 ABC → handoff 通知一休/婉馨 + polite reply
+  //   q4_story_question  ：有問題想問 → handoff 通知一休/婉馨 + polite reply
+  //   q4_story_maybe     ：我再想想  → polite reply 不通知
+  //
+  // 第一版不接 /apply，全部走人工接續（一休 2026-04-26 決策：
+  // /apply 後流程未完美，先把通知接住手動處理，觀察按鈕點擊比例再決定下步）
+  if (action === 'q4_story_interested') {
+    await recordInteraction(userId);
+    const ok = await triggerHandoff(userId, 'q4_story_interested');
+    if (ok) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          '好，我請 fifi 助教跟你聊聊 ABC 是怎麼做的——\n上班時間會陸續回，不會讓你等太久。'
+        ),
+      ]);
+    }
+    return;
+  }
+
+  if (action === 'q4_story_question') {
+    await recordInteraction(userId);
+    const ok = await triggerHandoff(userId, 'q4_story_question');
+    if (ok) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          '好，請說，我請 fifi 助教看到後跟你聊。\n上班時間會陸續回，不會讓你等太久。'
+        ),
+      ]);
+    }
+    return;
+  }
+
   if (action === 'q4_story_maybe') {
     await recordInteraction(userId);
     await replyMessage(event.replyToken, [
