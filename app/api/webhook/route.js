@@ -2012,7 +2012,7 @@ const FATTY_LIVER_RISK = {
     label: '中等風險',
     diagnosis: '你的飲食裡有幾個地方，正在讓肝臟默默加班。',
     aha: '你可能覺得「我又沒喝酒」。但手搖飲裡的高果糖糖漿，走進身體之後的路跟酒精幾乎一樣——全部直接塞給肝臟處理，速度是一般糖的 5 到 10 倍。你不喝酒，但你的肝每天下午都在處理一杯「酒」。\n\n好消息是，這個階段調整效果最好。',
-    oneStep: '先從下午那杯飲料下手——換成無糖茶或水就好。光這一步，你的肝就少扛一半的工作量。',
+    oneStep: '先從下午那杯飲料下手——換成無糖茶為基底，偶爾可以搭配配料，但茶一定要選無糖茶，不要再額外添加糖。光這一步，你的肝就少扛一半的工作量。',
     tips: [
       '含糖飲料換成無糖茶、黑咖啡、氣泡水',
       '中午多夾一樣菜、選蛋白質取代炸物',
@@ -2023,7 +2023,7 @@ const FATTY_LIVER_RISK = {
     label: '高風險',
     diagnosis: '你的多項習慣都在增加肝臟的負擔。不是嚇你，但你的肝需要你的注意了。',
     aha: '肝不會痛、不會腫、不會發燒。它就是默默扛，扛到有一天扛不住。等你感覺到的時候，通常不是脂肪肝了，是更嚴重的東西。\n\n但脂肪肝是可以改善的。不一定要瘦下來，改變吃進去的東西就有用。',
-    oneStep: '最重要的一步：把每天的含糖飲料換掉。高果糖糖漿全部直接塞給肝臟處理，換掉它，肝臟的壓力馬上減半。',
+    oneStep: '最重要的一步：把每天的含糖飲料換掉，想喝選無糖茶為基底，偶爾可以搭配配料，但茶一定要選無糖茶，不要再額外添加糖。光這一步，肝臟的壓力馬上減半。',
     tips: [
       '把含糖飲料全部換成水或無糖飲品——這是最大的槓桿',
       '安排一次腹部超音波檢查——照了才知道',
@@ -2032,7 +2032,7 @@ const FATTY_LIVER_RISK = {
   },
 };
 
-// 飲料打臉
+// 飲料打臉（legacy：drink_habit/lunch_habit 進階兩題版本，2026-04-28 後新代碼不再寫入此欄位）
 const DRINK_AHA = {
   'sugar-tea': '你平常喝手搖飲——裡面的高果糖糖漿，走進身體之後的路跟酒精幾乎一樣，全部直接塞給肝臟處理。你不喝酒，但你的肝每天下午都在處理一杯「酒」。',
   'juice': '你平常喝果汁——你以為很健康？果汁的果糖含量不輸手搖飲，而且沒有纖維幫忙減速，全部直接塞給肝臟處理。',
@@ -2040,7 +2040,7 @@ const DRINK_AHA = {
   'water': null,
 };
 
-// 午餐打臉
+// 午餐打臉（legacy）
 const LUNCH_AHA = {
   'bento': '再加上你中午吃便當——裡面大部分是精緻澱粉，你的肝下午就在加班處理這些糖。',
   'noodle': '再加上你中午吃麵食——幾乎全是精緻碳水，蛋白質很少，肝臟一整個下午都在處理多出來的糖。',
@@ -2048,50 +2048,53 @@ const LUNCH_AHA = {
   'skip': '再加上你中午常跳過或隨便吃——身體拿不到需要的東西，反而更容易在下午、晚上爆吃，肝臟反而更累。',
 };
 
+// 6 題基本測驗的個人化打臉文案（label trigger → text）
+// 對應 abc-website src/app/tools/fatty-liver/page.tsx 的 GAP_LINES。如有改動兩邊要同步
+const FATTY_LIVER_GAP_LINES = {
+  // Q1 含糖飲料
+  '每天至少一杯': '你每天下午那杯飲料，走進身體之後的路跟酒精幾乎一樣——全部直接塞給肝臟處理。',
+  '一週 3-4 次': '一週 3-4 杯手搖飲，聽起來不多？但每一杯裡的高果糖糖漿都直接塞給肝臟處理，速度是一般糖的 5 到 10 倍。',
+  // Q2 腰圍
+  '明顯超標': '腰圍超標代表內臟脂肪堆積——BMI 騙得了你，腰圍不會。',
+  // Q3 健檢紅字
+  '脂肪肝 + 三酸甘油脂偏高': '你已經有健檢紅字了，但醫生可能只說了「少吃油」。問題是——如果少吃油就能解決，為什麼油炸戒了、宵夜戒了，脂肪肝還是年年都在？',
+  '其中一個有': '你有一項健檢紅字。但很多人拿到報告只想到「少吃油」——其實真正養出脂肪肝的，很多時候不是油，是糖。',
+  // Q5 下午想吃甜食
+  '一定要來杯飲料或甜食': '下午一定要來杯飲料？這不是嘴饞，是血糖在控制你——你中午吃的東西讓血糖掉了，大腦在跟你要糖。',
+  // Q6 晚上暴食
+  '常常忍不住吃宵夜或狂吃': '晚上忍不住開冰箱？不是意志力差——你白天吃的蛋白質和纖維不夠，身體一整天沒拿到它需要的東西，到晚上就爆發了。',
+};
+
 function buildFattyLiverReport(session, displayName) {
   const risk = FATTY_LIVER_RISK[session.risk_level];
   if (!risk) return [textMessage('找不到你的檢測結果，請重新做一次檢測：\nhttps://abcmetabolic.com/tools/fatty-liver')];
 
   const name = displayName ? displayName + '，' : '';
-  const answers = session.answers || [];
-  const { drink_habit, lunch_habit } = session;
+  const answers = Array.isArray(session.answers) ? session.answers : [];
 
-  // 從回答中找出最嚴重的習慣（score 最高的題目）
-  const worstHabit = answers.reduce((worst, a) => (!worst || a.score > worst.score) ? a : worst, null);
+  // 從 6 題答案找出所有命中個人化文案的「危險習慣」
+  // (對應 abc-website 結果頁的 N 個危險習慣承諾)
+  const gapHits = answers
+    .filter((a) => a && typeof a.answer === 'string' && FATTY_LIVER_GAP_LINES[a.answer])
+    .map((a) => ({ label: a.answer, text: FATTY_LIVER_GAP_LINES[a.answer] }));
 
-  // ─── 訊息 1：診斷 → aha → 一步就好 ───
-  let msg1 = '';
-
-  // 診斷開頭：用她的回答
-  if (worstHabit && worstHabit.score >= 2) {
-    msg1 +=
-      `${name}你的護肝報告出來了\n\n` +
-      `你提到了「${worstHabit.answer}」\n` +
-      `這件事跟你的肝臟狀態直接相關。\n\n`;
-  } else {
-    msg1 += `${name}你的護肝報告出來了\n\n`;
-  }
+  // ─── 訊息 1：診斷 → N 個危險習慣展開 → 一步就好 ───
+  let msg1 = `${name}你的護肝報告出來了\n\n`;
 
   msg1 +=
-    `檢測結果：${risk.label}\n` +
+    `📊 檢測結果：${risk.label}\n` +
     `${risk.diagnosis}\n\n`;
 
-  // 飲食習慣打臉（用第二階段的回答）
-  const drinkAha = DRINK_AHA[drink_habit];
-  const lunchAha = LUNCH_AHA[lunch_habit];
-
-  if (drinkAha || lunchAha) {
+  if (gapHits.length > 0) {
+    // 兌現網站「N 個對你的肝最危險的習慣」承諾
     msg1 += `━━━━━━━━━━━━━━━\n\n`;
-    if (drinkAha) msg1 += `${drinkAha}\n\n`;
-    if (lunchAha) msg1 += `${lunchAha}\n\n`;
-    if (drinkAha && lunchAha) {
-      msg1 += `飲料 + 午餐，你的肝一天加班兩次。\n\n`;
-    }
+    msg1 += `光從你的回答，我看到 ${gapHits.length} 個對你的肝最危險的習慣：\n\n`;
+    gapHits.forEach((g, i) => {
+      msg1 += `${i + 1}. 「${g.label}」\n${g.text}\n\n`;
+    });
   } else {
-    // 沒有飲食打臉就用原本的 aha
-    msg1 +=
-      `━━━━━━━━━━━━━━━\n\n` +
-      `${risk.aha}\n\n`;
+    // fallback：所有題目都沒命中（多半是低風險用戶選了所有低分選項）
+    msg1 += `━━━━━━━━━━━━━━━\n\n${risk.aha}\n\n`;
   }
 
   // 一步就好
