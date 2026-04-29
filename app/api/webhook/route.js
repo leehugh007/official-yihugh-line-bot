@@ -48,6 +48,10 @@ import { performQ5Transition, updateQ5Intent } from '../../../lib/q5-state.js';
 // Phase 4.6 Q4→Q5 中間層學員故事
 import { replyStoryFlex, getStoryByPath } from '../../../lib/q5-story.js';
 
+// Vercel function timeout：webhook 預設 15s 不夠（Q4 AI 最壞情境 retry 3 次 + handoff/reply ≈ 23s）
+// 2026-04-30 Q4 AI retry hotfix：拉到 30s 緩衝，配套 ai_call_timeout_ms = 6000
+export const maxDuration = 30;
+
 export async function POST(request) {
   try {
     const body = await request.text();
@@ -1423,13 +1427,28 @@ async function handleStage3ToQ4(event, userId, text, state) {
   });
 
   if (!result.ok) {
-    console.error('[Stage3ToQ4] generateFinalFeedback failed:', result.reason, { userId, path, label });
-    if (TEST_MODE && isInTestAllowlist(userId)) {
-      await replyMessage(event.replyToken, [
-        textMessage(`[debug] generateFinalFeedback 失敗：${result.reason}`),
-      ]);
-    }
-    return false;
+    // 4/29 事故根治：retry 3 次仍失敗 → triggerHandoff + reply 一句告知 fifi 接手
+    // 不再靜默（舊 bug：真實用戶 33% 卡 stage=3 完全沒回應）
+    console.error('[Stage3ToQ4] generateFinalFeedback failed after retries:', result.reason, { userId, path, label });
+
+    // 寫 _last_ai_failure 進 ai_tags（事後 SQL 統計失敗 reason 分佈用）
+    await updateAiTags(userId, {
+      _last_ai_failure: {
+        caller: 'generateFinalFeedback',
+        reason: result.reason,
+        at: new Date().toISOString(),
+      },
+      _op: 'overwrite',
+    }).catch((e) => console.error('[Stage3ToQ4] _last_ai_failure write failed:', e?.message));
+
+    // triggerHandoff: stage=5 + intent=medium + notify yixiu/wanxin
+    await triggerHandoff(userId, 'q4_ai_failed');
+
+    // reply 安撫一句（用戶已等 ~20s，必須讓他知道有人會接）
+    await replyMessage(event.replyToken, [
+      textMessage('我有看到你的訊息，剛剛系統有點忙，已經請 fifi 助教看看，等一下會親自回你 — 不會讓你等太久。'),
+    ]);
+    return true;
   }
 
   const { output, fallback } = result;
