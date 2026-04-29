@@ -14,9 +14,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock callGemini (from ai-classifier.js) + getSettingTyped (from official-settings.js)
+// Mock withGeminiRetry (from ai-classifier.js) + getSettingTyped (from official-settings.js)
+// 2026-04-30 retry hotfix：q5-classifier 改 import withGeminiRetry，mock 對應換
 vi.mock('../lib/ai-classifier.js', () => ({
-  callGemini: vi.fn(),
+  withGeminiRetry: vi.fn(),
 }));
 
 vi.mock('../lib/official-settings.js', () => ({
@@ -27,7 +28,7 @@ vi.mock('../lib/official-settings.js', () => ({
   }),
 }));
 
-const { callGemini } = await import('../lib/ai-classifier.js');
+const { withGeminiRetry } = await import('../lib/ai-classifier.js');
 const { classifyQ5Intent, __test } = await import('../lib/q5-classifier.js');
 
 describe('classifyQ5Intent — input validation', () => {
@@ -40,35 +41,35 @@ describe('classifyQ5Intent — input validation', () => {
     expect(r.intent).toBe('ai_failed');
     expect(r.fallback).toBe(true);
     expect(r.error).toBe('missing_input');
-    expect(callGemini).not.toHaveBeenCalled();
+    expect(withGeminiRetry).not.toHaveBeenCalled();
   });
 
   it('userText 純空白 → ai_failed，不打 AI', async () => {
     const r = await classifyQ5Intent({ userText: '   \n  ' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('missing_input');
-    expect(callGemini).not.toHaveBeenCalled();
+    expect(withGeminiRetry).not.toHaveBeenCalled();
   });
 
   it('userText undefined → ai_failed', async () => {
     const r = await classifyQ5Intent({});
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('missing_input');
-    expect(callGemini).not.toHaveBeenCalled();
+    expect(withGeminiRetry).not.toHaveBeenCalled();
   });
 
   it('userText null → ai_failed', async () => {
     const r = await classifyQ5Intent({ userText: null });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('missing_input');
-    expect(callGemini).not.toHaveBeenCalled();
+    expect(withGeminiRetry).not.toHaveBeenCalled();
   });
 
   it('userText 非 string → ai_failed', async () => {
     const r = await classifyQ5Intent({ userText: 123 });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('missing_input');
-    expect(callGemini).not.toHaveBeenCalled();
+    expect(withGeminiRetry).not.toHaveBeenCalled();
   });
 });
 
@@ -78,7 +79,7 @@ describe('classifyQ5Intent — 5 gemini error paths (all → ai_failed)', () => 
   });
 
   it('gemini_timeout → ai_failed', async () => {
-    callGemini.mockRejectedValueOnce(new Error('gemini_timeout'));
+    withGeminiRetry.mockRejectedValueOnce(new Error('gemini_timeout'));
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.fallback).toBe(true);
@@ -86,14 +87,14 @@ describe('classifyQ5Intent — 5 gemini error paths (all → ai_failed)', () => 
   });
 
   it('gemini_api_429 → ai_failed', async () => {
-    callGemini.mockRejectedValueOnce(new Error('gemini_api_429: rate limit'));
+    withGeminiRetry.mockRejectedValueOnce(new Error('gemini_api_429: rate limit'));
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toMatch(/^gemini_api_429/);
   });
 
   it('gemini_no_text → ai_failed', async () => {
-    callGemini.mockRejectedValueOnce(new Error('gemini_no_text'));
+    withGeminiRetry.mockRejectedValueOnce(new Error('gemini_no_text'));
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('gemini_no_text');
@@ -101,7 +102,7 @@ describe('classifyQ5Intent — 5 gemini error paths (all → ai_failed)', () => 
 
   it('gemini_no_key → ai_failed + console.error CRITICAL', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    callGemini.mockRejectedValueOnce(new Error('gemini_no_key'));
+    withGeminiRetry.mockRejectedValueOnce(new Error('gemini_no_key'));
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('gemini_no_key');
@@ -114,14 +115,14 @@ describe('classifyQ5Intent — 5 gemini error paths (all → ai_failed)', () => 
   });
 
   it('gemini_json_parse → ai_failed', async () => {
-    callGemini.mockRejectedValueOnce(new Error('gemini_json_parse: unexpected token'));
+    withGeminiRetry.mockRejectedValueOnce(new Error('gemini_json_parse: unexpected token'));
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toMatch(/^gemini_json_parse/);
   });
 
   it('generic error（無 message）→ ai_failed + gemini_unknown_error', async () => {
-    callGemini.mockRejectedValueOnce({}); // 非 Error instance、沒 message
+    withGeminiRetry.mockRejectedValueOnce({}); // 非 Error instance、沒 message
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('gemini_unknown_error');
@@ -134,28 +135,28 @@ describe('classifyQ5Intent — validator reject paths (→ ai_failed)', () => {
   });
 
   it('output 非 object（string）→ ai_failed', async () => {
-    callGemini.mockResolvedValueOnce('not an object');
+    withGeminiRetry.mockResolvedValueOnce('not an object');
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('output_not_object');
   });
 
   it('output 是 array → ai_failed', async () => {
-    callGemini.mockResolvedValueOnce([]);
+    withGeminiRetry.mockResolvedValueOnce([]);
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('output_not_object');
   });
 
   it('output 是 null → ai_failed', async () => {
-    callGemini.mockResolvedValueOnce(null);
+    withGeminiRetry.mockResolvedValueOnce(null);
     const r = await classifyQ5Intent({ userText: '好' });
     expect(r.intent).toBe('ai_failed');
     expect(r.error).toBe('output_not_object');
   });
 
   it('intent 非 continue|decline → ai_failed', async () => {
-    callGemini.mockResolvedValueOnce({
+    withGeminiRetry.mockResolvedValueOnce({
       intent: 'maybe',
       confidence: 'high',
       reason: 'not sure',
@@ -166,7 +167,7 @@ describe('classifyQ5Intent — validator reject paths (→ ai_failed)', () => {
   });
 
   it('intent 缺失 → ai_failed', async () => {
-    callGemini.mockResolvedValueOnce({
+    withGeminiRetry.mockResolvedValueOnce({
       confidence: 'high',
       reason: 'missing intent',
     });
@@ -181,7 +182,7 @@ describe('classifyQ5Intent — validator downgrade (仍 ok)', () => {
   });
 
   it('confidence 非 enum → 降成 medium（不 reject）', async () => {
-    callGemini.mockResolvedValueOnce({
+    withGeminiRetry.mockResolvedValueOnce({
       intent: 'continue',
       confidence: 'super_high',
       reason: '用戶想聽',
@@ -193,7 +194,7 @@ describe('classifyQ5Intent — validator downgrade (仍 ok)', () => {
   });
 
   it('reason 非 string → 補空字串（不 reject）', async () => {
-    callGemini.mockResolvedValueOnce({
+    withGeminiRetry.mockResolvedValueOnce({
       intent: 'decline',
       confidence: 'high',
       reason: 42,
@@ -211,7 +212,7 @@ describe('classifyQ5Intent — success paths', () => {
   });
 
   it('continue + high + 合法 reason → fallback=false', async () => {
-    callGemini.mockResolvedValueOnce({
+    withGeminiRetry.mockResolvedValueOnce({
       intent: 'continue',
       confidence: 'high',
       reason: '用戶說好，明顯想繼續',
@@ -225,7 +226,7 @@ describe('classifyQ5Intent — success paths', () => {
   });
 
   it('decline + medium → fallback=false', async () => {
-    callGemini.mockResolvedValueOnce({
+    withGeminiRetry.mockResolvedValueOnce({
       intent: 'decline',
       confidence: 'medium',
       reason: '客氣拒絕',
