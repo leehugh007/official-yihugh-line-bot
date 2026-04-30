@@ -75,6 +75,8 @@ official-yihugh-line-bot/
 │   ├── official-settings-defaults.js # settings 預設值
 │   ├── q5-state.js                # Q5 狀態 helper（updateQ5Intent/performQ5Transition）
 │   ├── q5-apply-url.js            # 🆕 Phase 4.1 HMAC signed URL helper（buildQ5ApplyUrl + verifyQ5ApplySig + shape whitelist + key version rotate）
+│   ├── constants.js               # 🆕 Phase 5 統一 NOTIFY_USER_IDS + TEST_ALLOWLIST（handoff/cron/submit 三處共用）
+│   ├── cross-tool-signal.js       # 🆕 跨工具高意願信號 notifyCrossToolUsage + TOOL_NAMES dict
 │   └── templates.js               # 訊息模板（代謝報告/地雷/菜單等）
 ├── app/
 │   ├── apply/                     # /apply LIFF landing page（Q5 報名入口，Phase 4.1 Session 3 套 landing 五章）
@@ -97,7 +99,9 @@ official-yihugh-line-bot/
     ├── migration_011_blocked_at.sql              # blocked_at 欄位
     ├── migration_012_q5_state_fields.sql         # Q5 狀態欄位（5 個）
     ├── migration_013_q5_applications.sql         # 🆕 Phase 4.1 applications 表 + 3 欄 + 4 indexes
-    └── migration_014_submit_application_rpc.sql  # 🆕 Phase 4.1 submit_application PL/pgSQL RPC
+    ├── migration_014_submit_application_rpc.sql  # 🆕 Phase 4.1 submit_application PL/pgSQL RPC
+    ├── migration_015_q1_partial_templates.sql   # Q1 partial templates（conversation-path）
+    └── migration_016_application_fields.sql     # 🆕 Phase 4.5 applications 加匯款欄位
 ```
 
 ## 介面契約文件
@@ -389,6 +393,12 @@ Partial index: `(path, stage, condition) WHERE is_active = true` — webhook 每
 36. **雙人早鳥 landing anchor（v4.2, PR #39）** — NT$ 3,333/人（限雙人團報）顯示為橘色虛線 anchor card，CTA「回 LINE 找 fifi 團報」走人工。**不進 form enum**（program_choice 仍只接 12weeks / 4weeks_trial）避免改 schema + RPC + /api/apply/submit 白名單。
 37. **Q5 classifier 抄 verifyHandoffIntent pattern（Phase 4.2 PR #49）** — lib/q5-classifier.js 的 try-catch 跟 lib/ai-classifier.js verifyHandoffIntent 同構（callGemini + validateQ5Intent + 5 error path 全 return ai_failed）。callGemini 從 ai-classifier.js export 共用避免 duplicate fetch/abort 邏輯。gemini_no_key 額外 console.error CRITICAL（TODO Phase 4.3 接 telegram 告警）。
 38. **Cron q5-maintenance 4 段合併一路（Phase 4.2 PR C）** — `/api/cron/q5-maintenance` 每小時跑（`0 * * * *`），四段獨立 try/catch：主動軌（Ch.5.1b）/ visit-followup（Ch.5.4）/ reset stage=6>48h（Ch.5.5）/ notify retry applications（Ch.5.6）。maxDuration 60s，concurrency 10（比 drip 20 保守顧 AI cost + LINE rate）。q5_test_mode_cron=true 時主動軌+visit-followup 跳過 TEST_ALLOWLIST（一休+婉馨 dev 帳號）。合併 132+ 人若 >45s 再拆路由（契約 Ch.4.3 backup plan）。
+39. **Phase 5 即時通知 await（PR #57）** — submit RPC 成功後 await pushMessage（不用 fire-and-forget，Vercel serverless return 後 kill runtime）。成功 → UPDATE notify_status='sent'（防 cron 雙推）；失敗 → 留 'pending'，cron q5-maintenance 每小時 retry。lib/constants.js 統一 NOTIFY_USER_IDS 避免三處散落
+40. **純瘦身意圖接住（PR #59）** — detectIntentToLoseWeight()：stage=0 用戶打「想瘦」「要減肥」等無數字意圖 → upgrade stage=1 + retry_weight。排除含數字（交給 extractPartialWeight）、代他人問、長句 ≤30 字。stage>=1 不觸發避免 B 軌誤攔
+41. **跨工具高意願信號（PR #60）** — lib/cross-tool-signal.js notifyCrossToolUsage()：用過 N 個工具的用戶 → push 通知一休+婉馨。防呆：首次用戶不推、同工具不推、非工具來源不推。6 個 handler 收尾各 1 行，外層 try/catch 不影響 handler response
+42. **Emoji BMP 安全（PR #61）** — LINE client 不渲染 surrogate pair emoji（如 📊），改用 BMP 字元 ※ (U+203B)。後續 cron emoji 如有同樣問題一併改
+43. **fatty-liver 拿掉進階 + 用 answers[] 展開 N 個個人化警示（commit `a76ffae`，2026-04-29）** — abc-website 拿掉 fatty-liver 進階兩題（drink_habit / lunch_habit）後，buildFattyLiverReport 改用 answers[] 過濾命中 FATTY_LIVER_GAP_LINES 的題目逐一展開，兌現網站「光從你 6 題的回答，我已經看出 N 個對你的肝最危險的習慣」承諾。FATTY_LIVER_GAP_LINES 字典與 abc-website src/app/tools/fatty-liver/page.tsx 同名 GAP_LINES **必須兩處同步**（trigger label 用 abc-website QUESTIONS options.label 當真相來源）。DRINK_AHA / LUNCH_AHA legacy 字典保留不刪，新邏輯不讀，向下相容 04-29 前歷史 row。moderate / high 的 oneStep 改成具體執行方案（無糖茶為基底+偶爾配料+茶必須無糖不額外加糖）。維護規則寫入 memory `feedback_fatty_liver_gap_lines_sync.md`
+44. **Q4 AI 失敗 retry 3 次 + handoff fallback（4/29 事故根治, PR #64, 2026-04-30）** — 4/29 13:30 起 6/14 用戶選 Q3 後 bot 完全靜默（67% gemini_timeout + 33% gemini_api_503，Vercel logs 撈到實證）。舊 code line 1425 `if (!result.ok) return false` 真實用戶完全沒回。**修法**：(1) lib/ai-classifier.js 加 `withGeminiRetry` helper（retriable: timeout/no_text/json_parse/api_5xx；不重試: no_key/api_4xx；503 後 backoff 1.5s；maxAttempts=3）+ **4 個 callGemini 點全套**（generateFinalFeedback / classifyQ4Condition / verifyHandoffIntent / classifyQ5Intent — 同步修 Q5 防 Pattern 9 換場景重生）(2) webhook route.js `export const maxDuration = 30`（預設 15s 不夠：retry 3×6s + 503 backoff 1.5s×2 + handoff/reply ≈ 23s）(3) handleStage3ToQ4 失敗路徑：寫 `_last_ai_failure` 進 ai_tags（DB SQL 統計用，比 Vercel logs 短保留期可靠）→ triggerHandoff('q4_ai_failed') → reply 安撫一句「我有看到你的訊息，剛剛系統有點忙，已經請 fifi 助教看看」(4) handoff.js reasonZh 加 `q4_ai_failed`，users.js ALLOWED_KEYS 補 `_last_ai_failure`（自審抓到，不在白名單會被靜默丟）(5) ai_call_timeout_ms DB 10000→6000。**🩹 標止血**：retry 治標，根因（Gemini Flash Lite 不穩）沒消除，v2 TODO 換 model（gemini-2.0-flash？）/ 改 prompt 縮 latency / cache 高頻 path+condition 組合。yi-challenge 雙 agent 跑過 Pattern 4/5/7/9（命題框錯/順序倒置/跨層原子性/止血vs根治）才動手。
 
 ## 漏斗流程
 
@@ -444,8 +454,10 @@ Partial index: `(path, stage, condition) WHERE is_active = true` — webhook 每
 1. ~~TEST_MODE 改 false~~ ✅ 2026-04-23 PR #29 完成
 2. ~~**Phase 4.1 Session 1**：migration_013/014 + SETTING_SCHEMA 三處同步 + HMAC helper + /api/apply/*~~ ✅ 2026-04-23 PR #32 完成
 3. ~~**Phase 4.1 Session 2/3**：gen-q5-url.js + queue mock + landing v4.2~~ ✅ 2026-04-23 PR #34+35+36+38+39+40+41 完成（含 3 件 incident 修復）
-4. ~~**Phase 4.2**：Q5 classifier wire~~ ✅ 2026-04-24 PR #49 (A helpers) + #50 (B webhook wire) + PR C (cron maintenance) 全 merged。stage=4 bridging 已拿掉，postback q4_continue 改走 Q5 軟邀請，cron 每小時運行。下一步觀察 Phase 4.5 baseline 再調優文案 / 頻率
-5. 補推舊 333 被擋用戶（Phase 4.2 Q5 完整後才推）
+4. ~~**Phase 4.2**：Q5 classifier wire~~ ✅ 2026-04-24 PR #49~#52 全 merged
+5. ~~**Phase 4.5**：admin 報名管理 + landing v4.3~v4.4~~ ✅ 2026-04-25 PR #53~#56+#58 全 merged
+6. ~~**Phase 5**：即時通知 + 純瘦身意圖接住 + 跨工具信號~~ ✅ 2026-04-25~26 PR #57+#59~#61 全 merged
+7. 補推舊 333 被擋用戶（Phase 4.2 Q5 完整後才推）
 6. 婉馨填入排程文章內容和連結（後台操作）
 7. 舊模板升級 Flex 按鈕（後台編輯）
 8. 追蹤漏斗優化後轉換率（對比 19% baseline，見 `ABC瘦身業務/代謝測驗漏斗追蹤.md`）
