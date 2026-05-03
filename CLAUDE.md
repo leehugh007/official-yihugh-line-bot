@@ -194,6 +194,22 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 | q5_click_count | INTEGER | 0 NOT NULL | [migration_013] 總計點擊 /apply（含 LINE-to-LINE 分享污染，契約 v2.4 Ch.12.1a）|
 | q5_clicked_at | TIMESTAMPTZ | — | [migration_013] 首次點擊 /apply（COALESCE，北極星 unique 量測）|
 | q5_visit_followup_sent_at | TIMESTAMPTZ | — | [migration_013] cron/q5-visit-followup 推送時間 |
+| q5_msg1_sent_at | TIMESTAMPTZ | — | [migration_017] 訊息 1（intro，承接故事）推送時間 — pushMsg1 race guard |
+| q5_msg1_replied_at | TIMESTAMPTZ | — | [migration_017] 訊息 1 用戶按「想知道 ABC 怎麼運作」(intro_next) |
+| q5_msg1_maybe_at | TIMESTAMPTZ | — | [migration_017] 訊息 1 用戶按「我再想想」(intro_maybe) — 永久不再 cron 推 |
+| q5_msg1_question_at | TIMESTAMPTZ | — | [migration_017] 訊息 1 用戶按「我有問題想問」(intro_question) + handoff |
+| q5_msg2_sent_at | TIMESTAMPTZ | — | [migration_017] 訊息 2（method，介紹 ABC）推送時間 |
+| q5_msg2_replied_at | TIMESTAMPTZ | — | [migration_017] 訊息 2 用戶按「想看 12 週怎麼安排」(method_next) |
+| q5_msg2_maybe_at | TIMESTAMPTZ | — | [migration_017] 訊息 2「我再想想」(method_maybe) |
+| q5_msg2_question_at | TIMESTAMPTZ | — | [migration_017] 訊息 2「我有問題想問」(method_question) + handoff |
+| q5_msg3_sent_at | TIMESTAMPTZ | — | [migration_017] 訊息 3（offer，課程+早鳥+URI）推送時間，同次升 path_stage=6 |
+| q5_msg3_maybe_at | TIMESTAMPTZ | — | [migration_017] 訊息 3「我再想想」(offer_maybe) |
+| q5_msg3_question_at | TIMESTAMPTZ | — | [migration_017] 訊息 3「我有問題想問」(offer_question) + handoff |
+| q5_msg4_sent_at | TIMESTAMPTZ | — | [migration_017] 訊息 4（final，最後提醒）推送時間 |
+| q5_msg4_maybe_at | TIMESTAMPTZ | — | [migration_017] 訊息 4「我再想想」(final_maybe) |
+| q5_msg4_question_at | TIMESTAMPTZ | — | [migration_017] 訊息 4「我有問題想問」(final_question) + handoff |
+| q5_last_pushed_at | TIMESTAMPTZ | — | [migration_017] v3.2 全域節流戳記（一天最多推一則）|
+| q5_apply_from_msg | TEXT | — | [migration_017] CHECK in (msg3, msg4) — 點擊歸因 metadata，/apply/visit 解析 ?from= 寫入 |
 
 ### official_program_applications（migration_013，Phase 4.1 建立）
 
