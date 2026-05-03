@@ -37,6 +37,7 @@ import {
   triggerHandoff,
   handlePoliteEnd,
 } from '../../../lib/handoff.js';
+import { clearV32Tracking } from '../../../lib/q5-msg-state.js';
 import { notifyCrossToolUsage } from '../../../lib/cross-tool-signal.js';
 import { generateFinalFeedback, verifyHandoffIntent } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
@@ -1331,6 +1332,10 @@ async function handleStage3ToQ4(event, userId, text, state) {
       retry_count_q3: 0,
       _op: 'overwrite',
     });
+
+    // Ch.5.11：reset 必須清 v3.2 漏斗追蹤欄位（含 handoff_triggered_at 解死鎖）
+    // 否則重跑 Q1-Q4 後再進 v3.2 → cron 段 5 SQL 永遠排除 → 訊息 2/3/4 永遠不推
+    await clearV32Tracking(userId);
 
     const retryTpl = await getTemplate(null, 1, 'retry_weight');
     const msg = retryTpl
