@@ -108,9 +108,52 @@ export async function POST(request) {
       return handleUpdateApplicationPayment(data);
     case 'reset_v32_test_user':
       return handleResetV32TestUser(data);
+    case 'set_super_early_bird_cutoff':
+      return handleSetSuperEarlyBirdCutoff(data);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
+}
+
+// ============================================================
+// set_super_early_bird_cutoff — V3.2 超早鳥截止日設定
+// ============================================================
+// 後台「立刻關 / 設新截止日 / 延長」三種操作背後都改同一個 setting：super_early_bird_cutoff_at
+//   - 立刻關閉：cutoff_at = NOW()（一鍵設成現在 → /apply landing server 算 NOW < cutoff = false → 顯示常規價）
+//   - 設新截止日：cutoff_at = DateTimePicker 選的時間（未來 / 過去都可）
+// ADMIN_SECRET 驗證在 POST 入口已做。
+async function handleSetSuperEarlyBirdCutoff({ cutoff_at }) {
+  if (typeof cutoff_at !== 'string' || cutoff_at.length === 0) {
+    return NextResponse.json({ error: 'cutoff_at required (ISO timestamp)' }, { status: 400 });
+  }
+  // 驗證是合法 ISO timestamp
+  const parsed = new Date(cutoff_at);
+  if (isNaN(parsed.getTime())) {
+    return NextResponse.json({ error: 'cutoff_at not a valid ISO timestamp' }, { status: 400 });
+  }
+  const isoNormalized = parsed.toISOString();
+
+  // upsert（既有則 update，不存在則 insert — 防 migration 漏跑情境）
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert(
+      { key: 'super_early_bird_cutoff_at', value: isoNormalized },
+      { onConflict: 'key' }
+    );
+
+  if (error) {
+    console.error('[set_super_early_bird_cutoff] error:', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const now = new Date();
+  const isActive = now < parsed;
+  return NextResponse.json({
+    ok: true,
+    cutoff_at: isoNormalized,
+    super_early_active: isActive,
+    diff_ms: parsed.getTime() - now.getTime(),
+  });
 }
 
 // ============================================================
