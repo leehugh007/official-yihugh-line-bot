@@ -37,7 +37,13 @@ import {
   triggerHandoff,
   handlePoliteEnd,
 } from '../../../lib/handoff.js';
-import { clearV32Tracking } from '../../../lib/q5-msg-state.js';
+import {
+  clearV32Tracking,
+  pushMsg1,
+  pushMsg2,
+  pushMsg3,
+  markMsgN,
+} from '../../../lib/q5-msg-state.js';
 import { notifyCrossToolUsage } from '../../../lib/cross-tool-signal.js';
 import { generateFinalFeedback, verifyHandoffIntent } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
@@ -261,162 +267,323 @@ async function handleEvent(event) {
 }
 
 // ============================================================
-// Postback 事件（Q5 契約 v2.3 Ch.0.2 / Ch.6.1.1）
+// Postback 事件 — routing table dispatch（Phase 2B 重構）
 // ============================================================
+//
+// 設計（契約_自動推進漏斗v32.md 附錄 A）：
+//   const POSTBACK_HANDLERS = { action: handler }
+//   handlePostback 純 dispatch，handler 各自獨立可單測
+//
+// v3.2 race lost reply 統一：「我已經收到你的選擇了～」（v3.3 範本）
+// v3.2 試行期 gate：q4_story_interested 對非 TEST_ALLOWLIST 用戶走 legacy（polite reply + handoff）
+
+const RACE_LOST_REPLY = '我已經收到你的選擇了～';
+
 async function handlePostback(event, userId) {
   const rawData = event.postback?.data || '';
   const params = new URLSearchParams(rawData);
   const action = params.get('action');
-
-  if (action === 'handoff_from_q5') {
-    // 用戶按 Q5 軟邀請的「有問題想問」→ stage=5 + notify 婉馨/一休
-    await recordInteraction(userId);
-    const ok = await triggerHandoff(userId, 'q5_followup');
-    if (ok) {
-      // 契約 Ch.6.1.1 stage=6/7 專屬 handoff 文案
-      const message = textMessage(
-        '我有看到你的問題。這個我請 fifi 直接跟你聊，她看過你剛剛跟我聊的內容，會知道你在哪個階段，等等會主動找你。\n\n先不急著決定要不要進課程，把問題問清楚再說。'
-      );
-      await replyMessage(event.replyToken, [message]);
-    }
+  const handler = POSTBACK_HANDLERS[action];
+  if (!handler) {
+    console.log('[Postback] unknown action, ignored:', { userId, rawData });
     return;
   }
-
-  // 2026-04-24：Q4 AI 回饋末尾 Quick Reply 三按鈕
-  // 「想聽聽 / 再考慮看看 / 不想」— 提前 capture 用戶意願，省去自由文字 classify
-  //
-  // Phase 4.2 Q5 wire + PR #52 restricted gate：
-  //   q5_restricted_to_test_users=true（預設）→ 一般用戶走 PR #48 原設計 triggerHandoff
-  //                                              測試用戶走 Q5 軟邀請
-  //   q5_restricted_to_test_users=false         → 全量走 Q5 軟邀請
-  //   關閉原因：/apply 頁未完整 + 報名流程未定，先限測試用戶實測（一休 2026-04-24 決策）
-  if (action === 'q4_continue') {
-    await recordInteraction(userId);
-
-    // Phase 4.6（2026-04-26）：Q4→Q5 中間插「path-specific 學員故事 Flex」
-    //   路徑命中 ABCD 4 種 → 推故事 Flex（hero image + body + 兩按鈕）
-    //     ├ 「想了解 ABC 在做什麼」→ URI 直接連 /apply（HMAC signed URL）
-    //     └ 「我再想想」→ postback q4_story_maybe handler
-    //   path=other/null 或 buildUrl/reply 失敗 → fallback 走原邏輯（restricted handoff or Q5 軟邀請）
-    //
-    // 設計：
-    //   - 不升 stage（保持 4）— 用戶按「想了解」進 /apply 才會升 6→7（Phase 4.1 visit endpoint）
-    //   - 不寫 q5_intent — 讓 stage=4 主動軌 cron 還能接（未來 Phase B 24h 早鳥也用）
-    //   - 對「path 命中」的用戶繞過 restricted gate（一休 2026-04-26 決策：
-    //     /apply 已 production ready，故事 Flex UX 比 fifi handoff 更好）
-    const userForStory = await getUser(userId);
-    const storyResult = await replyStoryFlex(event.replyToken, userId, userForStory?.path);
-    if (storyResult.ok) {
-      return;
-    }
-    if (storyResult.reason !== 'no_story_for_path') {
-      console.warn('[Postback q4_continue] replyStoryFlex failed:', storyResult.reason, { userId });
-    }
-    // 落到既有 fallback：path=other/null 或 Flex builder 失敗
-
-    const restricted = await getSettingTyped('q5_restricted_to_test_users');
-    const isTestUser = TEST_ALLOWLIST.includes(userId);
-    if (restricted && !isTestUser) {
-      // 一般用戶：PR #48 原設計 triggerHandoff + fifi 訊息
-      const ok = await triggerHandoff(userId, 'q4_continue');
-      if (ok) {
-        await replyMessage(event.replyToken, [
-          textMessage(
-            '好，我請 fifi 助教再跟你聊她們的故事 ——\n上班時間會陸續回，不會讓你等太久。'
-          ),
-        ]);
-      }
-      return;
-    }
-
-    // 測試用戶（或 restricted=false）：Phase 4.2 Q5 軟邀請
-    const result = await performQ5Transition({
-      userId,
-      source: 'passive',
-      pushFn: (uid) => pushQ5SoftInvite(uid, 'passive'),
-    });
-    if (result.ok) {
-      await updateQ5Intent(userId, 'continue');
-      // 不額外 reply — pushQ5SoftInvite 已透過 push API 送 Q5 軟邀請
-    } else {
-      console.warn('[Postback q4_continue] performQ5Transition failed:', result.reason, { userId });
-      // race_lost（cron 先推）/ push_failed_rollback → 靜默
-      // 不動 q5_intent 讓下次用戶傳自由文字（stage=4 handler）還能重試
-    }
-    return;
-  }
-
-  // Phase 4.6（2026-04-26）：學員故事 Flex 三按鈕 handlers
-  //   q4_story_interested：想了解 ABC → handoff 通知一休/婉馨 + polite reply
-  //   q4_story_question  ：有問題想問 → handoff 通知一休/婉馨 + polite reply
-  //   q4_story_maybe     ：我再想想  → polite reply 不通知
-  //
-  // 第一版不接 /apply，全部走人工接續（一休 2026-04-26 決策：
-  // /apply 後流程未完美，先把通知接住手動處理，觀察按鈕點擊比例再決定下步）
-  if (action === 'q4_story_interested') {
-    await recordInteraction(userId);
-    const ok = await triggerHandoff(userId, 'q4_story_interested');
-    if (ok) {
-      await replyMessage(event.replyToken, [
-        textMessage(
-          '好，我請 fifi 助教跟你聊聊 ABC 是怎麼做的——\n上班時間會陸續回，不會讓你等太久。'
-        ),
-      ]);
-    }
-    return;
-  }
-
-  if (action === 'q4_story_question') {
-    await recordInteraction(userId);
-    const ok = await triggerHandoff(userId, 'q4_story_question');
-    if (ok) {
-      await replyMessage(event.replyToken, [
-        textMessage(
-          '好，請說，我請 fifi 助教看到後跟你聊。\n上班時間會陸續回，不會讓你等太久。'
-        ),
-      ]);
-    }
-    return;
-  }
-
-  if (action === 'q4_story_maybe') {
-    await recordInteraction(userId);
-    await replyMessage(event.replyToken, [
-      textMessage('好，沒問題。如果之後想了解再來找我就好，不打擾你。'),
-    ]);
-    // 不動 stage、不動 q5_intent — 讓未來主動軌（cron 24h 早鳥）還能接
-    return;
-  }
-
-  if (action === 'q4_decline') {
-    // 不想 → 記 intent=low + polite end reply，不升 stage（保持 4，之後主動軌 SQL 會 skip）
-    await recordInteraction(userId);
-    await updateAiTags(userId, { intent: 'low', _from_ai: true, _op: 'overwrite' }).catch(
-      (err) => console.error('[Postback q4_decline] updateAiTags failed:', err?.message)
-    );
-    await replyMessage(event.replyToken, [
-      textMessage('好的，了解了。如果未來想聊再來找我就好，不打擾你。'),
-    ]);
-    return;
-  }
-
-  if (action === 'q4_maybe') {
-    // 再考慮看看 → 也接真人，標 q4_maybe reason，婉馨知道她在考慮中、主動先分享學員故事
-    await recordInteraction(userId);
-    const ok = await triggerHandoff(userId, 'q4_maybe');
-    if (ok) {
-      await replyMessage(event.replyToken, [
-        textMessage(
-          '好，沒問題。我請 fifi 助教聯絡你，她可以先分享一些學員的故事給你看——你再決定也來得及。\n上班時間會陸續回，不會讓你等太久。'
-        ),
-      ]);
-    }
-    return;
-  }
-
-  // 未知 action → 靜默（未來擴 visit-followup 等新入口時再加 branch）
-  console.log('[Postback] unknown action, ignored:', { userId, rawData });
+  await handler(event, userId);
 }
+
+// ============================================================
+// 既有 7 個 handler（行為不變，搬出成 named function）
+// ============================================================
+
+async function handleHandoffFromQ5(event, userId) {
+  // 用戶按 Q5 軟邀請的「有問題想問」→ stage=5 + notify 婉馨/一休
+  await recordInteraction(userId);
+  const ok = await triggerHandoff(userId, 'q5_followup');
+  if (ok) {
+    // 契約 Ch.6.1.1 stage=6/7 專屬 handoff 文案
+    await replyMessage(event.replyToken, [
+      textMessage(
+        '我有看到你的問題。這個我請 fifi 直接跟你聊，她看過你剛剛跟我聊的內容，會知道你在哪個階段，等等會主動找你。\n\n先不急著決定要不要進課程，把問題問清楚再說。'
+      ),
+    ]);
+  }
+}
+
+async function handleQ4Continue(event, userId) {
+  // 2026-04-24：Q4 AI 回饋末尾 Quick Reply 三按鈕「想聽聽 / 再考慮看看 / 不想」
+  // Phase 4.6（2026-04-26）：Q4→Q5 中間插 path-specific 學員故事 Flex
+  //   - 路徑命中 → 推故事 Flex（hero image + body + 兩按鈕）
+  //   - path=other/null 或 buildUrl/reply 失敗 → fallback 走原邏輯（restricted handoff or Q5 軟邀請）
+  //   - 不升 stage（保持 4），不寫 q5_intent — 讓 stage=4 主動軌 cron 還能接
+  await recordInteraction(userId);
+
+  const userForStory = await getUser(userId);
+  const storyResult = await replyStoryFlex(event.replyToken, userId, userForStory?.path);
+  if (storyResult.ok) {
+    return;
+  }
+  if (storyResult.reason !== 'no_story_for_path') {
+    console.warn('[Postback q4_continue] replyStoryFlex failed:', storyResult.reason, { userId });
+  }
+
+  // path=other/null 或 Flex builder 失敗 → fallback
+  const restricted = await getSettingTyped('q5_restricted_to_test_users');
+  const isTestUser = TEST_ALLOWLIST.includes(userId);
+  if (restricted && !isTestUser) {
+    const ok = await triggerHandoff(userId, 'q4_continue');
+    if (ok) {
+      await replyMessage(event.replyToken, [
+        textMessage(
+          '好，我請 fifi 助教再跟你聊她們的故事 ——\n上班時間會陸續回，不會讓你等太久。'
+        ),
+      ]);
+    }
+    return;
+  }
+
+  // 測試用戶（或 restricted=false）：Phase 4.2 Q5 軟邀請
+  const result = await performQ5Transition({
+    userId,
+    source: 'passive',
+    pushFn: (uid) => pushQ5SoftInvite(uid, 'passive'),
+  });
+  if (result.ok) {
+    await updateQ5Intent(userId, 'continue');
+  } else {
+    console.warn('[Postback q4_continue] performQ5Transition failed:', result.reason, { userId });
+  }
+}
+
+async function handleQ4StoryInterested(event, userId) {
+  await recordInteraction(userId);
+
+  // === V3.2 軌入口 gate（Phase 2B 試行期）===
+  // 一般用戶 → 走原 v3.1 行為（polite reply + handoff_reason='q4_story_interested'），0 影響
+  // ALLOWLIST（一休 + 婉馨）→ 進 v3.2 自動推進漏斗（reply 訊息 1 + Quick Reply）
+  // 全量開放方式：移除這個 if block，所有用戶走 v3.2
+  if (!TEST_ALLOWLIST.includes(userId)) {
+    return await _q4StoryInterestedLegacy(event, userId);
+  }
+
+  // ALLOWLIST 用戶：取 path
+  const user = await getUser(userId);
+  const path = user?.path;
+
+  // path=other / null → v3.2 不服務（契約 Ch.5.0 path 限制）→ 退回 legacy
+  if (!['healthCheck', 'rebound', 'postpartum', 'eatOut'].includes(path)) {
+    return await _q4StoryInterestedLegacy(event, userId);
+  }
+
+  // V3.2 推訊息 1（race guard 內建）
+  const ok = await pushMsg1(userId, event.replyToken, path);
+  if (!ok) {
+    // 連按 q4_story_interested → 第一次已寫 sent_at + reply 訊息 1，第二次 race lost
+    await replyMessage(event.replyToken, [textMessage(RACE_LOST_REPLY)]);
+  }
+}
+
+async function _q4StoryInterestedLegacy(event, userId) {
+  const ok = await triggerHandoff(userId, 'q4_story_interested');
+  if (ok) {
+    await replyMessage(event.replyToken, [
+      textMessage(
+        '好，我請 fifi 助教跟你聊聊 ABC 是怎麼做的——\n上班時間會陸續回，不會讓你等太久。'
+      ),
+    ]);
+  }
+}
+
+async function handleQ4StoryQuestion(event, userId) {
+  await recordInteraction(userId);
+  const ok = await triggerHandoff(userId, 'q4_story_question');
+  if (ok) {
+    await replyMessage(event.replyToken, [
+      textMessage(
+        '好，請說，我請 fifi 助教看到後跟你聊。\n上班時間會陸續回，不會讓你等太久。'
+      ),
+    ]);
+  }
+}
+
+async function handleQ4StoryMaybe(event, userId) {
+  await recordInteraction(userId);
+  await replyMessage(event.replyToken, [
+    textMessage('好，沒問題。如果之後想了解再來找我就好，不打擾你。'),
+  ]);
+  // 不動 stage、不動 q5_intent — 讓未來主動軌（cron 24h 早鳥）還能接
+}
+
+async function handleQ4Decline(event, userId) {
+  // 不想 → 記 intent=low + polite end reply，不升 stage（保持 4，主動軌 SQL 會 skip）
+  await recordInteraction(userId);
+  await updateAiTags(userId, { intent: 'low', _from_ai: true, _op: 'overwrite' }).catch(
+    (err) => console.error('[Postback q4_decline] updateAiTags failed:', err?.message)
+  );
+  await replyMessage(event.replyToken, [
+    textMessage('好的，了解了。如果未來想聊再來找我就好，不打擾你。'),
+  ]);
+}
+
+async function handleQ4Maybe(event, userId) {
+  // 再考慮看看 → 接真人，標 q4_maybe reason，婉馨主動先分享學員故事
+  await recordInteraction(userId);
+  const ok = await triggerHandoff(userId, 'q4_maybe');
+  if (ok) {
+    await replyMessage(event.replyToken, [
+      textMessage(
+        '好，沒問題。我請 fifi 助教聯絡你，她可以先分享一些學員的故事給你看——你再決定也來得及。\n上班時間會陸續回，不會讓你等太久。'
+      ),
+    ]);
+  }
+}
+
+// ============================================================
+// V3.2 12 個 handler（共用 helper 收斂重複邏輯）
+// ============================================================
+
+/**
+ * next 按鈕 handler 共用流程（intro_next / method_next）
+ * 契約 Ch.5.2 改順序：先寫 replied 再 reply 下一段
+ *   1. markMsgN replied race guard → race lost reply「已收到」
+ *   2. push 下一段（race guard 已內建 push helper）
+ */
+async function _v32HandleNext(event, userId, n, pushNextFn) {
+  await recordInteraction(userId);
+  const replied = await markMsgN(userId, n, 'replied');
+  if (!replied) {
+    await replyMessage(event.replyToken, [textMessage(RACE_LOST_REPLY)]);
+    return;
+  }
+  const pushed = await pushNextFn(userId, event.replyToken);
+  if (!pushed) {
+    // 罕見：replied 寫成功但 push 下一段 race lost / 失敗（多 webhook race）
+    console.warn(`[v3.2] _v32HandleNext: msg${n + 1} push race lost`, { userId });
+  }
+}
+
+/** maybe 按鈕 handler 共用流程 */
+async function _v32HandleMaybe(event, userId, n, replyText) {
+  await recordInteraction(userId);
+  const marked = await markMsgN(userId, n, 'maybe');
+  if (!marked) {
+    await replyMessage(event.replyToken, [textMessage(RACE_LOST_REPLY)]);
+    return;
+  }
+  await replyMessage(event.replyToken, [textMessage(replyText)]);
+}
+
+/** question 按鈕 handler 共用流程 — markMsgN + triggerHandoff + reply */
+async function _v32HandleQuestion(event, userId, n, replyText) {
+  await recordInteraction(userId);
+  const marked = await markMsgN(userId, n, 'question');
+  if (!marked) {
+    await replyMessage(event.replyToken, [textMessage(RACE_LOST_REPLY)]);
+    return;
+  }
+  const ok = await triggerHandoff(userId, `q5_msg${n}_question`);
+  if (ok) {
+    await replyMessage(event.replyToken, [textMessage(replyText)]);
+  }
+}
+
+// 訊息 1 後（intro）
+async function handleIntroNext(event, userId) {
+  return _v32HandleNext(event, userId, 1, (uid, rt) => pushMsg2(uid, rt));
+}
+async function handleIntroMaybe(event, userId) {
+  return _v32HandleMaybe(
+    event,
+    userId,
+    1,
+    '好，沒問題。之後想了解再來找我就好，不打擾你。'
+  );
+}
+async function handleIntroQuestion(event, userId) {
+  return _v32HandleQuestion(
+    event,
+    userId,
+    1,
+    '好，你的問題請說，我請 fifi 助教看到後跟你聊。上班時間會陸續回，不會讓你等太久。之後我先讓 fifi 接，她看到會跟你聊，我先不打擾你。'
+  );
+}
+
+// 訊息 2 後（method）
+async function handleMethodNext(event, userId) {
+  return _v32HandleNext(event, userId, 2, (uid, rt) => pushMsg3(uid, rt, 'active'));
+}
+async function handleMethodMaybe(event, userId) {
+  return _v32HandleMaybe(event, userId, 2, 'OK，有需要再回來看就好。');
+}
+async function handleMethodQuestion(event, userId) {
+  return _v32HandleQuestion(
+    event,
+    userId,
+    2,
+    '好，請說。fifi 助教在看，她會跟你聊聊 ABC 的細節。之後她接手回你。'
+  );
+}
+
+// 訊息 3 後（offer）— 沒 next，URI button 直跳 /apply（不送 postback）
+async function handleOfferMaybe(event, userId) {
+  return _v32HandleMaybe(
+    event,
+    userId,
+    3,
+    '好，你先想，不急。早鳥 24h 內 $10,400，過了會變 $11,400，你心裡有時間規劃就好。'
+  );
+}
+async function handleOfferQuestion(event, userId) {
+  return _v32HandleQuestion(
+    event,
+    userId,
+    3,
+    '好，問什麼都可以——課程細節、適不適合你、付款方式都行。fifi 看到會回你，之後她接手。'
+  );
+}
+
+// 訊息 4 後（final）— 沒 next，URI button 直跳 /apply
+async function handleFinalMaybe(event, userId) {
+  return _v32HandleMaybe(
+    event,
+    userId,
+    4,
+    'OK，那這次就先這樣。如果之後想了解再來找我，我都在。'
+  );
+}
+async function handleFinalQuestion(event, userId) {
+  return _v32HandleQuestion(
+    event,
+    userId,
+    4,
+    '好，最後想確認的細節都可以問，fifi 接手回你。'
+  );
+}
+
+// ============================================================
+// Postback routing table（17 個 action）
+// ============================================================
+// 注意：offer_visit / final_visit 是 URI button 不送 postback event（LINE 官方確認）
+const POSTBACK_HANDLERS = {
+  // 既有 7 個
+  handoff_from_q5: handleHandoffFromQ5,
+  q4_continue: handleQ4Continue,
+  q4_story_interested: handleQ4StoryInterested,
+  q4_story_question: handleQ4StoryQuestion,
+  q4_story_maybe: handleQ4StoryMaybe,
+  q4_decline: handleQ4Decline,
+  q4_maybe: handleQ4Maybe,
+  // V3.2 10 個（offer_visit/final_visit 是 URI 不送 postback，不在 table）
+  intro_next: handleIntroNext,
+  intro_maybe: handleIntroMaybe,
+  intro_question: handleIntroQuestion,
+  method_next: handleMethodNext,
+  method_maybe: handleMethodMaybe,
+  method_question: handleMethodQuestion,
+  offer_maybe: handleOfferMaybe,
+  offer_question: handleOfferQuestion,
+  final_maybe: handleFinalMaybe,
+  final_question: handleFinalQuestion,
+};
 
 // ============================================================
 // Follow 事件（加好友）
