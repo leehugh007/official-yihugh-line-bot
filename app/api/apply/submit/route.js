@@ -19,6 +19,7 @@ import { verifyQ5ApplySig } from '../../../../lib/q5-apply-url.js';
 import { pushMessage, textMessage } from '../../../../lib/line.js';
 import { getSettingTyped } from '../../../../lib/official-settings.js';
 import { NOTIFY_USER_IDS } from '../../../../lib/constants.js';
+import { getPricingState, calcFinalPrice } from '../../../../lib/pricing.js';
 
 const HMAC_KEYS = ['userid', 'source', 'trigger', 'kv', 'ts', 'sig'];
 
@@ -114,6 +115,11 @@ export async function POST(request) {
     );
   }
 
+  // V3.2 Phase 5：server-side 算 super_early_active + final_price（client 不可信，防假造）
+  // submit 當下 NOW < cutoff_at = 享超早鳥；過 cutoff_at = 不享。RPC 寫入兩欄留 snapshot。
+  const pricingState = await getPricingState();
+  const { final_price, super_early_bird_applied } = calcFinalPrice(program_choice, pricingState);
+
   // 4. 呼叫 submit_application RPC
   try {
     const { data, error } = await supabase.rpc('submit_application', {
@@ -129,6 +135,8 @@ export async function POST(request) {
       p_program_choice: program_choice,
       p_agreed_refund_policy: true,
       p_source: 'bot_q5',
+      p_super_early_bird_applied: super_early_bird_applied,
+      p_final_price: final_price,
     });
 
     if (error) {
@@ -155,6 +163,8 @@ export async function POST(request) {
       program_choice,
       display_name: display_name ? String(display_name).trim() : null,
       line_user_id: body.userid,
+      super_early_bird_applied,
+      final_price,
     });
 
     return NextResponse.json({
@@ -188,11 +198,17 @@ async function notifyApplicationSubmit(applicationId, app) {
     if (targets.length === 0) return;
 
     const planZh = app.program_choice === '12weeks' ? '12 週完整版' : '4 週體驗版';
+    // V3.2 Phase 5：通知含「是不是超早鳥」+ 「成交價」讓婉馨/一休直接看到
+    const priceDisplay = typeof app.final_price === 'number'
+      ? `NT$ ${app.final_price.toLocaleString()}`
+      : '?';
+    const tier = app.super_early_bird_applied ? '🔥 超早鳥' : '常規早鳥';
     const submittedAt = new Date().toISOString();
     const msg = [
       '📝 新報名通知',
       `姓名：${app.real_name}`,
-      `方案：${planZh}`,
+      `方案：${planZh}（${tier}）`,
+      `成交價：${priceDisplay}`,
       `電話：${app.phone}`,
       `Email：${app.email}`,
       app.display_name ? `LINE 名：${app.display_name}` : null,
