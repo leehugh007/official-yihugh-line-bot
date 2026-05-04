@@ -561,6 +561,10 @@ export default function ApplyPage() {
             const profile = await liff.getProfile();
             if (!cancelled && profile?.displayName) {
               setLiffDisplayName(profile.displayName);
+              // 預填 form.display_name（用戶可改），LIFF 帶到的可能是綽號 → 讓用戶確認/編輯
+              setForm((f) =>
+                f.display_name ? f : { ...f, display_name: profile.displayName }
+              );
             }
           }
         } catch (_) {}
@@ -588,6 +592,7 @@ export default function ApplyPage() {
     address: '',
     gender: '',
     age: '',
+    display_name: '',
     line_id: '',
     program_choice: '12weeks',
     agreed_refund_policy: false,
@@ -610,6 +615,8 @@ export default function ApplyPage() {
     if (!Number.isInteger(age) || age < 18 || age > 99) errs.age = '年齡 18-99';
     if (!['12weeks', '4weeks_trial'].includes(form.program_choice))
       errs.program_choice = '請選擇方案';
+    if (!form.display_name.trim() || form.display_name.length > 100)
+      errs.display_name = '請填 LINE 名稱';
     if (!form.agreed_refund_policy) errs.agreed_refund_policy = '請勾選同意退費條款';
     return errs;
   };
@@ -635,7 +642,8 @@ export default function ApplyPage() {
         gender: form.gender,
         age: parseInt(form.age, 10),
         line_id: form.line_id ? form.line_id.trim() : null,
-        display_name: liffDisplayName || null,
+        // 用戶手填的 display_name 為主（避免 LIFF 帶到綽號 / 沒帶到時找不到人），fallback liffDisplayName
+        display_name: form.display_name.trim() || liffDisplayName || null,
         program_choice: form.program_choice,
         agreed_refund_policy: true,
       };
@@ -1377,31 +1385,60 @@ export default function ApplyPage() {
           </p>
         </div>
 
-        {/* 退費條款 */}
+        {/* 退費條款（完整 6 條 inline 顯示，不再連到外部 — 避免日後爭執說沒看到） */}
         <div style={S.refundBox}>
           <p style={S.refundTitle}>報名之後可以退費嗎？</p>
           <p style={S.para}>
             <span style={S.refundYes}>可以。</span>
-            還沒上課前可以全額退（扣手續費）。開始上課後，當月不退，剩餘的可以退。
+            送出報名前請看完下面 6 條，勾同意才能送。
+          </p>
+          <p style={{ ...S.para, marginTop: 14, color: C.text, fontWeight: 600 }}>
+            如報名且付款完成後要取消課程，退款機制依下列辦法施行：
+          </p>
+          <ol
+            style={{
+              paddingLeft: 22,
+              margin: '14px 0 8px',
+              color: C.textMid,
+              lineHeight: 1.85,
+            }}
+          >
+            <li style={{ marginBottom: 8 }}>
+              開課前一天退費將內扣匯款手續費後退還報名費用。
+            </li>
+            <li style={{ marginBottom: 8 }}>
+              報名一個月方案者，課程開始當日後即不退費。
+            </li>
+            <li style={{ marginBottom: 8 }}>
+              報名三個月方案者，扣除已開課月數（按一個月方案原價費用計）並酌收人事處理費 10%，退還剩餘費用。
+            </li>
+            <li style={{ marginBottom: 8 }}>
+              退款帳號如非提供永豐銀行之帳戶，產生之額外手續費須自行承擔。
+            </li>
+            <li style={{ marginBottom: 8 }}>
+              無論何時申請取消活動報名，我們將統一於公司最近一次匯款日處理退還事宜。
+            </li>
+            <li style={{ marginBottom: 0 }}>
+              課程內容上述簡章已完整呈現，如還有問題請與我們詳細詢問是否符合自身需求。
+            </li>
+          </ol>
+          <p
+            style={{
+              ...S.para,
+              fontSize: 13,
+              color: C.textLight,
+              marginTop: 12,
+              marginBottom: 16,
+            }}
+          >
+            *開課月數：以 4 週為一個月。第一個月 1-4 週、第二個月 5-8 週、第三個月 9-12 週。
           </p>
           <p style={{ ...S.para, marginTop: 14, color: C.text }}>
             但請不要抱著「反正可以退」的試試看心態來參加 ——
             如果你先預設自己會失敗，你就一定會失敗。
           </p>
-          <p style={{ ...S.para, fontWeight: 700, color: C.accent }}>
+          <p style={{ ...S.para, fontWeight: 700, color: C.accent, marginBottom: 0 }}>
             你只要很認真，我就一定可以幫助你成功。
-          </p>
-          <p style={{ ...S.para, fontSize: 13, color: C.textLight, marginTop: 16, marginBottom: 0 }}>
-            完整退費條款詳見{' '}
-            <a
-              href={PROGRAM_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: C.primary, textDecoration: 'underline' }}
-            >
-              官網課程頁 Q6
-            </a>
-            。
           </p>
         </div>
 
@@ -1499,13 +1536,23 @@ export default function ApplyPage() {
           />
           {fieldErrors.age && <p style={S.errText}>{fieldErrors.age}</p>}
 
+          <label style={S.label}>LINE 名稱 *</label>
+          <input
+            style={{ ...S.input, ...(fieldErrors.display_name ? S.inputErr : {}) }}
+            value={form.display_name}
+            onChange={(e) => setField('display_name', e.target.value)}
+            maxLength={100}
+            placeholder="你 LINE 上顯示的名稱（讓我們找得到你）"
+          />
+          {fieldErrors.display_name && <p style={S.errText}>{fieldErrors.display_name}</p>}
+
           <label style={S.label}>LINE ID（選填）</label>
           <input
             style={S.input}
             value={form.line_id}
             onChange={(e) => setField('line_id', e.target.value)}
             maxLength={50}
-            placeholder="方便 fifi 助教聯絡你"
+            placeholder="如果有設定 LINE ID 請填，沒有也沒關係"
           />
 
           <label
