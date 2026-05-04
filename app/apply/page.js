@@ -538,6 +538,62 @@ function SystemItem({ emoji, name, children }) {
   );
 }
 
+// V3.2 Phase 4：12 週方案三段價錨點 + 倒數計時
+//   - super_early_active = true：~~$12,600~~ → $10,400 + 倒數計時（紅色強調）
+//   - super_early_active = false：~~$12,600~~ → $11,400（常規早鳥）
+//   - $12,600 anchor 永不真實成交，純對比
+function Plan12WeeksPrice({ pricing }) {
+  const { super_early_active, prices, cutoff_at } = pricing;
+  const mainPrice = super_early_active ? prices.super : prices.regular;
+
+  return (
+    <>
+      <p style={{ margin: '12px 0 4px', fontSize: 16, color: '#999', textDecoration: 'line-through' }}>
+        原價 NT$ {prices.anchor.toLocaleString()}
+      </p>
+      <p
+        style={{
+          ...S.planPrice,
+          color: super_early_active ? '#dc2626' : '#0b6e39',
+          margin: '4px 0 6px',
+        }}
+      >
+        NT$ {mainPrice.toLocaleString()}
+      </p>
+      {super_early_active ? (
+        <p style={{ ...S.planMeta, color: '#dc2626', fontWeight: 700 }}>
+          🔥 超早鳥優惠中 · <Countdown cutoffAt={cutoff_at} />
+        </p>
+      ) : (
+        <p style={S.planMeta}>12 週完整版 · 早鳥優惠</p>
+      )}
+    </>
+  );
+}
+
+// 倒數計時（每分鐘更新一次，到天 / 小時粒度）
+function Countdown({ cutoffAt }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!cutoffAt) return null;
+  const cutoff = new Date(cutoffAt).getTime();
+  if (isNaN(cutoff)) return null;
+  const diff = cutoff - now;
+  if (diff <= 0) return <span>即將截止</span>;
+
+  const days = Math.floor(diff / 86400000);
+  const hours = Math.floor((diff % 86400000) / 3600000);
+
+  if (days > 0) return <span>剩 {days} 天 {hours} 小時截止</span>;
+  if (hours > 0) return <span>剩 {hours} 小時截止</span>;
+  const minutes = Math.floor((diff % 3600000) / 60000);
+  return <span>剩 {minutes} 分鐘截止</span>;
+}
+
 export default function ApplyPage() {
   const [liffReady, setLiffReady] = useState(false);
   const [liffDisplayName, setLiffDisplayName] = useState('');
@@ -574,7 +630,12 @@ export default function ApplyPage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(hmacParams),
-          }).catch((e) => console.warn('[apply] visit failed:', e));
+          })
+            .then((res) => res.ok ? res.json() : null)
+            .then((data) => {
+              if (!cancelled && data?.pricing) setPricing(data.pricing);
+            })
+            .catch((e) => console.warn('[apply] visit failed:', e));
         }
       } catch (err) {
         if (!cancelled) setLiffError(err?.message || String(err));
@@ -601,6 +662,8 @@ export default function ApplyPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  // V3.2 Phase 4：超早鳥定價狀態（從 /api/apply/visit 回傳，含 cutoff_at + super_early_active + 4 個 price tiers）
+  const [pricing, setPricing] = useState(null);
 
   const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -1308,8 +1371,15 @@ export default function ApplyPage() {
             />
             <span style={S.planTitle}>代謝力重建 12 週完整版</span>
           </label>
-          <p style={S.planPrice}>NT$ 3,800 <span style={{ fontSize: 18, fontWeight: 600 }}>/ 月</span></p>
-          <p style={S.planMeta}>12 週完整版 · 總價 $11,400</p>
+          {/* V3.2 Phase 4：三段價錨點 + 倒數計時 */}
+          {pricing ? (
+            <Plan12WeeksPrice pricing={pricing} />
+          ) : (
+            <>
+              <p style={S.planPrice}>NT$ 11,400</p>
+              <p style={S.planMeta}>12 週完整版</p>
+            </>
+          )}
           <p style={S.para}>
             這是多數學員選的版本。代謝重建需要時間 —— 四週打基礎，八週讓身體習慣，
             十二週讓它變成你的生活。
