@@ -106,9 +106,82 @@ export async function POST(request) {
       return handleCancelApplication(data);
     case 'update_application_payment':
       return handleUpdateApplicationPayment(data);
+    case 'reset_v32_test_user':
+      return handleResetV32TestUser(data);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
+}
+
+// ============================================================
+// reset_v32_test_user — V3.2 試行測試專用，清 ALLOWLIST 用戶到 stage=0
+// ============================================================
+// 兩層保護：
+//   1. ADMIN_SECRET（POST 入口已驗）
+//   2. userId 必須在 hardcoded ALLOWLIST（一休 + 婉馨），不可清他人
+// 不清：enrolled_at / enrolled_from_path（保留報名歷史）/ display_name / segment / source / interaction_count
+const V32_RESET_ALLOWLIST = [
+  'U51808e2cc195967eba53701518e6f547', // 一休
+  'U3edf3d2114ee03ad81cff1fd35c04600', // 婉馨
+];
+
+async function handleResetV32TestUser({ userId }) {
+  if (!userId || !V32_RESET_ALLOWLIST.includes(userId)) {
+    return NextResponse.json(
+      { error: 'userId not in V32 reset allowlist (僅一休/婉馨可清)' },
+      { status: 403 }
+    );
+  }
+
+  const { data, error } = await supabase
+    .from('official_line_users')
+    .update({
+      path_stage: 0,
+      path: null,
+      current_weight: null,
+      target_weight: null,
+      last_user_reply_at: null,
+      path_stage_updated_at: new Date().toISOString(),
+      ai_tags: {},
+      handoff_triggered_at: null,
+      handoff_reason: null,
+      // Q5 軟邀請軌
+      q5_sent_at: null,
+      q5_followup_trigger_source: null,
+      q5_active_invite_sent_at: null,
+      q5_intent: null,
+      q5_classified_at: null,
+      q5_click_count: 0,
+      q5_clicked_at: null,
+      q5_visit_followup_sent_at: null,
+      // V3.2 自動推進漏斗 16 欄
+      q5_msg1_sent_at: null,
+      q5_msg1_replied_at: null,
+      q5_msg1_maybe_at: null,
+      q5_msg1_question_at: null,
+      q5_msg2_sent_at: null,
+      q5_msg2_replied_at: null,
+      q5_msg2_maybe_at: null,
+      q5_msg2_question_at: null,
+      q5_msg3_sent_at: null,
+      q5_msg3_maybe_at: null,
+      q5_msg3_question_at: null,
+      q5_msg4_sent_at: null,
+      q5_msg4_maybe_at: null,
+      q5_msg4_question_at: null,
+      q5_last_pushed_at: null,
+      q5_apply_from_msg: null,
+    })
+    .eq('line_user_id', userId)
+    .select('line_user_id, display_name, path_stage, path, ai_tags, handoff_triggered_at')
+    .single();
+
+  if (error) {
+    console.error('[reset_v32_test_user] error:', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true, cleared: data });
 }
 
 // ============================================================
