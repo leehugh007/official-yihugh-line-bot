@@ -115,10 +115,11 @@ export async function POST(request) {
     );
   }
 
-  // V3.2 Phase 5：server-side 算 super_early_active + final_price（client 不可信，防假造）
-  // submit 當下 NOW < cutoff_at = 享超早鳥；過 cutoff_at = 不享。RPC 寫入兩欄留 snapshot。
+  // V3.2 Phase 5+7：server-side 算 tier + final_price（client 不可信，防假造）
+  // 三段邏輯：super_cutoff 之前 = super / 之後到 regular_cutoff = regular / 之後 = anchor
+  // RPC 寫入 super_early_bird_applied + final_price snapshot
   const pricingState = await getPricingState();
-  const { final_price, super_early_bird_applied } = calcFinalPrice(program_choice, pricingState);
+  const { final_price, tier, super_early_bird_applied } = calcFinalPrice(program_choice, pricingState);
 
   // 4. 呼叫 submit_application RPC
   try {
@@ -163,7 +164,7 @@ export async function POST(request) {
       program_choice,
       display_name: display_name ? String(display_name).trim() : null,
       line_user_id: body.userid,
-      super_early_bird_applied,
+      tier,
       final_price,
     });
 
@@ -198,16 +199,21 @@ async function notifyApplicationSubmit(applicationId, app) {
     if (targets.length === 0) return;
 
     const planZh = app.program_choice === '12weeks' ? '12 週完整版' : '4 週體驗版';
-    // V3.2 Phase 5：通知含「是不是超早鳥」+ 「成交價」讓婉馨/一休直接看到
+    // V3.2 Phase 7：通知按三段 tier 顯示「超早鳥 / 一般早鳥 / 原價 / 體驗價」
     const priceDisplay = typeof app.final_price === 'number'
       ? `NT$ ${app.final_price.toLocaleString()}`
       : '?';
-    const tier = app.super_early_bird_applied ? '🔥 超早鳥' : '常規早鳥';
+    const tierLabel = {
+      super: '🔥 超早鳥',
+      regular: '🌱 一般早鳥',
+      anchor: '原價',
+      trial: '體驗價',
+    }[app.tier] || app.tier || '?';
     const submittedAt = new Date().toISOString();
     const msg = [
       '📝 新報名通知',
       `姓名：${app.real_name}`,
-      `方案：${planZh}（${tier}）`,
+      `方案：${planZh}（${tierLabel}）`,
       `成交價：${priceDisplay}`,
       `電話：${app.phone}`,
       `Email：${app.email}`,

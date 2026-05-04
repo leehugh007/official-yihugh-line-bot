@@ -538,34 +538,61 @@ function SystemItem({ emoji, name, children }) {
   );
 }
 
-// V3.2 Phase 4：12 週方案三段價錨點 + 倒數計時
-//   - super_early_active = true：~~$12,600~~ → $10,400 + 倒數計時（紅色強調）
-//   - super_early_active = false：~~$12,600~~ → $11,400（常規早鳥）
-//   - $12,600 anchor 永不真實成交，純對比
+// V3.2 Phase 7：12 週方案三段價邏輯（migration_019）
+//   - tier='super'  ：~~$12,600~~ ~~$11,400~~ → 🔥 $10,400 + 倒數至 super_cutoff
+//   - tier='regular'：~~$12,600~~ → 🌱 $11,400 + 倒數至 regular_cutoff（提醒「超早鳥已截止」）
+//   - tier='anchor' ：NT$ 12,600（無折扣，無倒數，5/24 後真實成交）
 function Plan12WeeksPrice({ pricing }) {
-  const { super_early_active, prices, cutoff_at } = pricing;
-  const mainPrice = super_early_active ? prices.super : prices.regular;
+  const { tier, prices, active_cutoff_at } = pricing;
+
+  if (tier === 'anchor') {
+    return (
+      <>
+        <p style={{ ...S.planPrice, color: '#0b6e39', margin: '12px 0 6px' }}>
+          NT$ {prices.anchor.toLocaleString()}
+        </p>
+        <p style={S.planMeta}>12 週完整版 · 原價</p>
+      </>
+    );
+  }
+
+  const mainPrice = tier === 'super' ? prices.super : prices.regular;
+  const isSuper = tier === 'super';
 
   return (
     <>
+      {/* 原價錨點劃線 */}
       <p style={{ margin: '12px 0 4px', fontSize: 16, color: '#999', textDecoration: 'line-through' }}>
         原價 NT$ {prices.anchor.toLocaleString()}
       </p>
+      {/* 超早鳥階段：把一般早鳥也劃線顯示，凸顯三層折扣對比 */}
+      {isSuper && (
+        <p style={{ margin: '0 0 4px', fontSize: 14, color: '#999', textDecoration: 'line-through' }}>
+          一般早鳥 NT$ {prices.regular.toLocaleString()}
+        </p>
+      )}
       <p
         style={{
           ...S.planPrice,
-          color: super_early_active ? '#dc2626' : '#0b6e39',
+          color: isSuper ? '#dc2626' : '#0b6e39',
           margin: '4px 0 6px',
         }}
       >
         NT$ {mainPrice.toLocaleString()}
       </p>
-      {super_early_active ? (
-        <p style={{ ...S.planMeta, color: '#dc2626', fontWeight: 700 }}>
-          🔥 超早鳥優惠中 · <Countdown cutoffAt={cutoff_at} />
+      <p style={{ ...S.planMeta, color: isSuper ? '#dc2626' : '#0b6e39', fontWeight: 700 }}>
+        {isSuper ? '🔥 超早鳥優惠中' : '🌱 一般早鳥優惠中'}
+        {active_cutoff_at && (
+          <>
+            {' · '}
+            <Countdown cutoffAt={active_cutoff_at} />
+          </>
+        )}
+      </p>
+      {!isSuper && (
+        <p style={{ ...S.planMeta, fontSize: 12, color: '#999', marginTop: 4 }}>
+          ⏱ 超早鳥已截止
         </p>
-      ) : (
-        <p style={S.planMeta}>12 週完整版 · 早鳥優惠</p>
       )}
     </>
   );
