@@ -14,6 +14,7 @@
 import { NextResponse } from 'next/server';
 import supabase from '../../../../lib/supabase.js';
 import { verifyQ5ApplySig } from '../../../../lib/q5-apply-url.js';
+import { getPricingState } from '../../../../lib/pricing.js';
 
 const BODY_KEYS = ['userid', 'source', 'trigger', 'kv', 'ts', 'sig'];
 
@@ -87,7 +88,14 @@ export async function POST(request) {
       return NextResponse.json({ error: 'db_error' }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, stage: updates.path_stage || user.path_stage });
+    // V3.2 Phase 3：回傳 pricing state 給 landing UI 顯示三段價錨點 + 倒數計時
+    const pricing = await getPricingState();
+
+    return NextResponse.json({
+      ok: true,
+      stage: updates.path_stage || user.path_stage,
+      pricing,
+    });
   } catch (err) {
     console.error('[apply/visit] exception:', err);
     return NextResponse.json({ error: 'db_error' }, { status: 500 });
