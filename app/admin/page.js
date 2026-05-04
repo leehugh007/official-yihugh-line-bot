@@ -546,6 +546,12 @@ export default function AdminPage() {
           📝 報名
         </button>
         <button
+          style={tab === 'pricing' ? styles.tabActive : styles.tab}
+          onClick={() => setTab('pricing')}
+        >
+          💰 定價
+        </button>
+        <button
           style={tab === 'settings' ? styles.tabActive : styles.tab}
           onClick={() => setTab('settings')}
         >
@@ -751,6 +757,19 @@ export default function AdminPage() {
       )}
 
       {/* 設定 Tab */}
+      {tab === 'pricing' && (
+        <div style={styles.section}>
+          <h2 style={styles.sectionTitle}>💰 V3.2 三段價控制</h2>
+          <p style={styles.sectionDesc}>
+            超早鳥 → 一般早鳥 → 原價 三段切換。改 cutoff 立即影響之後進 /apply 的人，已提交訂單 final_price snapshot 不變。
+          </p>
+          <PricingTab
+            settings={settings}
+            onUpdated={(key, value) => setSettings(prev => ({ ...prev, [key]: value }))}
+          />
+        </div>
+      )}
+
       {tab === 'settings' && (
         <div style={styles.section}>
           <h2 style={styles.sectionTitle}>關鍵字回覆設定</h2>
@@ -2340,6 +2359,287 @@ function SettingsTab({ settings, onSave }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ============================================================
+// PricingTab — V3.2 三段價控制（migration_018+019）
+// 業務時間軸：~5/18 超早鳥 / 5/19~5/24 一般早鳥 / 5/24 後 原價真實成交
+// 改 cutoff 立即影響之後進 /apply 的人；已提交訂單 final_price snapshot 不變
+// ============================================================
+function toLocalDateTimeInput(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '';
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function toTaiwanDisplay(isoStr) {
+  if (!isoStr) return '（未設）';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '（無效）';
+  return d.toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function diffDisplayHHMM(isoStr) {
+  if (!isoStr) return '—';
+  const d = new Date(isoStr).getTime() - Date.now();
+  if (d > 0) {
+    const days = Math.floor(d / 86400000);
+    const hours = Math.floor((d % 86400000) / 3600000);
+    return `剩 ${days} 天 ${hours} 小時`;
+  }
+  return `已過期 ${Math.floor(-d / 86400000)} 天`;
+}
+
+const TIER_META = {
+  super: { emoji: '🔥', name: '超早鳥優惠中', color: '#dc2626' },
+  regular: { emoji: '🌱', name: '一般早鳥優惠中', color: '#0b6e39' },
+  anchor: { emoji: '⏸', name: '兩段早鳥皆已結束（原價真實成交）', color: '#92400e' },
+};
+
+function PricingTab({ settings, onUpdated }) {
+  const super_cutoff_at = settings.super_early_bird_cutoff_at || null;
+  const regular_cutoff_at = settings.regular_early_bird_cutoff_at || null;
+  const prices = {
+    super: parseInt(settings.price_12weeks_super, 10) || 10400,
+    regular: parseInt(settings.price_12weeks_regular, 10) || 11400,
+    anchor: parseInt(settings.price_12weeks_anchor, 10) || 12600,
+    trial: parseInt(settings.price_4weeks_trial, 10) || 4980,
+  };
+  const now = new Date();
+  const superDate = super_cutoff_at ? new Date(super_cutoff_at) : null;
+  const regularDate = regular_cutoff_at ? new Date(regular_cutoff_at) : null;
+  const superValid = superDate && !isNaN(superDate.getTime());
+  const regularValid = regularDate && !isNaN(regularDate.getTime());
+  const super_active = !!(superValid && now < superDate);
+  const regular_active = !!(!super_active && regularValid && now < regularDate);
+  const tier = super_active ? 'super' : regular_active ? 'regular' : 'anchor';
+  const tierMeta = TIER_META[tier];
+
+  const [superPicker, setSuperPicker] = useState(toLocalDateTimeInput(super_cutoff_at));
+  const [regularPicker, setRegularPicker] = useState(toLocalDateTimeInput(regular_cutoff_at));
+  const [saving, setSaving] = useState(null);
+  const [error, setError] = useState(null);
+  const [result, setResult] = useState(null);
+
+  // settings 變動（parent reload）→ 同步 picker 預填值
+  useEffect(() => {
+    setSuperPicker(toLocalDateTimeInput(super_cutoff_at));
+    setRegularPicker(toLocalDateTimeInput(regular_cutoff_at));
+  }, [super_cutoff_at, regular_cutoff_at]);
+
+  async function callSet(key, cutoff_at, confirmMsg) {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    setSaving(key);
+    setError(null);
+    setResult(null);
+    try {
+      const data = await apiPost({ action: 'set_pricing_cutoff', key, cutoff_at });
+      if (!data.ok) {
+        setError(data.error || '儲存失敗');
+      } else {
+        setResult(data);
+        if (onUpdated) onUpdated(key, data.cutoff_at);
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  function handleApply(key, picker, label) {
+    if (!picker) {
+      setError('請選日期時間');
+      return;
+    }
+    const localDate = new Date(picker);
+    if (isNaN(localDate.getTime())) {
+      setError('日期格式錯誤');
+      return;
+    }
+    const future = localDate > new Date();
+    callSet(
+      key,
+      localDate.toISOString(),
+      future
+        ? `確定 ${label} 截止日設為 ${picker}？`
+        : `這個時間已經過了！設下去等於立刻關閉 ${label}。確定？`
+    );
+  }
+
+  function handleCloseNow(key, label) {
+    callSet(
+      key,
+      new Date().toISOString(),
+      `確定立刻關閉「${label}」？\n\n之後進 /apply 的人不再看到這段優惠。`
+    );
+  }
+
+  const cardStyle = (active) => ({
+    padding: 16,
+    backgroundColor: active ? '#dcfce7' : '#f3f4f6',
+    border: `1px solid ${active ? '#86efac' : '#d1d5db'}`,
+    borderRadius: 8,
+    marginBottom: 12,
+  });
+  const btnPrimary = (disabled) => ({
+    flex: 1,
+    padding: '10px',
+    fontSize: 14,
+    fontWeight: 600,
+    color: 'white',
+    backgroundColor: disabled ? '#999' : '#0b6e39',
+    border: 'none',
+    borderRadius: 6,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+  });
+  const btnDanger = (disabled) => ({
+    ...btnPrimary(disabled),
+    backgroundColor: disabled ? '#999' : '#dc2626',
+  });
+
+  return (
+    <div>
+      {/* 當前狀態 */}
+      <div
+        style={{
+          marginBottom: 24,
+          padding: 16,
+          backgroundColor: '#f0fdf4',
+          border: `2px solid ${tierMeta.color}`,
+          borderRadius: 10,
+        }}
+      >
+        <div style={{ fontWeight: 700, fontSize: 17, marginBottom: 12, color: tierMeta.color }}>
+          目前狀態：{tierMeta.emoji} {tierMeta.name}
+        </div>
+        <div style={{ fontSize: 14, lineHeight: 1.7 }}>
+          <div>超早鳥截止：<b>{toTaiwanDisplay(super_cutoff_at)}</b>（{diffDisplayHHMM(super_cutoff_at)}）</div>
+          <div>一般早鳥截止：<b>{toTaiwanDisplay(regular_cutoff_at)}</b>（{diffDisplayHHMM(regular_cutoff_at)}）</div>
+          <hr style={{ margin: '12px 0', border: 'none', borderTop: '1px solid #d1d5db' }} />
+          <div style={{ fontSize: 13, color: '#374151' }}>
+            定價（12 週方案實際成交價）：
+            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+              <li>超早鳥：NT$ {prices.super.toLocaleString()}（NOW &lt; super_cutoff）</li>
+              <li>一般早鳥：NT$ {prices.regular.toLocaleString()}（super_cutoff ≤ NOW &lt; regular_cutoff）</li>
+              <li>原價：NT$ {prices.anchor.toLocaleString()}（NOW ≥ regular_cutoff，5/24 後真實成交）</li>
+              <li>4 週體驗版：NT$ {prices.trial.toLocaleString()}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      {/* 超早鳥區 */}
+      <div style={cardStyle(super_active)}>
+        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}>
+          🔥 超早鳥截止日 {super_active && '（活躍中）'}
+        </div>
+        <input
+          type="datetime-local"
+          value={superPicker}
+          onChange={(e) => setSuperPicker(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '10px 12px',
+            fontSize: 14,
+            border: '1px solid #ccc',
+            borderRadius: 6,
+            marginBottom: 10,
+          }}
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => handleApply('super_early_bird_cutoff_at', superPicker, '超早鳥')}
+            disabled={!!saving || !superPicker}
+            style={btnPrimary(!!saving || !superPicker)}
+          >
+            {saving === 'super_early_bird_cutoff_at' ? '儲存中…' : '✅ 套用'}
+          </button>
+          <button
+            onClick={() => handleCloseNow('super_early_bird_cutoff_at', '超早鳥')}
+            disabled={!!saving}
+            style={btnDanger(!!saving)}
+          >
+            ⏹ 立刻關閉
+          </button>
+        </div>
+      </div>
+
+      {/* 一般早鳥區 */}
+      <div style={cardStyle(regular_active)}>
+        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}>
+          🌱 一般早鳥截止日 {regular_active && '（活躍中）'}
+        </div>
+        <input
+          type="datetime-local"
+          value={regularPicker}
+          onChange={(e) => setRegularPicker(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '10px 12px',
+            fontSize: 14,
+            border: '1px solid #ccc',
+            borderRadius: 6,
+            marginBottom: 10,
+          }}
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => handleApply('regular_early_bird_cutoff_at', regularPicker, '一般早鳥')}
+            disabled={!!saving || !regularPicker}
+            style={btnPrimary(!!saving || !regularPicker)}
+          >
+            {saving === 'regular_early_bird_cutoff_at' ? '儲存中…' : '✅ 套用'}
+          </button>
+          <button
+            onClick={() => handleCloseNow('regular_early_bird_cutoff_at', '一般早鳥')}
+            disabled={!!saving}
+            style={btnDanger(!!saving)}
+          >
+            ⏹ 立刻關閉
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div
+          style={{
+            marginTop: 16,
+            padding: 12,
+            backgroundColor: '#fee2e2',
+            border: '1px solid #fca5a5',
+            borderRadius: 6,
+            color: '#991b1b',
+          }}
+        >
+          ❌ {error}
+        </div>
+      )}
+
+      {result && (
+        <div
+          style={{
+            marginTop: 16,
+            padding: 12,
+            backgroundColor: '#dcfce7',
+            border: '1px solid #86efac',
+            borderRadius: 6,
+            color: '#166534',
+            fontSize: 13,
+          }}
+        >
+          ✅ 已更新 {result.key} = {toTaiwanDisplay(result.cutoff_at)}
+          <br />
+          {result.is_future ? '截止日在未來（活躍）' : '截止日已過（不活躍）'}
+        </div>
+      )}
     </div>
   );
 }
