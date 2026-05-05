@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { Q3_OPTIONS } from '../../../../lib/conversation-path.js';
 
 const PATH_ZH = {
   healthCheck: '健康檢查異常',
@@ -14,6 +15,29 @@ const PATH_ZH = {
   eatOut: '外食族',
   other: '其他',
 };
+
+const Q4_CONDITION_ZH = {
+  ai_final_feedback: 'AI 動態回饋（DYNAMIC）',
+  blood_sugar: '血糖紅字',
+  cholesterol: '膽固醇紅字',
+  blood_pressure: '血壓紅字',
+};
+
+const INTENT_ZH = {
+  high: '🔥 高（很想瘦）',
+  medium: '🟡 中（想瘦但有疑慮）',
+  low: '🧊 低（觀望）',
+};
+
+// Q3 選項：「3」+ Q3_OPTIONS[path][3].label → 「3 — 血壓紅字」
+function q3ChoiceLabel(path, q3Choice) {
+  if (!q3Choice) return '—';
+  const map = Q3_OPTIONS[path];
+  if (!map) return q3Choice;
+  const entry = map[Number(q3Choice)];
+  if (!entry) return q3Choice;
+  return `${q3Choice} — ${entry.label}`;
+}
 
 const METAB_ZH = {
   highRPM: '高轉速型',
@@ -176,9 +200,9 @@ export default function UserDetailPage() {
               : '—'
           } />
           <Row label="路徑（Q3 主選）" value={PATH_ZH[user.path] || '—'} />
-          <Row label="Q3 選項" value={ai.q3_choice || '—'} />
-          <Row label="Q3 condition" value={ai.q3_condition_selected || '—'} />
-          <Row label="Q4 condition" value={ai.q4_condition || '—'} />
+          <Row label="Q3 選項" value={q3ChoiceLabel(user.path, ai.q3_choice)} />
+          <Row label="Q3 condition" value={Q4_CONDITION_ZH[ai.q3_condition_selected] || ai.q3_condition_selected || '—'} />
+          <Row label="Q4 condition" value={Q4_CONDITION_ZH[ai.q4_condition] || ai.q4_condition || '—'} />
           <Row label="Q4 AI 分類時間" value={fmt(ai.q4_classified_at)} />
         </div>
       </div>
@@ -189,7 +213,7 @@ export default function UserDetailPage() {
         <div style={S.card}>
           <Row label="痛點" value={pains.length ? <TagList items={pains} color="#dc2626" /> : '—'} />
           <Row label="猶豫" value={hesitation.length ? <TagList items={hesitation} color="#d97706" /> : '—'} />
-          <Row label="意願" value={ai['意願'] || '—'} />
+          <Row label="意願" value={INTENT_ZH[ai['意願']] || ai['意願'] || '—'} />
           <Row label="關注" value={focus.length ? <TagList items={focus} color="#2563eb" /> : '—'} />
         </div>
       </div>
