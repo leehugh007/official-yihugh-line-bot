@@ -768,6 +768,11 @@ export default function ApplyPage() {
         return;
       }
       setSubmitted(true);
+      // submit 成功後 scroll 回頁面頂部，讓用戶看到 🌱 success 畫面
+      // （否則會停在 form 中段，例如送出當下停在「退費注意事項」區塊）
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'instant' });
+      }
     } catch (err) {
       console.error('[apply] submit error:', err);
       setSubmitErr('網路連線不穩，確認網路後再送一次。');
