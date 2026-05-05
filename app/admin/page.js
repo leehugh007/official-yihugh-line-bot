@@ -2663,6 +2663,27 @@ function ApplicationsTab({
   const [form, setForm] = useState({ last5: '', amount: '', date: '', notes: '' });
   const [submitting, setSubmitting] = useState(false);
   const [errMsg, setErrMsg] = useState('');
+  const [exporting, setExporting] = useState(false);
+
+  // 匯出 CSV（依當前 filter）
+  async function handleExportCsv() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const secret = sessionStorage.getItem('admin_secret') || '';
+      const res = await fetch(`/api/admin?action=export_applications&filter=${filter}&secret=${secret}`);
+      const json = await res.json();
+      if (!json.ok) {
+        alert('匯出失敗：' + (json.error || 'unknown'));
+        return;
+      }
+      downloadApplicationsCsv(json.rows || [], filter);
+    } catch (e) {
+      alert('匯出失敗：' + (e?.message || String(e)));
+    } finally {
+      setExporting(false);
+    }
+  }
 
   if (!data) {
     return <p style={{ color: '#888' }}>載入中...</p>;
@@ -2803,7 +2824,14 @@ function ApplicationsTab({
             {opt.label}
           </button>
         ))}
-        <button onClick={onReload} style={{ ...appBtn, marginLeft: 'auto' }}>🔄 重整</button>
+        <button
+          onClick={handleExportCsv}
+          disabled={exporting}
+          style={{ ...appBtn, marginLeft: 'auto', opacity: exporting ? 0.5 : 1 }}
+        >
+          {exporting ? '匯出中…' : '📥 匯出 CSV'}
+        </button>
+        <button onClick={onReload} style={appBtn}>🔄 重整</button>
       </div>
 
       {/* 計數 */}
@@ -3030,6 +3058,63 @@ function fmtDate(iso) {
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// ============================================================
+// CSV 匯出 helper（applications）
+// ============================================================
+// 用 UTF-8 BOM 確保 Excel 開啟中文不亂碼。
+// 欄位中文化 + 方案 / 狀態 / 性別 也轉中文 label。
+function downloadApplicationsCsv(rows, filter) {
+  const headers = [
+    'ID', '報名時間', '姓名', '性別', '年齡', '電話', 'Email', '地址',
+    'LINE userId', 'LINE 名稱', 'LINE ID', '方案', '來源', '狀態',
+    '付款時間', '付款金額', '付款日期', '匯款後五碼', '標記者', '備註',
+  ];
+  const GENDER_ZH = { male: '男', female: '女', other: '其他' };
+
+  const csvRows = rows.map((r) => [
+    r.id,
+    fmtDate(r.submitted_at),
+    r.real_name,
+    GENDER_ZH[r.gender] || r.gender,
+    r.age,
+    r.phone,
+    r.email,
+    r.address,
+    r.line_user_id,
+    r.display_name,
+    r.line_id,
+    planLabel(r.program_choice),
+    r.source,
+    statusLabel(r.status),
+    fmtDate(r.paid_at),
+    r.payment_amount,
+    r.payment_date,
+    r.payment_last5, // 完整後五碼（export endpoint 不 mask）
+    r.paid_marked_by,
+    r.notes,
+  ]);
+
+  const escape = (v) => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const csv = '﻿' + [
+    headers.join(','),
+    ...csvRows.map((row) => row.map(escape).join(',')),
+  ].join('\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `applications_${filter}_${todayStr()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
 }
 
 // ============================================================

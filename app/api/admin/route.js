@@ -51,6 +51,8 @@ export async function GET(request) {
       return handleGetApplications(searchParams);
     case 'application':
       return handleGetApplicationFull(searchParams);
+    case 'export_applications':
+      return handleExportApplications(searchParams);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -1045,6 +1047,28 @@ async function handleGetApplications(searchParams) {
     return NextResponse.json({ ok: true, rows, total, filter, limit, offset });
   } catch (err) {
     console.error('[admin/applications] error:', err);
+    return NextResponse.json({ error: err?.message || 'list_failed' }, { status: 500 });
+  }
+}
+
+// 匯出全部 applications（CSV 用）
+// - 不 mask payment_last5（admin secret 已保護，匯出需要完整資料）
+// - limit 5000（cover 任何合理規模，未來超過再分頁）
+async function handleExportApplications(searchParams) {
+  const filterRaw = (searchParams.get('filter') || 'all').toLowerCase();
+  const FILTER_ALLOWED = new Set(['all', 'pending', 'paid', 'cancelled']);
+  const filter = FILTER_ALLOWED.has(filterRaw) ? filterRaw : 'all';
+
+  try {
+    const { rows, total } = await listApplications({
+      filter,
+      limit: 5000,
+      offset: 0,
+      mask: false, // 匯出拿完整 payment_last5
+    });
+    return NextResponse.json({ ok: true, rows, total, filter });
+  } catch (err) {
+    console.error('[admin/export_applications] error:', err);
     return NextResponse.json({ error: err?.message || 'list_failed' }, { status: 500 });
   }
 }
