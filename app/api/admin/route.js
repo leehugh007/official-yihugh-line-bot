@@ -53,6 +53,8 @@ export async function GET(request) {
       return handleGetApplicationFull(searchParams);
     case 'export_applications':
       return handleExportApplications(searchParams);
+    case 'user_detail':
+      return handleGetUserDetail(searchParams);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -1048,6 +1050,44 @@ async function handleGetApplications(searchParams) {
   } catch (err) {
     console.error('[admin/applications] error:', err);
     return NextResponse.json({ error: err?.message || 'list_failed' }, { status: 500 });
+  }
+}
+
+// /admin/user/[userId] 詳情頁用 — 拿單一用戶完整 row + 該用戶報名紀錄
+// handoff push 通知裡的「開對話」連結點過去，婉馨 / 一休能看完整脈絡再回 LINE
+async function handleGetUserDetail(searchParams) {
+  const userId = searchParams.get('user_id');
+  if (!userId || !/^U[0-9a-f]{32}$/.test(userId)) {
+    return NextResponse.json({ error: 'invalid_user_id' }, { status: 400 });
+  }
+
+  try {
+    // 1. 用戶基本 row
+    const { data: user, error: userErr } = await supabase
+      .from('official_line_users')
+      .select('*')
+      .eq('line_user_id', userId)
+      .single();
+    if (userErr || !user) {
+      console.warn('[admin/user_detail] user not found:', userId, userErr?.message);
+      return NextResponse.json({ error: 'user_not_found' }, { status: 404 });
+    }
+
+    // 2. 該用戶所有報名紀錄（applications，不 mask）
+    const { data: applications } = await supabase
+      .from('official_program_applications')
+      .select('*')
+      .eq('line_user_id', userId)
+      .order('submitted_at', { ascending: false });
+
+    return NextResponse.json({
+      ok: true,
+      user,
+      applications: applications || [],
+    });
+  } catch (err) {
+    console.error('[admin/user_detail] error:', err);
+    return NextResponse.json({ error: err?.message || 'fetch_failed' }, { status: 500 });
   }
 }
 
