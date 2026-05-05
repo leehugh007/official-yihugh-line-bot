@@ -712,6 +712,8 @@ export default function ApplyPage() {
       errs.program_choice = '請選擇方案';
     if (!form.display_name.trim() || form.display_name.length > 100)
       errs.display_name = '請填 LINE 名稱';
+    if (!form.line_id.trim() || form.line_id.length > 50)
+      errs.line_id = '請填 LINE ID（沒設定請填「無」）';
     if (!form.agreed_refund_policy) errs.agreed_refund_policy = '請勾選同意退費條款';
     return errs;
   };
@@ -1648,14 +1650,15 @@ export default function ApplyPage() {
           />
           {fieldErrors.display_name && <p style={S.errText}>{fieldErrors.display_name}</p>}
 
-          <label style={S.label}>LINE ID（選填）</label>
+          <label style={S.label}>LINE ID *</label>
           <input
-            style={S.input}
+            style={{ ...S.input, ...(fieldErrors.line_id ? S.inputErr : {}) }}
             value={form.line_id}
             onChange={(e) => setField('line_id', e.target.value)}
             maxLength={50}
-            placeholder="如果有設定 LINE ID 請填，沒有也沒關係"
+            placeholder="沒有設定 LINE ID 的話，請填「無」"
           />
+          {fieldErrors.line_id && <p style={S.errText}>{fieldErrors.line_id}</p>}
 
           <label
             style={{

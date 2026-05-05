@@ -69,7 +69,7 @@ export async function POST(request) {
     address,
     gender,
     age,
-    line_id, // 選填
+    line_id, // 必填（沒設定請填「無」）
     display_name, // 選填
     program_choice,
     agreed_refund_policy,
@@ -101,8 +101,8 @@ export async function POST(request) {
   if (agreed_refund_policy !== true) {
     errors.push('agreed_refund_policy');
   }
-  if (line_id !== undefined && line_id !== null) {
-    if (typeof line_id !== 'string' || line_id.length > 50) errors.push('line_id');
+  if (typeof line_id !== 'string' || line_id.trim().length < 1 || line_id.length > 50) {
+    errors.push('line_id');
   }
   if (display_name !== undefined && display_name !== null) {
     if (typeof display_name !== 'string' || display_name.length > 100) errors.push('display_name');
