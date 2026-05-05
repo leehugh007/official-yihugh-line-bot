@@ -20,6 +20,7 @@ import { pushMessage, textMessage } from '../../../../lib/line.js';
 import { getSettingTyped } from '../../../../lib/official-settings.js';
 import { NOTIFY_USER_IDS } from '../../../../lib/constants.js';
 import { getPricingState, calcFinalPrice } from '../../../../lib/pricing.js';
+import { appendApplicationRow, isSheetSyncEnabled } from '../../../../lib/google-sheets.js';
 
 const HMAC_KEYS = ['userid', 'source', 'trigger', 'kv', 'ts', 'sig'];
 
@@ -153,7 +154,34 @@ export async function POST(request) {
     // RPC 回傳是 submit_application_result composite type
     // Supabase client 解成 object：{ application_id, enrolled_at, other_apps_count, other_phone_count }
 
-    // 5. 即時通知一休 + 婉馨（Phase 4.5 Phase 5）
+    // 5. 同步 append 到 GoogleSheet（環境變數沒設時自動跳過）
+    //    失敗不擋主流程，cron sheet-sync 每 10 分鐘也會 fallback append
+    if (isSheetSyncEnabled()) {
+      try {
+        await appendApplicationRow({
+          id: data.application_id,
+          submitted_at: new Date().toISOString(),
+          real_name: real_name.trim(),
+          phone,
+          email: email.trim(),
+          address: address.trim(),
+          gender,
+          age: ageInt,
+          line_id: line_id ? String(line_id).trim() : null,
+          display_name: display_name ? String(display_name).trim() : null,
+          program_choice,
+          status: 'pending',
+          notes: null,
+          payment_last5: null,
+          payment_amount: null,
+          payment_date: null,
+        });
+      } catch (err) {
+        console.error('[apply/submit] sheet append silent fail:', err?.message);
+      }
+    }
+
+    // 6. 即時通知一休 + 婉馨（Phase 4.5 Phase 5）
     //    必須 await（fire-and-forget 在 Vercel serverless 會被 kill — Phase 3.2a 已驗證雷）
     //    成功 → UPDATE notify_status='sent' 防 cron 雙推
     //    失敗 → 留 'pending'，cron q5-maintenance 每小時 0 分接住 retry
