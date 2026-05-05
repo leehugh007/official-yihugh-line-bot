@@ -494,6 +494,11 @@ function extractHmacParams() {
     if (!v) return null;
     out[k] = v;
   }
+  // V3.2 Phase 2B Session 3 Ch.5.6：from 是量測 metadata（msg3/msg4），
+  // 不在 HMAC_KEYS（不簽名），visit endpoint 寫進 q5_apply_from_msg。
+  // shape 不對就忽略（不影響 visit 主流程）。
+  const from = p.get('from');
+  if (from === 'msg3' || from === 'msg4') out.from = from;
   return out;
 }
 

@@ -1,5 +1,5 @@
 // POST /api/apply/visit
-// 契約 v2.4 Ch.5.2
+// 契約 v2.4 Ch.5.2 + V3.2 Phase 2B Session 3 Ch.5.6（?from= 配套）
 //
 // /apply 頁 LIFF init 成功後呼叫，記錄「點了沒報名」的中繼 metric。
 // 動作：
@@ -7,9 +7,15 @@
 //   2. stage 6 → 7（若 stage=6；>=7 不動）
 //   3. q5_clicked_at = COALESCE(q5_clicked_at, now()) — 首次點擊（unique 量測）
 //   4. q5_click_count += 1 — 總計（含分享污染，契約 Ch.12.1a）
+//   5. q5_apply_from_msg = COALESCE(existing, p_from) — 點擊歸因 metadata（msg3/msg4）
 //
 // 對外錯誤統一 { error: 'invalid_signature' } + 400，不洩漏具體 reason
 // 內部 console.warn 記錄真實 reason 供 debug
+//
+// from 安全分析（契約 Ch.5.6）：
+//   - from 是量測 metadata，不影響 auth / userid 鎖定
+//   - 攻擊者篡改 from（msg3↔msg4）→ 只是污染歸因 metric，不獲取任何權限
+//   - 故 from 不進 HMAC canonical，不簽名；optional，污染就忽略不 reject
 
 import { NextResponse } from 'next/server';
 import supabase from '../../../../lib/supabase.js';
@@ -17,6 +23,7 @@ import { verifyQ5ApplySig } from '../../../../lib/q5-apply-url.js';
 import { getPricingState } from '../../../../lib/pricing.js';
 
 const BODY_KEYS = ['userid', 'source', 'trigger', 'kv', 'ts', 'sig'];
+const FROM_ALLOWED = new Set(['msg3', 'msg4']);
 
 export async function POST(request) {
   // 1. Parse body
@@ -40,6 +47,16 @@ export async function POST(request) {
     }
   }
 
+  // 2a. from optional 解析（Ch.5.6 step 4）— 不進 HMAC verify，shape 不對就忽略
+  let fromMsg = null;
+  if (body.from !== undefined && body.from !== null) {
+    if (typeof body.from === 'string' && FROM_ALLOWED.has(body.from)) {
+      fromMsg = body.from;
+    } else {
+      console.warn('[apply/visit] bad from value, ignored:', body.from);
+    }
+  }
+
   // 3. HMAC verify
   const verifyResult = verifyQ5ApplySig(body);
   if (!verifyResult.ok) {
@@ -51,14 +68,14 @@ export async function POST(request) {
 
   const userId = body.userid;
 
-  // 4. 業務邏輯：stage 6→7 + click_count + clicked_at COALESCE
+  // 4. 業務邏輯：stage 6→7 + click_count + clicked_at COALESCE + apply_from_msg COALESCE
   try {
     const now = new Date().toISOString();
 
-    // 先讀 stage + clicked_at 判斷要不要升 stage
+    // 先讀 stage + clicked_at + apply_from_msg 判斷要不要升 stage / 寫 from
     const { data: user, error: readErr } = await supabase
       .from('official_line_users')
-      .select('path_stage, q5_clicked_at, q5_click_count')
+      .select('path_stage, q5_clicked_at, q5_click_count, q5_apply_from_msg')
       .eq('line_user_id', userId)
       .single();
 
@@ -68,7 +85,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
     }
 
-    // 組 UPDATE：click_count++、首次 clicked_at COALESCE、stage 6→7（其他 stage 不動）
+    // 組 UPDATE：click_count++、首次 clicked_at COALESCE、stage 6→7（其他 stage 不動）、apply_from_msg COALESCE
     const updates = {
       q5_click_count: (user.q5_click_count || 0) + 1,
     };
@@ -76,6 +93,9 @@ export async function POST(request) {
     if (user.path_stage === 6) {
       updates.path_stage = 7;
       updates.path_stage_updated_at = now;
+    }
+    if (fromMsg && !user.q5_apply_from_msg) {
+      updates.q5_apply_from_msg = fromMsg;
     }
 
     const { error: updateErr } = await supabase

@@ -43,6 +43,8 @@ import {
   pushMsg2,
   pushMsg3,
   markMsgN,
+  detectWillingnessKeywords,
+  buildQuickReplyForStage,
 } from '../../../lib/q5-msg-state.js';
 import { notifyCrossToolUsage } from '../../../lib/cross-tool-signal.js';
 import { generateFinalFeedback, verifyHandoffIntent } from '../../../lib/ai-classifier.js';
@@ -584,6 +586,85 @@ const POSTBACK_HANDLERS = {
   final_maybe: handleFinalMaybe,
   final_question: handleFinalQuestion,
 };
+
+// ============================================================
+// V3.2 Phase 2B Session 3：handleV32FreeText（Ch.6.3）
+// ============================================================
+//
+// 用戶在 v3.2 新軌中傳「自由文字 / 貼圖 / 照片」（非 postback）的 fallback。
+// 由 dispatcher（Ch.5.10）在 stage=4 q5_msg1_sent_at NOT NULL 或 stage=6
+// q5_msg{3,4}_sent_at NOT NULL 時 priority 1 路由進來。
+//
+// pre-check（matchPoliteEnd / matchGlobalHandoff）已在 handleEvent 入口層
+// L118-162 跑過，這裡不重複；命中已 return，到這 = 沒命中。
+//
+// 流程（契約 Ch.6.3）：
+//   1. 算當前段 N（最大已 sent_at 的 N，cron 推進邏輯保證 N 連續）
+//   2. 非文字（貼圖 / 照片 / sticker）→ reply 不重發
+//   3. 文字 → detectWillingnessKeywords（含 negation pre-filter）
+//      - 命中 → reply「想知道更多嗎？」+ 重發當前段 Quick Reply
+//      - 沒命中（含 negation） → reply「方便用按鈕」+ 不重發
+//   4. 不寫任何新欄位（cron 仍會繼續 24h 推進）
+//
+// 文案來源：草稿_2026-05-03_訊息範本v3.3.md「handleV32FreeText reply 文案」段
+async function handleV32FreeText(event, userId, state) {
+  // 算當前段 N（最大已推送的訊息）
+  let currentN = 0;
+  if (state?.q5_msg4_sent_at) currentN = 4;
+  else if (state?.q5_msg3_sent_at) currentN = 3;
+  else if (state?.q5_msg2_sent_at) currentN = 2;
+  else if (state?.q5_msg1_sent_at) currentN = 1;
+
+  if (currentN === 0) {
+    // dispatcher 已 gate q5_msg1_sent_at NOT NULL，不該走到這
+    console.warn('[handleV32FreeText] no msg sent_at, dispatcher mis-routed', { userId });
+    return false;
+  }
+
+  // 非文字訊息（sticker / image / video / audio / file / location）
+  const isText = event.message?.type === 'text';
+  if (!isText) {
+    await replyMessage(event.replyToken, [
+      textMessage('我有看到你的訊息～方便用文字或下面的按鈕告訴我嗎？'),
+    ]);
+    return true;
+  }
+
+  const text = event.message.text;
+  const willing = detectWillingnessKeywords(text);
+
+  if (willing) {
+    // 命中意願詞 → 重發當前段 Quick Reply
+    let quickReply;
+    try {
+      quickReply = await buildQuickReplyForStage(currentN, {
+        userId,
+        triggerSource: 'active',
+      });
+    } catch (err) {
+      console.error('[handleV32FreeText] buildQuickReply failed:', err.message, {
+        userId,
+        currentN,
+      });
+      // build 失敗（通常是 Q5_APPLY_SIGNING_SECRET / apply_url_base 缺）
+      // → 退回「沒命中」文案，不重發
+      await replyMessage(event.replyToken, [
+        textMessage('我有看到你的訊息～方便用下面的按鈕告訴我嗎？'),
+      ]);
+      return true;
+    }
+    await replyMessage(event.replyToken, [
+      { type: 'text', text: '想知道更多嗎？我把選項再貼給你 →', quickReply },
+    ]);
+    return true;
+  }
+
+  // 沒命中意願詞（含 negation pre-filter 命中）
+  await replyMessage(event.replyToken, [
+    textMessage('我有看到你的訊息～方便用下面的按鈕告訴我嗎？'),
+  ]);
+  return true;
+}
 
 // ============================================================
 // Follow 事件（加好友）
@@ -1386,18 +1467,27 @@ async function handleConversationPath(event, userId, text, state) {
     return await handleStage3ToQ4(event, userId, text, state);
   }
 
-  // === 分支 4：stage=4 被動軌（契約 v2.4 Ch.5.1a — Phase 4.2 wire + PR #52 restricted gate）===
+  // === 分支 4：stage=4 被動軌（契約 v2.4 Ch.5.1a + V3.2 Ch.5.10）===
   //
-  // q5_restricted_to_test_users=true（預設）：
-  //   - 一般用戶 → Phase 3.3 bridging（triggerHandoff q4_followup_before_q5_wire + fifi 訊息）
-  //   - 測試用戶 → Q5 classifier 分流（continue / decline / ai_failed）
-  // q5_restricted_to_test_users=false：
-  //   - 全量走 Q5 classifier 分流
+  // priority 1（V3.2 Phase 2B Session 3 新增）：
+  //   q5_msg1_sent_at NOT NULL → 用戶已進 v3.2 新軌 → 走 handleV32FreeText
+  //   不走 Q5 classifier，避免新舊軌打架。
+  //
+  // priority 2（既有）：
+  //   q5_restricted_to_test_users=true（預設）：
+  //     - 一般用戶 → Phase 3.3 bridging（triggerHandoff q4_followup_before_q5_wire）
+  //     - 測試用戶 → Q5 classifier 分流（continue / decline / ai_failed）
+  //   q5_restricted_to_test_users=false：全量走 Q5 classifier
   //
   // 關閉原因：/apply 頁未完整 + 報名流程未定，先限測試用戶實測（一休 2026-04-24 決策）
   //
   // pre-check 已排除：禮貌結束（handlePoliteEnd）+ handoff 關鍵字（matchGlobalHandoff）
   if (stage === 4) {
+    // V3.2 priority 1：新軌中 → handleV32FreeText（Ch.5.10 + Ch.6.3）
+    if (state?.q5_msg1_sent_at) {
+      return await handleV32FreeText(event, userId, state);
+    }
+
     const restricted = await getSettingTyped('q5_restricted_to_test_users');
     const isTestUser = TEST_ALLOWLIST.includes(userId);
     if (restricted && !isTestUser) {
@@ -1459,7 +1549,32 @@ async function handleConversationPath(event, userId, text, state) {
     return false;
   }
 
-  // stage >= 5 → 靜默（handoff 已觸發，等人工處理）
+  // === 分支 6：stage=6 dispatcher（V3.2 Phase 2B Session 3 新增，Ch.5.10 + 一休 5/5 pivot）===
+  //
+  // priority 1：v3.2 新軌看過價格（訊息 3 或 4 已推）→ 一律 handoff（不走 fallback）
+  //            一休 5/5 觀察：用戶會順著按鈕點到看價格；會傳訊息的人 = 有報名意圖 + 有問題
+  //            這時重發按鈕 = 答非所問，直接 fifi 接最對
+  // priority 2：既有 Q5 軟邀請軌（q5_sent_at NOT NULL 但 q5_msg3_sent_at IS NULL）
+  //            → 既有預設行為靜默
+  //
+  // 注意：stage=5 已在 L1036 早 return false（handoff 已觸發），不會到這
+  if (stage === 6) {
+    if (state?.q5_msg3_sent_at || state?.q5_msg4_sent_at) {
+      await recordInteraction(userId);
+      const reason = state.q5_msg4_sent_at ? 'q5_msg4_freetext' : 'q5_msg3_freetext';
+      const ok = await triggerHandoff(userId, reason);
+      if (ok) {
+        await replyMessage(event.replyToken, [
+          textMessage('好，你的問題請說，我請 fifi 助教看到後跟你聊。上班時間會陸續回。'),
+        ]);
+      }
+      return true;
+    }
+    // 既有 Q5 軟邀請軌 → 靜默
+    return false;
+  }
+
+  // stage >= 5（含 stage=7/8）→ 靜默（handoff 已觸發或已點 apply，等人工/金流處理）
   return false;
 }
 
