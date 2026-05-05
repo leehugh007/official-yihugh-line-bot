@@ -915,13 +915,19 @@ async function handleQuizCodeClaim(event, userId, session) {
     })
     .eq('line_user_id', userId);
 
-  const { error: claimErr } = await supabase
+  const { data: claimRows, error: claimErr } = await supabase
     .from('quiz_sessions')
     .update({ claimed_by: userId, claimed_at: new Date().toISOString() })
-    .eq('id', session.id);
+    .eq('id', session.id)
+    .select('id');
 
   if (claimErr) {
     console.error('[Quiz Claim] failed to mark quiz_sessions claimed:', claimErr.message, {
+      userId,
+      sessionId: session.id,
+    });
+  } else if (!claimRows || claimRows.length === 0) {
+    console.error('[Quiz Claim] quiz_sessions claim update affected 0 rows', {
       userId,
       sessionId: session.id,
     });
