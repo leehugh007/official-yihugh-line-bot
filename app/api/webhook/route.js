@@ -44,6 +44,7 @@ import {
   pushMsg3,
   markMsgN,
   detectWillingnessKeywords,
+  detectNegation,
   buildQuickReplyForStage,
 } from '../../../lib/q5-msg-state.js';
 import { notifyCrossToolUsage } from '../../../lib/cross-tool-signal.js';
@@ -252,12 +253,21 @@ async function handleEvent(event) {
         break;
       }
 
+      // V3.2 軌偵測：用戶在新軌中（任一 q5_msg{N}_sent_at NOT NULL）+ 非按鈕訊息 → 走 handleV32FreeText
+      // 一休 5/5 補洞：sticker / image / video / audio / file / location 不能讓 dispatcher 吃掉，
+      // 否則「會傳貼圖的人 = 有訊號」全部漏接
+      const _inV32Track = state?.q5_msg1_sent_at || state?.q5_msg2_sent_at
+        || state?.q5_msg3_sent_at || state?.q5_msg4_sent_at;
+
       if (msgType === 'text') {
         await handleTextMessage(event, userId, state);
+      } else if (_inV32Track) {
+        // 非文字 + v3.2 軌 → handleV32FreeText（內部依 stage 切：stage=6 一律 handoff / stage=4 reply）
+        await handleV32FreeText(event, userId, state);
       } else if (msgType === 'image') {
         await handleImageMessage(event, userId, state);
       }
-      // 其他（貼圖、影片、檔案等，stage ≠ 6/7）→ 不回覆
+      // 其他非文字非 v3.2 軌（stage ≠ 6/7 且未進新軌）→ 不回覆（既有預設）
       break;
     }
     case 'postback':
@@ -588,25 +598,27 @@ const POSTBACK_HANDLERS = {
 };
 
 // ============================================================
-// V3.2 Phase 2B Session 3：handleV32FreeText（Ch.6.3）
+// V3.2 Phase 2B Session 3：handleV32FreeText（Ch.6.3 + 一休 5/5 補洞）
 // ============================================================
 //
-// 用戶在 v3.2 新軌中傳「自由文字 / 貼圖 / 照片」（非 postback）的 fallback。
-// 由 dispatcher（Ch.5.10）在 stage=4 q5_msg1_sent_at NOT NULL 或 stage=6
-// q5_msg{3,4}_sent_at NOT NULL 時 priority 1 路由進來。
+// 用戶在 v3.2 新軌中傳「自由文字 / 貼圖 / 圖片」（非 postback）的 fallback。
+// dispatcher（Ch.5.10）路由：
+//   - stage=4 + q5_msg1_sent_at NOT NULL（priority 1）
+//   - stage=6 + q5_msg{3,4}_sent_at NOT NULL
+// handleEvent 入口層也會把 v3.2 軌的 sticker/image/其他非文字 dispatch 進來。
 //
-// pre-check（matchPoliteEnd / matchGlobalHandoff）已在 handleEvent 入口層
-// L118-162 跑過，這裡不重複；命中已 return，到這 = 沒命中。
+// pre-check（matchPoliteEnd / matchGlobalHandoff）在 handleEvent 入口層 L118-162
+// 跑過，命中已 return；到這 = 沒命中。
 //
-// 流程（契約 Ch.6.3）：
-//   1. 算當前段 N（最大已 sent_at 的 N，cron 推進邏輯保證 N 連續）
-//   2. 非文字（貼圖 / 照片 / sticker）→ reply 不重發
-//   3. 文字 → detectWillingnessKeywords（含 negation pre-filter）
-//      - 命中 → reply「想知道更多嗎？」+ 重發當前段 Quick Reply
-//      - 沒命中（含 negation） → reply「方便用按鈕」+ 不重發
-//   4. 不寫任何新欄位（cron 仍會繼續 24h 推進）
-//
-// 文案來源：草稿_2026-05-03_訊息範本v3.3.md「handleV32FreeText reply 文案」段
+// 分流（一休 5/5 決策後）：
+//   - stage=6（看過價格） + 任何訊息（含貼圖）→ 一律 handoff
+//     理由：用戶會順著按鈕點到看價格；會傳訊息的人 = 高意願 + 有問題
+//   - 非文字（sticker / video / audio / file / location）→ handoff
+//     理由：訊號就是訊息，貼圖也算
+//   - 文字 + 命中意願詞（想/了解/OK/好/再聊）→ reply + 重發 Quick Reply 救援
+//   - 文字 + 命中 negation（不想/沒興趣）→ soft 軟拒，不打擾
+//   - 文字 + 中性（≥ 4 字）→ handoff（接住「適合產後嗎」「ABC 是什麼」這類）
+//   - 文字 + 短訊息（< 4 字）→ soft reply，不打擾 fifi（避免「嗯」「哈哈」誤觸）
 async function handleV32FreeText(event, userId, state) {
   // 算當前段 N（最大已推送的訊息）
   let currentN = 0;
@@ -621,47 +633,80 @@ async function handleV32FreeText(event, userId, state) {
     return false;
   }
 
-  // 非文字訊息（sticker / image / video / audio / file / location）
+  const stage = state?.path_stage;
+  const reason = `q5_msg${currentN}_freetext`;
+
+  // stage=6 pivot：看過價格後 → 一律 handoff（不分意願詞 / negation / 字數）
+  if (stage === 6) {
+    return await _doV32Handoff(event, userId, reason);
+  }
+
+  // 非文字（sticker / video / audio / file / location / image）→ handoff
   const isText = event.message?.type === 'text';
   if (!isText) {
-    await replyMessage(event.replyToken, [
-      textMessage('我有看到你的訊息～方便用文字或下面的按鈕告訴我嗎？'),
-    ]);
-    return true;
+    return await _doV32Handoff(event, userId, reason);
   }
 
+  // === 以下 stage=4 + 文字分流 ===
   const text = event.message.text;
-  const willing = detectWillingnessKeywords(text);
 
-  if (willing) {
-    // 命中意願詞 → 重發當前段 Quick Reply
-    let quickReply;
-    try {
-      quickReply = await buildQuickReplyForStage(currentN, {
-        userId,
-        triggerSource: 'active',
-      });
-    } catch (err) {
-      console.error('[handleV32FreeText] buildQuickReply failed:', err.message, {
-        userId,
-        currentN,
-      });
-      // build 失敗（通常是 Q5_APPLY_SIGNING_SECRET / apply_url_base 缺）
-      // → 退回「沒命中」文案，不重發
-      await replyMessage(event.replyToken, [
-        textMessage('我有看到你的訊息～方便用下面的按鈕告訴我嗎？'),
-      ]);
-      return true;
-    }
+  if (detectWillingnessKeywords(text)) {
+    return await _doV32RefreshButtons(event, userId, currentN);
+  }
+
+  if (detectNegation(text)) {
+    // 軟拒不打擾（用戶明確不想要）
     await replyMessage(event.replyToken, [
-      { type: 'text', text: '想知道更多嗎？我把選項再貼給你 →', quickReply },
+      textMessage('好，之後想了解再來找我就好。'),
     ]);
     return true;
   }
 
-  // 沒命中意願詞（含 negation pre-filter 命中）
+  // 中性訊息：≥ 4 字 → handoff（「適合產後嗎」「ABC 是什麼」這類有問題在問）
+  if (text.trim().length >= 4) {
+    return await _doV32Handoff(event, userId, reason);
+  }
+
+  // 短訊息（嗯/哈哈/喔）→ soft reply，不打擾 fifi
   await replyMessage(event.replyToken, [
-    textMessage('我有看到你的訊息～方便用下面的按鈕告訴我嗎？'),
+    textMessage('我有看到你的訊息～之後想了解再來找我就好。'),
+  ]);
+  return true;
+}
+
+// 共用：v3.2 軌 handoff（stage=6 / 非文字 / stage=4 中性 ≥4 字）
+async function _doV32Handoff(event, userId, reason) {
+  await recordInteraction(userId);
+  const ok = await triggerHandoff(userId, reason);
+  if (ok) {
+    await replyMessage(event.replyToken, [
+      textMessage('好，你的問題請說，我請 fifi 助教看到後跟你聊。上班時間會陸續回。'),
+    ]);
+  }
+  return true;
+}
+
+// 共用：v3.2 軌 重發按鈕（命中意願詞救援）
+async function _doV32RefreshButtons(event, userId, currentN) {
+  let quickReply;
+  try {
+    quickReply = await buildQuickReplyForStage(currentN, {
+      userId,
+      triggerSource: 'active',
+    });
+  } catch (err) {
+    console.error('[handleV32FreeText] buildQuickReply failed:', err.message, {
+      userId,
+      currentN,
+    });
+    // build 失敗 → 退回 soft reply（不暗示「按鈕」避免用戶疑惑）
+    await replyMessage(event.replyToken, [
+      textMessage('我有看到你的訊息～之後想了解再來找我就好。'),
+    ]);
+    return true;
+  }
+  await replyMessage(event.replyToken, [
+    { type: 'text', text: '想知道更多嗎？我把選項再貼給你 →', quickReply },
   ]);
   return true;
 }
@@ -1549,26 +1594,17 @@ async function handleConversationPath(event, userId, text, state) {
     return false;
   }
 
-  // === 分支 6：stage=6 dispatcher（V3.2 Phase 2B Session 3 新增，Ch.5.10 + 一休 5/5 pivot）===
+  // === 分支 6：stage=6 dispatcher（V3.2 Phase 2B Session 3 + 一休 5/5 pivot）===
   //
-  // priority 1：v3.2 新軌看過價格（訊息 3 或 4 已推）→ 一律 handoff（不走 fallback）
-  //            一休 5/5 觀察：用戶會順著按鈕點到看價格；會傳訊息的人 = 有報名意圖 + 有問題
-  //            這時重發按鈕 = 答非所問，直接 fifi 接最對
+  // priority 1：v3.2 新軌看過價格（訊息 3 或 4 已推）→ handleV32FreeText 內部處理
+  //            一律 handoff（pivot 邏輯在 handleV32FreeText stage=6 分支）
   // priority 2：既有 Q5 軟邀請軌（q5_sent_at NOT NULL 但 q5_msg3_sent_at IS NULL）
   //            → 既有預設行為靜默
   //
   // 注意：stage=5 已在 L1036 早 return false（handoff 已觸發），不會到這
   if (stage === 6) {
     if (state?.q5_msg3_sent_at || state?.q5_msg4_sent_at) {
-      await recordInteraction(userId);
-      const reason = state.q5_msg4_sent_at ? 'q5_msg4_freetext' : 'q5_msg3_freetext';
-      const ok = await triggerHandoff(userId, reason);
-      if (ok) {
-        await replyMessage(event.replyToken, [
-          textMessage('好，你的問題請說，我請 fifi 助教看到後跟你聊。上班時間會陸續回。'),
-        ]);
-      }
-      return true;
+      return await handleV32FreeText(event, userId, state);
     }
     // 既有 Q5 軟邀請軌 → 靜默
     return false;
