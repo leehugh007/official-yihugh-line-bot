@@ -369,19 +369,15 @@ async function handleQ4Continue(event, userId) {
 async function handleQ4StoryInterested(event, userId) {
   await recordInteraction(userId);
 
-  // === V3.2 軌入口 gate（Phase 2B 試行期）===
-  // 一般用戶 → 走原 v3.1 行為（polite reply + handoff_reason='q4_story_interested'），0 影響
-  // ALLOWLIST（一休 + 婉馨）→ 進 v3.2 自動推進漏斗（reply 訊息 1 + Quick Reply）
-  // 全量開放方式：移除這個 if block，所有用戶走 v3.2
-  if (!TEST_ALLOWLIST.includes(userId)) {
-    return await _q4StoryInterestedLegacy(event, userId);
-  }
-
-  // ALLOWLIST 用戶：取 path
+  // === V3.2 軌入口（一休 5/5 拆 gate 全量開放）===
+  // 拆 gate 前（試行期）：ALLOWLIST gate 限一休 + 婉馨進 v3.2，其他走 legacy
+  // 拆 gate 後（現在）：所有 path 命中 (healthCheck/rebound/postpartum/eatOut) 進 v3.2
+  //                    path=other/null 仍走 legacy（兜底，契約 Ch.5.0 path 限制）
+  // 試行測試（2026-05-05 一休實測）：A.2/A.3/A.4/A.5/A.6/B/C 全通過
   const user = await getUser(userId);
   const path = user?.path;
 
-  // path=other / null → v3.2 不服務（契約 Ch.5.0 path 限制）→ 退回 legacy
+  // path=other / null → v3.2 不服務 → 退回 legacy（不破壞既有 0 影響）
   if (!['healthCheck', 'rebound', 'postpartum', 'eatOut'].includes(path)) {
     return await _q4StoryInterestedLegacy(event, userId);
   }
