@@ -85,7 +85,7 @@ export default function UserDetailPage() {
 
   useEffect(() => {
     if (!userId) return;
-    const secret = (typeof window !== 'undefined' && sessionStorage.getItem('admin_secret')) || '';
+    const secret = (typeof window !== 'undefined' && localStorage.getItem('admin_secret')) || '';
     if (!secret) {
       setError('請先登入 admin');
       setLoading(false);

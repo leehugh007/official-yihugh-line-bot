@@ -223,11 +223,11 @@ function DateTimePicker24({ value, onChange, style }) {
 // API 工具
 // ============================================================
 function apiUrl(action) {
-  return `/api/admin?action=${action}&secret=${sessionStorage.getItem('admin_secret') || ''}`;
+  return `/api/admin?action=${action}&secret=${localStorage.getItem('admin_secret') || ''}`;
 }
 
 async function apiPost(data) {
-  const secret = sessionStorage.getItem('admin_secret') || '';
+  const secret = localStorage.getItem('admin_secret') || '';
   const res = await fetch('/api/admin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -280,7 +280,7 @@ export default function AdminPage() {
     const params = new URLSearchParams({
       action: 'applications',
       filter,
-      secret: sessionStorage.getItem('admin_secret') || '',
+      secret: localStorage.getItem('admin_secret') || '',
     });
     const res = await fetch(`/api/admin?${params}`);
     const data = await res.json();
@@ -290,7 +290,7 @@ export default function AdminPage() {
   const loadUsers = useCallback(async (page = 1, search = '', filters = {}) => {
     const params = new URLSearchParams({
       action: 'users',
-      secret: sessionStorage.getItem('admin_secret') || '',
+      secret: localStorage.getItem('admin_secret') || '',
       page: String(page),
     });
     if (search) params.set('search', search);
@@ -331,7 +331,7 @@ export default function AdminPage() {
 
   // 登入
   const handleLogin = async () => {
-    sessionStorage.setItem('admin_secret', password);
+    localStorage.setItem('admin_secret', password);
     try {
       const res = await fetch(apiUrl('stats'));
       if (res.ok) {
@@ -340,7 +340,7 @@ export default function AdminPage() {
         loadData();
       } else {
         setLoginError('密碼錯誤');
-        sessionStorage.removeItem('admin_secret');
+        localStorage.removeItem('admin_secret');
       }
     } catch {
       setLoginError('連線失敗');
@@ -349,7 +349,7 @@ export default function AdminPage() {
 
   // 自動登入（如果 sessionStorage 有密碼）
   useEffect(() => {
-    const saved = sessionStorage.getItem('admin_secret');
+    const saved = localStorage.getItem('admin_secret');
     if (saved) {
       setPassword(saved);
       fetch(`/api/admin?action=stats&secret=${saved}`)
@@ -2670,7 +2670,7 @@ function ApplicationsTab({
     if (exporting) return;
     setExporting(true);
     try {
-      const secret = sessionStorage.getItem('admin_secret') || '';
+      const secret = localStorage.getItem('admin_secret') || '';
       const res = await fetch(`/api/admin?action=export_applications&filter=${filter}&secret=${secret}`);
       const json = await res.json();
       if (!json.ok) {
