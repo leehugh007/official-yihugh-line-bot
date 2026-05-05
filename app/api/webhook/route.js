@@ -785,7 +785,7 @@ async function handleCodeClaim(event, userId, code) {
   // 1. 先查測驗代碼
   const { data: quizSession } = await supabase
     .from('quiz_sessions')
-    .select('metabolism_type, secondary_type, q7_symptoms, body_signal')
+    .select('id, metabolism_type, secondary_type, q7_symptoms, body_signal')
     .eq('claim_code', code)
     .single();
 
@@ -914,6 +914,18 @@ async function handleQuizCodeClaim(event, userId, session) {
       drip_next_at: existingUser?.drip_next_at || dripNextAt.toISOString(),
     })
     .eq('line_user_id', userId);
+
+  const { error: claimErr } = await supabase
+    .from('quiz_sessions')
+    .update({ claimed_by: userId, claimed_at: new Date().toISOString() })
+    .eq('id', session.id);
+
+  if (claimErr) {
+    console.error('[Quiz Claim] failed to mark quiz_sessions claimed:', claimErr.message, {
+      userId,
+      sessionId: session.id,
+    });
+  }
 
   await recordInteraction(userId);
 
@@ -2327,7 +2339,34 @@ function buildPersonalizedReport(session, displayName) {
     `👉 回「菜單」— 我告訴你${type.menuTeaser}\n` +
     `👉 或告訴我「現在幾公斤、想瘦到幾公斤」，我幫你看時間跟怎麼走`;
 
-  return [textMessage(msg1), textMessage(msg2), textMessage(msg3)];
+  return [
+    textMessage(msg1),
+    textMessage(msg2),
+    {
+      type: 'text',
+      text: msg3,
+      quickReply: {
+        items: [
+          {
+            type: 'action',
+            action: {
+              type: 'message',
+              label: '地雷',
+              text: '地雷',
+            },
+          },
+          {
+            type: 'action',
+            action: {
+              type: 'message',
+              label: '菜單',
+              text: '菜單',
+            },
+          },
+        ],
+      },
+    },
+  ];
 }
 
 // ============================================================
