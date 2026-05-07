@@ -1441,12 +1441,6 @@ export default function ApplyPage() {
               <span style={S.planCheckIcon}>✓</span>
               <span>班級制（教練、助教、班長全程陪伴）</span>
             </li>
-            <li style={S.planBullet}>
-              <span style={S.planCheckIcon}>✓</span>
-              <span>
-                <span style={S.emphasis}>加贈：一對一教練課 1 堂（價值 $2,000）</span>
-              </span>
-            </li>
           </ul>
         </div>
 
