@@ -502,6 +502,21 @@ function extractHmacParams() {
   return out;
 }
 
+// 廣播模式（契約_apply廣播入口.md）：URL 沒帶完整 HMAC 時，看有沒有 userid + source
+//   ?userid=Uxxx&source=broadcast → 純信任 client query userid
+//   userid 必須符合 LINE 格式 /^U[0-9a-f]{32}$/，否則整段視為無效
+//   source 用 allowlist 擋亂值（防 ?source=competitor_xxx 污染）
+function extractPublicParams() {
+  if (typeof window === 'undefined') return null;
+  const p = new URLSearchParams(window.location.search);
+  const userid = p.get('userid');
+  if (!userid || !/^U[0-9a-f]{32}$/.test(userid)) return null;
+  const SOURCE_ALLOWED = new Set(['bot_q5', 'broadcast']);
+  const sourceParam = p.get('source');
+  const source = SOURCE_ALLOWED.has(sourceParam) ? sourceParam : 'broadcast';
+  return { userid, source, mode: 'public' };
+}
+
 function SectionHeading({ emoji, title }) {
   return (
     <div style={S.h2Wrapper}>
@@ -632,7 +647,9 @@ export default function ApplyPage() {
   const [liffError, setLiffError] = useState('');
 
   const hmacParams = useMemo(() => extractHmacParams(), []);
-  const hasValidUrl = !!hmacParams;
+  // 廣播模式：HMAC 沒帶就試廣播（漏斗優先，避免 URL 同時帶兩種被誤判）
+  const publicParams = useMemo(() => (!hmacParams ? extractPublicParams() : null), [hmacParams]);
+  const hasValidUrl = !!hmacParams || !!publicParams;
 
   useEffect(() => {
     let cancelled = false;
@@ -724,14 +741,17 @@ export default function ApplyPage() {
     const errs = validate();
     setFieldErrors(errs);
     if (Object.keys(errs).length > 0) return;
-    if (!hmacParams) {
+    if (!hmacParams && !publicParams) {
       setSubmitErr('這個頁面需要在 LINE 裡開啟。請回到 LINE 傳訊息告訴一休。');
       return;
     }
     setSubmitting(true);
     try {
+      // hmacParams 帶完整 6 欄 HMAC（含 sig）；publicParams 帶 userid + source + mode='public'
+      // server 端依 body.sig / body.mode 分流（既有 HMAC verify 不動）
+      const baseParams = hmacParams || publicParams;
       const payload = {
-        ...hmacParams,
+        ...baseParams,
         real_name: form.real_name.trim(),
         phone: form.phone,
         email: form.email.trim(),
@@ -1440,12 +1460,6 @@ export default function ApplyPage() {
             <li style={S.planBullet}>
               <span style={S.planCheckIcon}>✓</span>
               <span>班級制（教練、助教、班長全程陪伴）</span>
-            </li>
-            <li style={S.planBullet}>
-              <span style={S.planCheckIcon}>✓</span>
-              <span>
-                <span style={S.emphasis}>加贈：一對一教練課 1 堂（價值 $2,000）</span>
-              </span>
             </li>
           </ul>
         </div>
