@@ -30,6 +30,10 @@ const PROGRAM_ALLOWED = new Set(['12weeks', '4weeks_trial']);
 const PHONE_RE = /^09\d{8}$/; // 台灣手機
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// 廣播模式（契約_apply廣播入口.md）
+const USERID_RE = /^U[0-9a-f]{32}$/;
+const SOURCE_ALLOWED_PUBLIC = new Set(['bot_q5', 'broadcast']);
+
 export async function POST(request) {
   // 1. Parse body
   let body;
@@ -39,27 +43,53 @@ export async function POST(request) {
     return NextResponse.json({ error: 'invalid_body' }, { status: 400 });
   }
 
-  // 2. HMAC shape check + verify
-  const hmacPayload = {};
-  for (const k of HMAC_KEYS) {
-    const v = body[k];
-    if (v === undefined || v === null) {
-      console.warn('[apply/submit] missing HMAC key:', k);
-      return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
-    }
-    if (typeof v !== 'string' && typeof v !== 'number') {
-      console.warn('[apply/submit] bad HMAC key type:', k);
-      return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
-    }
-    hmacPayload[k] = v;
-  }
+  // 2. 認證分流（雙模式 — 契約_apply廣播入口.md）
+  //    - body 含 sig → 漏斗模式（HMAC verify）
+  //    - body.mode === 'public' → 廣播模式（純信任 client userid + source allowlist）
+  //    - 都不符 → 400 invalid_mode
+  let resolvedUserid;
+  let resolvedSource;
+  let resolvedMode;
 
-  const verifyResult = verifyQ5ApplySig(hmacPayload);
-  if (!verifyResult.ok) {
-    console.warn('[apply/submit] verify failed:', verifyResult.reason, {
-      userid: body.userid,
-    });
-    return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
+  if (body.sig !== undefined && body.sig !== null) {
+    // 漏斗模式：HMAC 6 欄完整 shape check + verify（既有邏輯不動）
+    const hmacPayload = {};
+    for (const k of HMAC_KEYS) {
+      const v = body[k];
+      if (v === undefined || v === null) {
+        console.warn('[apply/submit] private mode: missing HMAC key:', k);
+        return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
+      }
+      if (typeof v !== 'string' && typeof v !== 'number') {
+        console.warn('[apply/submit] private mode: bad HMAC key type:', k);
+        return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
+      }
+      hmacPayload[k] = v;
+    }
+    const verifyResult = verifyQ5ApplySig(hmacPayload);
+    if (!verifyResult.ok) {
+      console.warn('[apply/submit] private mode: verify failed:', verifyResult.reason, {
+        userid: body.userid,
+      });
+      return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
+    }
+    resolvedUserid = body.userid;
+    resolvedSource = 'bot_q5';
+    resolvedMode = 'private';
+  } else if (body.mode === 'public') {
+    // 廣播模式：純信任 client query userid（一休 5/6 拍板取捨：摩擦 > 安全潔癖）
+    // 攻擊面保護：partial unique index 鎖同人多筆 pending（migration_022）
+    if (typeof body.userid !== 'string' || !USERID_RE.test(body.userid)) {
+      console.warn('[apply/submit] public mode: invalid userid format:', body.userid);
+      return NextResponse.json({ error: 'invalid_userid' }, { status: 400 });
+    }
+    // ?source server-side allowlist（決策 5）— 不在 allowlist 的 fallback 'broadcast'
+    resolvedSource = SOURCE_ALLOWED_PUBLIC.has(body.source) ? body.source : 'broadcast';
+    resolvedUserid = body.userid;
+    resolvedMode = 'public';
+  } else {
+    console.warn('[apply/submit] invalid_mode: missing both sig and mode=public');
+    return NextResponse.json({ error: 'invalid_mode' }, { status: 400 });
   }
 
   // 3. 表單 shape check
@@ -122,10 +152,10 @@ export async function POST(request) {
   const pricingState = await getPricingState();
   const { final_price, tier, super_early_bird_applied } = calcFinalPrice(program_choice, pricingState);
 
-  // 4. 呼叫 submit_application RPC
+  // 4. 呼叫 submit_application RPC（雙模式：private 沿用 / public 進 upsert 分支）
   try {
     const { data, error } = await supabase.rpc('submit_application', {
-      p_line_user_id: body.userid,
+      p_line_user_id: resolvedUserid,
       p_real_name: real_name.trim(),
       p_phone: phone,
       p_email: email.trim(),
@@ -136,16 +166,22 @@ export async function POST(request) {
       p_display_name: display_name ? String(display_name).trim() : null,
       p_program_choice: program_choice,
       p_agreed_refund_policy: true,
-      p_source: 'bot_q5',
+      p_source: resolvedSource,
       p_super_early_bird_applied: super_early_bird_applied,
       p_final_price: final_price,
+      p_mode: resolvedMode,
     });
 
     if (error) {
       if (error.code === 'P0002') {
-        // user_not_found
-        console.warn('[apply/submit] user_not_found:', body.userid);
+        // user_not_found（只會在 private mode raise — public mode 自動 upsert）
+        console.warn('[apply/submit] user_not_found:', resolvedUserid);
         return NextResponse.json({ error: 'user_not_found' }, { status: 404 });
+      }
+      if (error.code === '23505') {
+        // partial unique index 擋同人重複 pending（雙擊 / 廣播模式 curl 攻擊）
+        console.warn('[apply/submit] race_lost (already_pending):', resolvedUserid);
+        return NextResponse.json({ error: 'race_lost' }, { status: 409 });
       }
       console.error('[apply/submit] RPC failed:', error);
       return NextResponse.json({ error: 'system_busy' }, { status: 503 });
@@ -191,7 +227,7 @@ export async function POST(request) {
       email: email.trim(),
       program_choice,
       display_name: display_name ? String(display_name).trim() : null,
-      line_user_id: body.userid,
+      line_user_id: resolvedUserid,
       tier,
       final_price,
     });
