@@ -3334,59 +3334,10 @@ function AnalyticsTab() {
             />
           </div>
 
-          {/* 「再想想」分佈 */}
+          {/* 每段訊息互動反應 */}
           <div style={{ marginTop: 24 }}>
-            <h3 style={styles.analyticsH3}>🤔 用戶按「我再想想」分佈</h3>
-            <div style={styles.analyticsMaybeGrid}>
-              {['msg1', 'msg2', 'msg3', 'msg4'].map((k) => (
-                <div key={k} style={styles.analyticsKpi}>
-                  <div style={styles.analyticsKpiNum}>{stats.maybe_dist[k]}</div>
-                  <div style={styles.analyticsKpiLabel}>{k} 再想想</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* AI 意願分類 + 觸發來源 */}
-          <div style={{ marginTop: 24, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div>
-              <h3 style={styles.analyticsH3}>🎯 AI 意願分類（Q5 入口）</h3>
-              <div style={styles.analyticsKpiGrid}>
-                <div style={styles.analyticsKpi}>
-                  <div style={{ ...styles.analyticsKpiNum, color: '#10b981' }}>{stats.intent_dist.continue}</div>
-                  <div style={styles.analyticsKpiLabel}>continue 有意願</div>
-                </div>
-                <div style={styles.analyticsKpi}>
-                  <div style={{ ...styles.analyticsKpiNum, color: '#94a3b8' }}>{stats.intent_dist.decline}</div>
-                  <div style={styles.analyticsKpiLabel}>decline 婉拒</div>
-                </div>
-                <div style={styles.analyticsKpi}>
-                  <div style={{ ...styles.analyticsKpiNum, color: '#ef4444' }}>{stats.intent_dist.ai_failed}</div>
-                  <div style={styles.analyticsKpiLabel}>ai_failed</div>
-                </div>
-                <div style={styles.analyticsKpi}>
-                  <div style={{ ...styles.analyticsKpiNum, color: '#94a3b8' }}>{stats.intent_dist.null}</div>
-                  <div style={styles.analyticsKpiLabel}>未分類</div>
-                </div>
-              </div>
-            </div>
-            <div>
-              <h3 style={styles.analyticsH3}>🔁 觸發來源</h3>
-              <div style={styles.analyticsKpiGrid}>
-                <div style={styles.analyticsKpi}>
-                  <div style={styles.analyticsKpiNum}>{stats.trigger_dist.passive}</div>
-                  <div style={styles.analyticsKpiLabel}>被動（用戶觸發）</div>
-                </div>
-                <div style={styles.analyticsKpi}>
-                  <div style={styles.analyticsKpiNum}>{stats.trigger_dist.active}</div>
-                  <div style={styles.analyticsKpiLabel}>主動（cron 推）</div>
-                </div>
-                <div style={styles.analyticsKpi}>
-                  <div style={styles.analyticsKpiNum}>{stats.trigger_dist.null}</div>
-                  <div style={styles.analyticsKpiLabel}>未標記</div>
-                </div>
-              </div>
-            </div>
+            <h3 style={styles.analyticsH3}>💬 每段訊息互動反應（看哪段卡住、哪段勾不到人）</h3>
+            <MsgReactions reactions={stats.msg_reactions} />
           </div>
         </>
       )}
@@ -3415,14 +3366,15 @@ function AnalyticsTab() {
 // ============================================================
 
 function OverallFunnel({ overall }) {
-  const denom = overall.total || 1;
   const q5Denom = overall.in_q5 || 1;
   const rows = [
     { label: '總用戶', value: overall.total, denom: null },
-    { label: '↓ 進 B 軌對話（Q1）', value: overall.in_b_track, denom: overall.total },
-    { label: '↓ 答完 Q4', value: overall.finished_q4, denom: overall.total },
-    { label: '↓ 進 Q5 漏斗', value: overall.in_q5, denom: overall.total, divider: true },
-    { label: '  ↓ 收到 msg1 故事', value: overall.msg1_sent, denom: q5Denom },
+    { label: '↓ 進 Q1（被推問體重）', value: overall.in_q1, denom: overall.total },
+    { label: '↓ 答完 Q1 → 進 Q2', value: overall.in_q2, denom: overall.total },
+    { label: '↓ 答完 Q2 → 進 Q3（path 確定）', value: overall.in_q3, denom: overall.total },
+    { label: '↓ 答完 Q3 → 進 Q4', value: overall.in_q4, denom: overall.total },
+    { label: '↓ 答完 Q4', value: overall.finished_q4, denom: overall.total, divider: true },
+    { label: '↓ 進 Q5 漏斗（收到 msg1）', value: overall.in_q5, denom: overall.total },
     { label: '  ↓ 收到 msg2 介紹', value: overall.msg2_sent, denom: q5Denom },
     { label: '  ↓ 收到 msg3 報價', value: overall.msg3_sent, denom: q5Denom },
     { label: '  ↓ 收到 msg4 提醒', value: overall.msg4_sent, denom: q5Denom },
@@ -3466,7 +3418,12 @@ function GroupedFunnel({ groups, labels, data }) {
         </thead>
         <tbody>
           {[
-            { key: 'in_q5', label: '進 Q5' },
+            { key: 'in_q1', label: '進 Q1' },
+            { key: 'in_q2', label: '答完 Q1' },
+            { key: 'in_q3', label: '答完 Q2' },
+            { key: 'in_q4', label: '答完 Q3' },
+            { key: 'finished_q4', label: '答完 Q4', divider: true },
+            { key: 'in_q5', label: '進 Q5（收 msg1）' },
             { key: 'msg2_sent', label: '收到 msg2' },
             { key: 'msg3_sent', label: '收到 msg3' },
             { key: 'msg4_sent', label: '收到 msg4' },
@@ -3474,7 +3431,7 @@ function GroupedFunnel({ groups, labels, data }) {
             { key: 'submitted', label: '送出表單' },
             { key: 'paid', label: '✅ 付款' },
           ].map((row) => (
-            <tr key={row.key}>
+            <tr key={row.key} style={row.divider ? { borderBottom: '2px solid #d1d5db' } : undefined}>
               <td style={styles.analyticsTd}>{row.label}</td>
               {groups.map((g) => (
                 <td key={g} style={styles.analyticsTd}>{data[g]?.[row.key] || 0}</td>
@@ -3572,6 +3529,85 @@ function CrossTable({ data, expanded, onToggle, onViewList }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function MsgReactions({ reactions }) {
+  const msgs = [
+    { key: 'msg1', label: 'msg1 故事承接', nextLabel: '想知道更多' },
+    { key: 'msg2', label: 'msg2 ABC 介紹', nextLabel: '想看 12 週' },
+    { key: 'msg3', label: 'msg3 報價', nextLabel: '點 /apply' },
+    { key: 'msg4', label: 'msg4 最後提醒', nextLabel: '點 /apply' },
+  ];
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={styles.analyticsTable}>
+        <thead>
+          <tr>
+            <th style={styles.analyticsTh}>反應</th>
+            {msgs.map((m) => (
+              <th key={m.key} style={styles.analyticsTh}>{m.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr style={{ background: '#f9fafb', fontWeight: 600 }}>
+            <td style={styles.analyticsTd}>收到</td>
+            {msgs.map((m) => (
+              <td key={m.key} style={styles.analyticsTd}>{reactions[m.key].sent}</td>
+            ))}
+          </tr>
+          <tr>
+            <td style={styles.analyticsTd}>✅ 往下走</td>
+            {msgs.map((m) => {
+              const r = reactions[m.key];
+              return (
+                <td key={m.key} style={styles.analyticsTd}>
+                  {r.next} <span style={{ color: '#888', fontSize: 11 }}>({pct(r.next, r.sent)})</span>
+                </td>
+              );
+            })}
+          </tr>
+          <tr>
+            <td style={styles.analyticsTd}>🤔 我再想想</td>
+            {msgs.map((m) => {
+              const r = reactions[m.key];
+              return (
+                <td key={m.key} style={styles.analyticsTd}>
+                  {r.maybe} <span style={{ color: '#888', fontSize: 11 }}>({pct(r.maybe, r.sent)})</span>
+                </td>
+              );
+            })}
+          </tr>
+          <tr>
+            <td style={styles.analyticsTd}>❓ 我有問題</td>
+            {msgs.map((m) => {
+              const r = reactions[m.key];
+              return (
+                <td key={m.key} style={styles.analyticsTd}>
+                  {r.question} <span style={{ color: '#888', fontSize: 11 }}>({pct(r.question, r.sent)})</span>
+                </td>
+              );
+            })}
+          </tr>
+          <tr style={{ color: '#888' }}>
+            <td style={styles.analyticsTd}>🔕 沒回應 / 等待中</td>
+            {msgs.map((m) => {
+              const r = reactions[m.key];
+              const noResp = r.sent - r.next - r.maybe - r.question;
+              return (
+                <td key={m.key} style={styles.analyticsTd}>
+                  {noResp} <span style={{ fontSize: 11 }}>({pct(noResp, r.sent)})</span>
+                </td>
+              );
+            })}
+          </tr>
+        </tbody>
+      </table>
+      <p style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
+        ★ 互動率（往下走 + 想想 + 問題）低於 50% 代表這段文案勾不到人；「沒回應」高代表需要等用戶 / cron 自動接手。msg3/4「往下走」= 點 /apply 進報名頁。
+      </p>
     </div>
   );
 }
