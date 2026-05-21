@@ -15,6 +15,7 @@ import {
   markApplicationCancelled,
   updatePaymentInfo,
 } from '../../../lib/applications.js';
+import { getFunnelStats, getFunnelUsers } from '../../../lib/funnel-analytics.js';
 
 function unauthorized() {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -55,6 +56,10 @@ export async function GET(request) {
       return handleExportApplications(searchParams);
     case 'user_detail':
       return handleGetUserDetail(searchParams);
+    case 'funnel_stats':
+      return handleGetFunnelStats(searchParams);
+    case 'funnel_users':
+      return handleGetFunnelUsers(searchParams);
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -1168,4 +1173,38 @@ async function handleUpdateApplicationPayment(data) {
     return NextResponse.json({ error: result.error, detail: result.detail }, { status });
   }
   return NextResponse.json(result);
+}
+
+// ============================================================
+// 漏斗分析（Phase: funnel-analytics）
+// ============================================================
+async function handleGetFunnelStats(searchParams) {
+  const rangeRaw = searchParams.get('range') || 'all';
+  const rangeDays = rangeRaw === '7d' ? 7 : rangeRaw === '30d' ? 30 : 0;
+
+  try {
+    const data = await getFunnelStats({ rangeDays });
+    return NextResponse.json({ ok: true, ...data });
+  } catch (err) {
+    console.error('[admin/funnel_stats] error:', err);
+    return NextResponse.json({ error: err?.message || 'funnel_stats_failed' }, { status: 500 });
+  }
+}
+
+async function handleGetFunnelUsers(searchParams) {
+  const rangeRaw = searchParams.get('range') || 'all';
+  const rangeDays = rangeRaw === '7d' ? 7 : rangeRaw === '30d' ? 30 : 0;
+  const paths = (searchParams.get('paths') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const metabolismTypes = (searchParams.get('metabolism') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const daysStuck = parseInt(searchParams.get('days_stuck') || '0', 10) || 0;
+  const enrolledRaw = searchParams.get('enrolled');
+  const enrolled = enrolledRaw === 'true' ? true : enrolledRaw === 'false' ? false : null;
+
+  try {
+    const data = await getFunnelUsers({ paths, metabolismTypes, daysStuck, enrolled, rangeDays });
+    return NextResponse.json({ ok: true, ...data });
+  } catch (err) {
+    console.error('[admin/funnel_users] error:', err);
+    return NextResponse.json({ error: err?.message || 'funnel_users_failed' }, { status: 500 });
+  }
 }

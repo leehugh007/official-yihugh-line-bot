@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 
 // ============================================================
 // 常數
@@ -552,6 +552,12 @@ export default function AdminPage() {
           💰 定價
         </button>
         <button
+          style={tab === 'analytics' ? styles.tabActive : styles.tab}
+          onClick={() => setTab('analytics')}
+        >
+          📊 分析
+        </button>
+        <button
           style={tab === 'settings' ? styles.tabActive : styles.tab}
           onClick={() => setTab('settings')}
         >
@@ -767,6 +773,13 @@ export default function AdminPage() {
             settings={settings}
             onUpdated={(key, value) => setSettings(prev => ({ ...prev, [key]: value }))}
           />
+        </div>
+      )}
+
+      {/* 分析 Tab */}
+      {tab === 'analytics' && (
+        <div style={styles.section}>
+          <AnalyticsTab />
         </div>
       )}
 
@@ -3118,6 +3131,669 @@ function downloadApplicationsCsv(rows, filter) {
 }
 
 // ============================================================
+// 📊 分析 Tab（Q5 漏斗分析）
+// ============================================================
+
+const ANALYTICS_PATHS = ['healthCheck', 'rebound', 'postpartum', 'eatOut', 'other'];
+const ANALYTICS_METABOLISM = ['highRPM', 'rollerCoaster', 'burnout', 'powerSave', 'steady'];
+const ANALYTICS_PATH_LABELS = {
+  healthCheck: '健檢紅字',
+  rebound: '復胖',
+  postpartum: '產後',
+  eatOut: '外食',
+  other: '其他',
+};
+const ANALYTICS_METABOLISM_LABELS = {
+  highRPM: '高轉速',
+  rollerCoaster: '溜溜球',
+  burnout: '倦怠',
+  powerSave: '省電',
+  steady: '穩定',
+};
+const ANALYTICS_STAGE_LABELS = {
+  stuck_msg1: '卡在 msg1（沒回應）',
+  stuck_msg2: '卡在 msg2（沒回應）',
+  stuck_msg3: '卡在 msg3（沒點 /apply）',
+  stuck_msg4: '卡在 msg4（沒點 /apply）',
+  clicked_no_submit: '點了 /apply 但沒送單',
+  submitted_pending: '送單未付款',
+  paid: '已付款',
+};
+const ANALYTICS_STAGE_KEYS = Object.keys(ANALYTICS_STAGE_LABELS);
+
+function pct(num, denom) {
+  if (!denom) return '—';
+  return `${((num / denom) * 100).toFixed(1)}%`;
+}
+
+function daysAgo(iso) {
+  if (!iso) return '—';
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (days === 0) return '今天';
+  if (days === 1) return '1 天前';
+  return `${days} 天前`;
+}
+
+function AnalyticsTab() {
+  const [range, setRange] = useState('all'); // all | 7d | 30d
+  const [stats, setStats] = useState(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [groupView, setGroupView] = useState('overall'); // overall | by_path | by_metabolism
+  const [expandedPaths, setExpandedPaths] = useState({});
+
+  // 下半部
+  const [filter, setFilter] = useState({
+    paths: [],
+    metabolismTypes: [],
+    daysStuck: 0,
+    enrolled: 'false', // 'all' | 'true' | 'false'
+  });
+  const [users, setUsers] = useState(null);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [expandedStages, setExpandedStages] = useState({});
+
+  const loadStats = useCallback(async () => {
+    setStatsLoading(true);
+    try {
+      const res = await fetch(apiUrl('funnel_stats') + `&range=${range}`);
+      const data = await res.json();
+      setStats(data);
+    } finally {
+      setStatsLoading(false);
+    }
+  }, [range]);
+
+  const loadUsers = useCallback(async (overrideFilter) => {
+    const f = overrideFilter || filter;
+    setUsersLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (f.paths.length) params.set('paths', f.paths.join(','));
+      if (f.metabolismTypes.length) params.set('metabolism', f.metabolismTypes.join(','));
+      if (f.daysStuck > 0) params.set('days_stuck', String(f.daysStuck));
+      if (f.enrolled === 'true' || f.enrolled === 'false') params.set('enrolled', f.enrolled);
+      params.set('range', range);
+      const res = await fetch(apiUrl('funnel_users') + '&' + params.toString());
+      const data = await res.json();
+      setUsers(data);
+      setExpandedStages({});
+    } finally {
+      setUsersLoading(false);
+    }
+  }, [filter, range]);
+
+  useEffect(() => { loadStats(); }, [loadStats]);
+
+  // 上半部 drill-down「看名單」按鈕：套條件 + 滾下半部
+  const handleViewList = (path, metabolismType) => {
+    const newFilter = {
+      paths: path ? [path] : [],
+      metabolismTypes: metabolismType ? [metabolismType] : [],
+      daysStuck: 0,
+      enrolled: 'false',
+    };
+    setFilter(newFilter);
+    loadUsers(newFilter);
+    setTimeout(() => {
+      document.getElementById('funnel-users-section')?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
+
+  const togglePath = (p) => setExpandedPaths((prev) => ({ ...prev, [p]: !prev[p] }));
+  const toggleStage = (s) => setExpandedStages((prev) => ({ ...prev, [s]: !prev[s] }));
+  const expandAllPaths = () => {
+    const next = {};
+    ANALYTICS_PATHS.forEach((p) => { next[p] = true; });
+    setExpandedPaths(next);
+  };
+  const collapseAllPaths = () => setExpandedPaths({});
+
+  return (
+    <div>
+      <h2 style={styles.sectionTitle}>📊 Q5 漏斗分析</h2>
+      <p style={styles.sectionDesc}>看用戶卡在哪段、哪種組合轉換最好、撈名單為後續推播做準備</p>
+
+      {/* 時間範圍 */}
+      <div style={styles.analyticsToolbar}>
+        <span style={{ fontSize: 13, color: '#666', marginRight: 8 }}>時間範圍（依加入時間）：</span>
+        {[
+          { v: 'all', l: '全部' },
+          { v: '7d', l: '近 7 天' },
+          { v: '30d', l: '近 30 天' },
+        ].map((opt) => (
+          <button
+            key={opt.v}
+            onClick={() => setRange(opt.v)}
+            style={range === opt.v ? styles.analyticsChipActive : styles.analyticsChip}
+          >
+            {opt.l}
+          </button>
+        ))}
+        {statsLoading && <span style={{ fontSize: 12, color: '#888', marginLeft: 12 }}>載入中…</span>}
+      </div>
+
+      {!stats?.ok && !statsLoading && (
+        <div style={{ ...styles.card, marginTop: 12 }}>
+          {stats?.error ? `❌ ${stats.error}` : '尚未載入資料'}
+        </div>
+      )}
+
+      {stats?.ok && (
+        <>
+          {/* ============ 上半部：總覽 ============ */}
+
+          {/* 分組視圖切換 */}
+          <div style={{ ...styles.analyticsToolbar, marginTop: 16 }}>
+            <span style={{ fontSize: 13, color: '#666', marginRight: 8 }}>整體漏斗檢視：</span>
+            {[
+              { v: 'overall', l: '整體' },
+              { v: 'by_path', l: '按 Path' },
+              { v: 'by_metabolism', l: '按代謝類型' },
+            ].map((opt) => (
+              <button
+                key={opt.v}
+                onClick={() => setGroupView(opt.v)}
+                style={groupView === opt.v ? styles.analyticsChipActive : styles.analyticsChip}
+              >
+                {opt.l}
+              </button>
+            ))}
+          </div>
+
+          {/* 漏斗主表 */}
+          {groupView === 'overall' && <OverallFunnel overall={stats.overall} />}
+          {groupView === 'by_path' && (
+            <GroupedFunnel
+              groups={ANALYTICS_PATHS}
+              labels={ANALYTICS_PATH_LABELS}
+              data={stats.by_path}
+            />
+          )}
+          {groupView === 'by_metabolism' && (
+            <GroupedFunnel
+              groups={ANALYTICS_METABOLISM}
+              labels={ANALYTICS_METABOLISM_LABELS}
+              data={stats.by_metabolism}
+            />
+          )}
+
+          {/* Path × 代謝類型 交叉表 */}
+          <div style={{ marginTop: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <h3 style={styles.analyticsH3}>Path × 代謝類型（點 ▼ 展開細節，點 👁 撈該組名單）</h3>
+              <div>
+                <button style={styles.analyticsLinkBtn} onClick={expandAllPaths}>展開全部</button>
+                <button style={styles.analyticsLinkBtn} onClick={collapseAllPaths}>收合全部</button>
+              </div>
+            </div>
+            <CrossTable
+              data={stats.by_path_metabolism}
+              expanded={expandedPaths}
+              onToggle={togglePath}
+              onViewList={handleViewList}
+            />
+          </div>
+
+          {/* 「再想想」分佈 */}
+          <div style={{ marginTop: 24 }}>
+            <h3 style={styles.analyticsH3}>🤔 用戶按「我再想想」分佈</h3>
+            <div style={styles.analyticsMaybeGrid}>
+              {['msg1', 'msg2', 'msg3', 'msg4'].map((k) => (
+                <div key={k} style={styles.analyticsKpi}>
+                  <div style={styles.analyticsKpiNum}>{stats.maybe_dist[k]}</div>
+                  <div style={styles.analyticsKpiLabel}>{k} 再想想</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* AI 意願分類 + 觸發來源 */}
+          <div style={{ marginTop: 24, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <h3 style={styles.analyticsH3}>🎯 AI 意願分類（Q5 入口）</h3>
+              <div style={styles.analyticsKpiGrid}>
+                <div style={styles.analyticsKpi}>
+                  <div style={{ ...styles.analyticsKpiNum, color: '#10b981' }}>{stats.intent_dist.continue}</div>
+                  <div style={styles.analyticsKpiLabel}>continue 有意願</div>
+                </div>
+                <div style={styles.analyticsKpi}>
+                  <div style={{ ...styles.analyticsKpiNum, color: '#94a3b8' }}>{stats.intent_dist.decline}</div>
+                  <div style={styles.analyticsKpiLabel}>decline 婉拒</div>
+                </div>
+                <div style={styles.analyticsKpi}>
+                  <div style={{ ...styles.analyticsKpiNum, color: '#ef4444' }}>{stats.intent_dist.ai_failed}</div>
+                  <div style={styles.analyticsKpiLabel}>ai_failed</div>
+                </div>
+                <div style={styles.analyticsKpi}>
+                  <div style={{ ...styles.analyticsKpiNum, color: '#94a3b8' }}>{stats.intent_dist.null}</div>
+                  <div style={styles.analyticsKpiLabel}>未分類</div>
+                </div>
+              </div>
+            </div>
+            <div>
+              <h3 style={styles.analyticsH3}>🔁 觸發來源</h3>
+              <div style={styles.analyticsKpiGrid}>
+                <div style={styles.analyticsKpi}>
+                  <div style={styles.analyticsKpiNum}>{stats.trigger_dist.passive}</div>
+                  <div style={styles.analyticsKpiLabel}>被動（用戶觸發）</div>
+                </div>
+                <div style={styles.analyticsKpi}>
+                  <div style={styles.analyticsKpiNum}>{stats.trigger_dist.active}</div>
+                  <div style={styles.analyticsKpiLabel}>主動（cron 推）</div>
+                </div>
+                <div style={styles.analyticsKpi}>
+                  <div style={styles.analyticsKpiNum}>{stats.trigger_dist.null}</div>
+                  <div style={styles.analyticsKpiLabel}>未標記</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ============ 下半部：用戶分群分析 ============ */}
+      <div id="funnel-users-section" style={{ marginTop: 32, borderTop: '2px solid #e5e7eb', paddingTop: 20 }}>
+        <h2 style={styles.sectionTitle}>🔍 用戶分群分析</h2>
+        <p style={styles.sectionDesc}>勾選條件 → 看這群人卡在哪段 → 展開拿名單</p>
+
+        <FilterPanel filter={filter} setFilter={setFilter} onApply={() => loadUsers()} loading={usersLoading} />
+
+        {users?.ok && (
+          <UsersSummary
+            users={users}
+            expandedStages={expandedStages}
+            onToggleStage={toggleStage}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// 上半部子元件
+// ============================================================
+
+function OverallFunnel({ overall }) {
+  const denom = overall.total || 1;
+  const q5Denom = overall.in_q5 || 1;
+  const rows = [
+    { label: '總用戶', value: overall.total, denom: null },
+    { label: '↓ 進 B 軌對話（Q1）', value: overall.in_b_track, denom: overall.total },
+    { label: '↓ 答完 Q4', value: overall.finished_q4, denom: overall.total },
+    { label: '↓ 進 Q5 漏斗', value: overall.in_q5, denom: overall.total, divider: true },
+    { label: '  ↓ 收到 msg1 故事', value: overall.msg1_sent, denom: q5Denom },
+    { label: '  ↓ 收到 msg2 介紹', value: overall.msg2_sent, denom: q5Denom },
+    { label: '  ↓ 收到 msg3 報價', value: overall.msg3_sent, denom: q5Denom },
+    { label: '  ↓ 收到 msg4 提醒', value: overall.msg4_sent, denom: q5Denom },
+    { label: '  ↓ 點了 /apply', value: overall.clicked_apply, denom: q5Denom },
+    { label: '  ↓ 送出表單', value: overall.submitted, denom: q5Denom },
+    { label: '  ↓ 完成付款 ⭐', value: overall.paid, denom: q5Denom, gold: true },
+  ];
+  return (
+    <div style={styles.analyticsCard}>
+      {rows.map((r, i) => (
+        <div
+          key={i}
+          style={{
+            ...styles.analyticsFunnelRow,
+            ...(r.gold ? { background: '#fef9c3' } : {}),
+            ...(r.divider ? { borderTop: '1px dashed #d1d5db', marginTop: 4, paddingTop: 8 } : {}),
+          }}
+        >
+          <span style={{ flex: 1 }}>{r.label}</span>
+          <span style={{ fontWeight: 600 }}>{r.value}</span>
+          <span style={{ color: '#888', minWidth: 60, textAlign: 'right' }}>
+            {r.denom ? pct(r.value, r.denom) : ''}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GroupedFunnel({ groups, labels, data }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={styles.analyticsTable}>
+        <thead>
+          <tr>
+            <th style={styles.analyticsTh}>階段</th>
+            {groups.map((g) => (
+              <th key={g} style={styles.analyticsTh}>{labels[g]}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {[
+            { key: 'in_q5', label: '進 Q5' },
+            { key: 'msg2_sent', label: '收到 msg2' },
+            { key: 'msg3_sent', label: '收到 msg3' },
+            { key: 'msg4_sent', label: '收到 msg4' },
+            { key: 'clicked_apply', label: '點 /apply' },
+            { key: 'submitted', label: '送出表單' },
+            { key: 'paid', label: '✅ 付款' },
+          ].map((row) => (
+            <tr key={row.key}>
+              <td style={styles.analyticsTd}>{row.label}</td>
+              {groups.map((g) => (
+                <td key={g} style={styles.analyticsTd}>{data[g]?.[row.key] || 0}</td>
+              ))}
+            </tr>
+          ))}
+          <tr style={{ background: '#fef9c3' }}>
+            <td style={{ ...styles.analyticsTd, fontWeight: 600 }}>付款率</td>
+            {groups.map((g) => (
+              <td key={g} style={{ ...styles.analyticsTd, fontWeight: 600 }}>
+                {pct(data[g]?.paid || 0, data[g]?.in_q5 || 0)}
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CrossTable({ data, expanded, onToggle, onViewList }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={styles.analyticsTable}>
+        <thead>
+          <tr>
+            <th style={styles.analyticsTh}>Path / 代謝類型</th>
+            <th style={styles.analyticsTh}>進 Q5</th>
+            <th style={styles.analyticsTh}>msg3</th>
+            <th style={styles.analyticsTh}>點 apply</th>
+            <th style={styles.analyticsTh}>送單</th>
+            <th style={styles.analyticsTh}>付款</th>
+            <th style={styles.analyticsTh}>付款率</th>
+            <th style={styles.analyticsTh}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {ANALYTICS_PATHS.map((p) => {
+            const pData = data[p];
+            if (!pData) return null;
+            const pTotal = Object.values(pData).reduce(
+              (acc, m) => {
+                acc.in_q5 += m.in_q5;
+                acc.msg3_sent += m.msg3_sent;
+                acc.clicked_apply += m.clicked_apply;
+                acc.submitted += m.submitted;
+                acc.paid += m.paid;
+                return acc;
+              },
+              { in_q5: 0, msg3_sent: 0, clicked_apply: 0, submitted: 0, paid: 0 }
+            );
+            return (
+              <Fragment key={p}>
+                <tr style={{ background: '#f9fafb', fontWeight: 600 }}>
+                  <td style={styles.analyticsTd}>
+                    <button onClick={() => onToggle(p)} style={styles.analyticsExpandBtn}>
+                      {expanded[p] ? '▼' : '▶'} {ANALYTICS_PATH_LABELS[p]}
+                    </button>
+                  </td>
+                  <td style={styles.analyticsTd}>{pTotal.in_q5}</td>
+                  <td style={styles.analyticsTd}>{pTotal.msg3_sent}</td>
+                  <td style={styles.analyticsTd}>{pTotal.clicked_apply}</td>
+                  <td style={styles.analyticsTd}>{pTotal.submitted}</td>
+                  <td style={styles.analyticsTd}>{pTotal.paid}</td>
+                  <td style={styles.analyticsTd}>{pct(pTotal.paid, pTotal.in_q5)}</td>
+                  <td style={styles.analyticsTd}>
+                    <button style={styles.analyticsViewBtn} onClick={() => onViewList(p, null)}>👁</button>
+                  </td>
+                </tr>
+                {expanded[p] && ANALYTICS_METABOLISM.map((m) => {
+                  const cell = pData[m] || { in_q5: 0, msg3_sent: 0, clicked_apply: 0, submitted: 0, paid: 0 };
+                  if (cell.in_q5 === 0) return (
+                    <tr key={m} style={{ color: '#cbd5e1' }}>
+                      <td style={{ ...styles.analyticsTd, paddingLeft: 28 }}>└ {ANALYTICS_METABOLISM_LABELS[m]}</td>
+                      <td style={styles.analyticsTd} colSpan={7}>—</td>
+                    </tr>
+                  );
+                  return (
+                    <tr key={m}>
+                      <td style={{ ...styles.analyticsTd, paddingLeft: 28 }}>└ {ANALYTICS_METABOLISM_LABELS[m]}</td>
+                      <td style={styles.analyticsTd}>{cell.in_q5}</td>
+                      <td style={styles.analyticsTd}>{cell.msg3_sent}</td>
+                      <td style={styles.analyticsTd}>{cell.clicked_apply}</td>
+                      <td style={styles.analyticsTd}>{cell.submitted}</td>
+                      <td style={styles.analyticsTd}>{cell.paid}</td>
+                      <td style={styles.analyticsTd}>{pct(cell.paid, cell.in_q5)}</td>
+                      <td style={styles.analyticsTd}>
+                        <button style={styles.analyticsViewBtn} onClick={() => onViewList(p, m)}>👁</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ============================================================
+// 下半部：篩選 + 名單摘要
+// ============================================================
+
+function FilterPanel({ filter, setFilter, onApply, loading }) {
+  const togglePath = (p) => {
+    setFilter((f) => ({
+      ...f,
+      paths: f.paths.includes(p) ? f.paths.filter((x) => x !== p) : [...f.paths, p],
+    }));
+  };
+  const toggleMetabolism = (m) => {
+    setFilter((f) => ({
+      ...f,
+      metabolismTypes: f.metabolismTypes.includes(m) ? f.metabolismTypes.filter((x) => x !== m) : [...f.metabolismTypes, m],
+    }));
+  };
+
+  return (
+    <div style={styles.analyticsCard}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 12, alignItems: 'center' }}>
+        <div style={{ fontSize: 13, color: '#666' }}>Path（多選）：</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {ANALYTICS_PATHS.map((p) => (
+            <button
+              key={p}
+              onClick={() => togglePath(p)}
+              style={filter.paths.includes(p) ? styles.analyticsChipActive : styles.analyticsChip}
+            >
+              {ANALYTICS_PATH_LABELS[p]}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 13, color: '#666' }}>代謝類型（多選）：</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {ANALYTICS_METABOLISM.map((m) => (
+            <button
+              key={m}
+              onClick={() => toggleMetabolism(m)}
+              style={filter.metabolismTypes.includes(m) ? styles.analyticsChipActive : styles.analyticsChip}
+            >
+              {ANALYTICS_METABOLISM_LABELS[m]}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 13, color: '#666' }}>停留天數：</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {[
+            { v: 0, l: '不限' },
+            { v: 3, l: '≥ 3 天' },
+            { v: 7, l: '≥ 7 天' },
+            { v: 14, l: '≥ 14 天' },
+          ].map((opt) => (
+            <button
+              key={opt.v}
+              onClick={() => setFilter((f) => ({ ...f, daysStuck: opt.v }))}
+              style={filter.daysStuck === opt.v ? styles.analyticsChipActive : styles.analyticsChip}
+            >
+              {opt.l}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 13, color: '#666' }}>是否已報名：</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {[
+            { v: 'all', l: '全部' },
+            { v: 'false', l: '未報名' },
+            { v: 'true', l: '已報名' },
+          ].map((opt) => (
+            <button
+              key={opt.v}
+              onClick={() => setFilter((f) => ({ ...f, enrolled: opt.v }))}
+              style={filter.enrolled === opt.v ? styles.analyticsChipActive : styles.analyticsChip}
+            >
+              {opt.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={onApply} disabled={loading} style={styles.btnPrimary}>
+          {loading ? '載入中…' : '套用篩選'}
+        </button>
+        <button
+          onClick={() => setFilter({ paths: [], metabolismTypes: [], daysStuck: 0, enrolled: 'false' })}
+          style={styles.btnGhost}
+        >
+          清除條件
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function UsersSummary({ users, expandedStages, onToggleStage }) {
+  const total = users.total;
+  // 找卡最多的那一段（排除已付款）
+  let maxStage = null;
+  let maxCount = 0;
+  ANALYTICS_STAGE_KEYS.forEach((k) => {
+    if (k === 'paid') return;
+    if ((users.by_stage[k]?.count || 0) > maxCount) {
+      maxCount = users.by_stage[k].count;
+      maxStage = k;
+    }
+  });
+
+  const allUsers = ANALYTICS_STAGE_KEYS.flatMap((k) => users.by_stage[k]?.users || []);
+
+  const copyUserIds = () => {
+    const ids = allUsers.map((u) => u.line_user_id).join(',');
+    navigator.clipboard.writeText(ids);
+    alert(`已複製 ${allUsers.length} 個 userId`);
+  };
+
+  const downloadCsv = () => {
+    const header = ['line_user_id', 'display_name', 'metabolism_type', 'path', '卡在', '最後互動', '加入時間'].join(',');
+    const rows = [];
+    ANALYTICS_STAGE_KEYS.forEach((k) => {
+      (users.by_stage[k]?.users || []).forEach((u) => {
+        rows.push([
+          u.line_user_id,
+          `"${(u.display_name || '').replace(/"/g, '""')}"`,
+          u.metabolism_type || '',
+          u.path || '',
+          ANALYTICS_STAGE_LABELS[k],
+          u.last_interaction_at || '',
+          u.joined_at || '',
+        ].join(','));
+      });
+    });
+    const csv = '﻿' + header + '\n' + rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `funnel_users_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={styles.analyticsCard}>
+        <div style={{ fontSize: 15, marginBottom: 12 }}>
+          總計 <strong>{total}</strong> 人
+          {total > 0 && (
+            <span style={{ float: 'right', display: 'flex', gap: 8 }}>
+              <button onClick={copyUserIds} style={styles.analyticsActionBtn}>📋 複製 userId</button>
+              <button onClick={downloadCsv} style={styles.analyticsActionBtn}>📥 下載 CSV</button>
+            </span>
+          )}
+        </div>
+
+        <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>📍 卡在哪段：</div>
+
+        {ANALYTICS_STAGE_KEYS.map((k) => {
+          const bucket = users.by_stage[k] || { count: 0, users: [] };
+          const isMax = k === maxStage && bucket.count > 0;
+          const isExpanded = expandedStages[k];
+          return (
+            <div key={k} style={{ ...styles.analyticsStageRow, ...(isMax ? { background: '#fef3c7' } : {}) }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span>
+                  {isMax && '★ '}
+                  {ANALYTICS_STAGE_LABELS[k]}
+                </span>
+                <span>
+                  <strong style={{ marginRight: 12 }}>{bucket.count} 人</strong>
+                  {bucket.count > 0 ? (
+                    <button onClick={() => onToggleStage(k)} style={styles.analyticsExpandBtn}>
+                      {isExpanded ? '▲ 收合' : '▼ 展開名單'}
+                    </button>
+                  ) : '—'}
+                </span>
+              </div>
+              {isExpanded && bucket.count > 0 && (
+                <div style={{ marginTop: 8, borderTop: '1px solid #e5e7eb', paddingTop: 8 }}>
+                  <table style={styles.analyticsTable}>
+                    <thead>
+                      <tr>
+                        <th style={styles.analyticsTh}>顯示名</th>
+                        <th style={styles.analyticsTh}>代謝類型</th>
+                        <th style={styles.analyticsTh}>Path</th>
+                        <th style={styles.analyticsTh}>最後互動</th>
+                        <th style={styles.analyticsTh}>userId</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bucket.users.map((u) => (
+                        <tr key={u.line_user_id}>
+                          <td style={styles.analyticsTd}>{u.display_name || '—'}</td>
+                          <td style={styles.analyticsTd}>{ANALYTICS_METABOLISM_LABELS[u.metabolism_type] || '—'}</td>
+                          <td style={styles.analyticsTd}>{ANALYTICS_PATH_LABELS[u.path] || '—'}</td>
+                          <td style={styles.analyticsTd}>{daysAgo(u.last_interaction_at)}</td>
+                          <td style={{ ...styles.analyticsTd, fontFamily: 'monospace', fontSize: 11, color: '#888' }}>
+                            {u.line_user_id.slice(0, 10)}…
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // 樣式
 // ============================================================
 const styles = {
@@ -3471,4 +4147,136 @@ const styles = {
   },
   loginTitle: { fontSize: 18, fontWeight: 600, margin: '0 0 24px', color: '#1a1a1a' },
   error: { color: '#ef4444', fontSize: 13, margin: '8px 0' },
+
+  // ============ 📊 分析 Tab 樣式 ============
+  analyticsToolbar: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    padding: '8px 0',
+  },
+  analyticsChip: {
+    padding: '6px 12px',
+    fontSize: 13,
+    border: '1px solid #d1d5db',
+    borderRadius: 16,
+    background: '#fff',
+    color: '#555',
+    cursor: 'pointer',
+  },
+  analyticsChipActive: {
+    padding: '6px 12px',
+    fontSize: 13,
+    border: '1px solid #2a9d6f',
+    borderRadius: 16,
+    background: '#2a9d6f',
+    color: '#fff',
+    cursor: 'pointer',
+    fontWeight: 500,
+  },
+  analyticsCard: {
+    background: '#fff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 12,
+  },
+  analyticsH3: {
+    fontSize: 14,
+    fontWeight: 600,
+    margin: '0 0 8px',
+    color: '#1a1a1a',
+  },
+  analyticsFunnelRow: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '8px 4px',
+    fontSize: 14,
+    borderRadius: 6,
+  },
+  analyticsTable: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: 13,
+    marginTop: 4,
+  },
+  analyticsTh: {
+    textAlign: 'left',
+    padding: '8px 10px',
+    background: '#f9fafb',
+    borderBottom: '1px solid #e5e7eb',
+    fontWeight: 600,
+    color: '#444',
+  },
+  analyticsTd: {
+    padding: '8px 10px',
+    borderBottom: '1px solid #f1f5f9',
+    color: '#1a1a1a',
+  },
+  analyticsExpandBtn: {
+    border: 'none',
+    background: 'none',
+    color: '#2a9d6f',
+    cursor: 'pointer',
+    fontSize: 13,
+    padding: 0,
+  },
+  analyticsViewBtn: {
+    border: '1px solid #d1d5db',
+    background: '#fff',
+    cursor: 'pointer',
+    fontSize: 14,
+    borderRadius: 6,
+    padding: '2px 8px',
+  },
+  analyticsLinkBtn: {
+    border: 'none',
+    background: 'none',
+    color: '#2a9d6f',
+    cursor: 'pointer',
+    fontSize: 12,
+    marginLeft: 8,
+  },
+  analyticsMaybeGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    gap: 8,
+  },
+  analyticsKpiGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gap: 8,
+  },
+  analyticsKpi: {
+    background: '#fff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    padding: '10px 12px',
+    textAlign: 'center',
+  },
+  analyticsKpiNum: {
+    fontSize: 22,
+    fontWeight: 700,
+    color: '#1a1a1a',
+  },
+  analyticsKpiLabel: {
+    fontSize: 11,
+    color: '#888',
+    marginTop: 2,
+  },
+  analyticsStageRow: {
+    padding: '10px 12px',
+    borderBottom: '1px solid #f1f5f9',
+    fontSize: 14,
+  },
+  analyticsActionBtn: {
+    fontSize: 12,
+    padding: '4px 10px',
+    border: '1px solid #2a9d6f',
+    background: '#fff',
+    color: '#2a9d6f',
+    borderRadius: 6,
+    cursor: 'pointer',
+  },
 };
