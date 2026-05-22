@@ -21,6 +21,34 @@ function unauthorized() {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 }
 
+const ADMIN_STATS_PAGE_SIZE = 1000;
+const ADMIN_STATS_MAX_ROWS = 100000;
+
+async function fetchAllUsersForStats() {
+  const rows = [];
+
+  for (let offset = 0; ; offset += ADMIN_STATS_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('official_line_users')
+      .select('line_user_id, segment, source, metabolism_type, is_blocked')
+      .order('joined_at', { ascending: true })
+      .order('line_user_id', { ascending: true })
+      .range(offset, offset + ADMIN_STATS_PAGE_SIZE - 1);
+
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < ADMIN_STATS_PAGE_SIZE) break;
+
+    if (rows.length >= ADMIN_STATS_MAX_ROWS) {
+      console.warn(`[Admin stats] stopped at safety limit ${ADMIN_STATS_MAX_ROWS}`);
+      break;
+    }
+  }
+
+  return rows;
+}
+
 // ============================================================
 // GET — 讀取資料
 // ============================================================
@@ -254,9 +282,13 @@ async function handleResetV32TestUser({ userId }) {
 // ============================================================
 
 async function handleGetStats() {
-  const { data: users } = await supabase
-    .from('official_line_users')
-    .select('segment, source, metabolism_type, is_blocked');
+  let users;
+  try {
+    users = await fetchAllUsersForStats();
+  } catch (error) {
+    console.error('[handleGetStats] fetch users error:', error);
+    return NextResponse.json({ error: 'stats_fetch_users_failed' }, { status: 500 });
+  }
 
   const stats = {
     total: 0,
