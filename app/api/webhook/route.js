@@ -296,11 +296,14 @@ const RACE_LOST_REPLY = '我已經收到你的選擇了～';
 async function recordButtonClick(userId, column) {
   try {
     const updates = { [column]: new Date().toISOString() };
-    await supabase
+    const { error } = await supabase
       .from('official_line_users')
       .update(updates)
       .eq('line_user_id', userId)
       .is(column, null);
+    if (error) {
+      console.warn(`[recordButtonClick] failed: ${column}`, error.message);
+    }
   } catch (err) {
     // 失敗不阻塞主流程（按鈕點擊統計是 nice-to-have，主流程要照常推訊息）
     console.warn(`[recordButtonClick] failed: ${column}`, err?.message);
