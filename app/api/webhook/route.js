@@ -291,6 +291,25 @@ async function handleEvent(event) {
 
 const RACE_LOST_REPLY = '我已經收到你的選擇了～';
 
+// 記錄按鈕首次點擊時間（race guard：`.is(col, null)` → 連按多次只第一次寫入）
+// 用於 Q4 末尾 + 中間層 Flex 6 個按鈕的點擊追蹤（migration_023）
+async function recordButtonClick(userId, column) {
+  try {
+    const updates = { [column]: new Date().toISOString() };
+    const { error } = await supabase
+      .from('official_line_users')
+      .update(updates)
+      .eq('line_user_id', userId)
+      .is(column, null);
+    if (error) {
+      console.warn(`[recordButtonClick] failed: ${column}`, error.message);
+    }
+  } catch (err) {
+    // 失敗不阻塞主流程（按鈕點擊統計是 nice-to-have，主流程要照常推訊息）
+    console.warn(`[recordButtonClick] failed: ${column}`, err?.message);
+  }
+}
+
 async function handlePostback(event, userId) {
   const rawData = event.postback?.data || '';
   const params = new URLSearchParams(rawData);
@@ -328,6 +347,7 @@ async function handleQ4Continue(event, userId) {
   //   - path=other/null 或 buildUrl/reply 失敗 → fallback 走原邏輯（restricted handoff or Q5 軟邀請）
   //   - 不升 stage（保持 4），不寫 q5_intent — 讓 stage=4 主動軌 cron 還能接
   await recordInteraction(userId);
+  await recordButtonClick(userId, 'q4_continue_at');
 
   const userForStory = await getUser(userId);
   const storyResult = await replyStoryFlex(event.replyToken, userId, userForStory?.path);
@@ -368,6 +388,7 @@ async function handleQ4Continue(event, userId) {
 
 async function handleQ4StoryInterested(event, userId) {
   await recordInteraction(userId);
+  await recordButtonClick(userId, 'q4_story_interested_at');
 
   // === V3.2 軌入口（一休 5/5 拆 gate 全量開放）===
   // 拆 gate 前（試行期）：ALLOWLIST gate 限一休 + 婉馨進 v3.2，其他走 legacy
@@ -403,6 +424,7 @@ async function _q4StoryInterestedLegacy(event, userId) {
 
 async function handleQ4StoryQuestion(event, userId) {
   await recordInteraction(userId);
+  await recordButtonClick(userId, 'q4_story_question_at');
   const ok = await triggerHandoff(userId, 'q4_story_question');
   if (ok) {
     await replyMessage(event.replyToken, [
@@ -415,6 +437,7 @@ async function handleQ4StoryQuestion(event, userId) {
 
 async function handleQ4StoryMaybe(event, userId) {
   await recordInteraction(userId);
+  await recordButtonClick(userId, 'q4_story_maybe_at');
   await replyMessage(event.replyToken, [
     textMessage('好，沒問題。如果之後想了解再來找我就好，不打擾你。'),
   ]);
@@ -424,6 +447,7 @@ async function handleQ4StoryMaybe(event, userId) {
 async function handleQ4Decline(event, userId) {
   // 不想 → 記 intent=low + polite end reply，不升 stage（保持 4，主動軌 SQL 會 skip）
   await recordInteraction(userId);
+  await recordButtonClick(userId, 'q4_decline_at');
   await updateAiTags(userId, { intent: 'low', _from_ai: true, _op: 'overwrite' }).catch(
     (err) => console.error('[Postback q4_decline] updateAiTags failed:', err?.message)
   );
@@ -435,6 +459,7 @@ async function handleQ4Decline(event, userId) {
 async function handleQ4Maybe(event, userId) {
   // 再考慮看看 → 接真人，標 q4_maybe reason，婉馨主動先分享學員故事
   await recordInteraction(userId);
+  await recordButtonClick(userId, 'q4_maybe_at');
   const ok = await triggerHandoff(userId, 'q4_maybe');
   if (ok) {
     await replyMessage(event.replyToken, [
