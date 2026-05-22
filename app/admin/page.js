@@ -3369,11 +3369,13 @@ function OverallFunnel({ overall }) {
   const q5Denom = overall.in_q5 || 1;
   const rows = [
     { label: '總用戶', value: overall.total, denom: null },
-    { label: '↓ 進 Q1（被推問體重）', value: overall.in_q1, denom: overall.total },
-    { label: '↓ 答完 Q1 → 進 Q2', value: overall.in_q2, denom: overall.total },
+    { label: '↓ 獲得檢測報告（含 3 段訊息）', value: overall.got_report, denom: overall.total },
+    { label: '↓ 進 Q1（有動作或互動）', value: overall.in_q1, denom: overall.total },
+    { label: '↓ 答完 Q1 → 進 Q2（回覆體重）', value: overall.in_q2, denom: overall.total },
     { label: '↓ 答完 Q2 → 進 Q3（path 確定）', value: overall.in_q3, denom: overall.total },
     { label: '↓ 答完 Q3 → 進 Q4', value: overall.in_q4, denom: overall.total },
     { label: '↓ Q4 AI 回饋完成', value: overall.finished_q4, denom: overall.total, divider: true },
+    { label: '（中間 Q4 末尾 3 按鈕 + 學員故事 Flex 3 按鈕的點擊分佈，看下面「每段訊息互動反應」表）', hint: true },
     { label: '↓ 進 Q5 漏斗（收到 msg1）', value: overall.in_q5, denom: overall.total },
     { label: '  ↓ 收到 msg2 介紹', value: overall.msg2_sent, denom: q5Denom },
     { label: '  ↓ 收到 msg3 報價', value: overall.msg3_sent, denom: q5Denom },
@@ -3384,22 +3386,31 @@ function OverallFunnel({ overall }) {
   ];
   return (
     <div style={styles.analyticsCard}>
-      {rows.map((r, i) => (
-        <div
-          key={i}
-          style={{
-            ...styles.analyticsFunnelRow,
-            ...(r.gold ? { background: '#fef9c3' } : {}),
-            ...(r.divider ? { borderTop: '1px dashed #d1d5db', marginTop: 4, paddingTop: 8 } : {}),
-          }}
-        >
-          <span style={{ flex: 1 }}>{r.label}</span>
-          <span style={{ fontWeight: 600 }}>{r.value}</span>
-          <span style={{ color: '#888', minWidth: 60, textAlign: 'right' }}>
-            {r.denom ? pct(r.value, r.denom) : ''}
-          </span>
-        </div>
-      ))}
+      {rows.map((r, i) => {
+        if (r.hint) {
+          return (
+            <div key={i} style={{ ...styles.analyticsFunnelRow, fontSize: 12, color: '#94a3b8', fontStyle: 'italic', paddingLeft: 16 }}>
+              {r.label}
+            </div>
+          );
+        }
+        return (
+          <div
+            key={i}
+            style={{
+              ...styles.analyticsFunnelRow,
+              ...(r.gold ? { background: '#fef9c3' } : {}),
+              ...(r.divider ? { borderTop: '1px dashed #d1d5db', marginTop: 4, paddingTop: 8 } : {}),
+            }}
+          >
+            <span style={{ flex: 1 }}>{r.label}</span>
+            <span style={{ fontWeight: 600 }}>{r.value}</span>
+            <span style={{ color: '#888', minWidth: 60, textAlign: 'right' }}>
+              {r.denom ? pct(r.value, r.denom) : ''}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -3534,12 +3545,21 @@ function CrossTable({ data, expanded, onToggle, onViewList }) {
 }
 
 function MsgReactions({ reactions }) {
+  // 6 段：Q4 末尾 + 中間層 Flex + msg1-4
+  // 每段 4 種反應分佈（不是每段都有所有反應，N/A 用 — 顯示）
   const msgs = [
-    { key: 'msg1', label: 'msg1 故事承接', nextLabel: '想知道更多' },
-    { key: 'msg2', label: 'msg2 ABC 介紹', nextLabel: '想看 12 週' },
-    { key: 'msg3', label: 'msg3 報價', nextLabel: '點 /apply' },
-    { key: 'msg4', label: 'msg4 最後提醒', nextLabel: '點 /apply' },
+    { key: 'q4',    label: 'Q4 末尾',     hasQuestion: false, hasDecline: true  },
+    { key: 'story', label: '中間層 Flex', hasQuestion: true,  hasDecline: false },
+    { key: 'msg1',  label: 'msg1',        hasQuestion: true,  hasDecline: false },
+    { key: 'msg2',  label: 'msg2',        hasQuestion: true,  hasDecline: false },
+    { key: 'msg3',  label: 'msg3',        hasQuestion: true,  hasDecline: false },
+    { key: 'msg4',  label: 'msg4',        hasQuestion: true,  hasDecline: false },
   ];
+  const cell = (val, sent) => (
+    <>
+      {val} <span style={{ color: '#888', fontSize: 11 }}>({pct(val, sent)})</span>
+    </>
+  );
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={styles.analyticsTable}>
@@ -3555,38 +3575,41 @@ function MsgReactions({ reactions }) {
           <tr style={{ background: '#f9fafb', fontWeight: 600 }}>
             <td style={styles.analyticsTd}>收到</td>
             {msgs.map((m) => (
-              <td key={m.key} style={styles.analyticsTd}>{reactions[m.key].sent}</td>
+              <td key={m.key} style={styles.analyticsTd}>{reactions[m.key]?.sent || 0}</td>
             ))}
           </tr>
           <tr>
             <td style={styles.analyticsTd}>✅ 往下走</td>
             {msgs.map((m) => {
-              const r = reactions[m.key];
-              return (
-                <td key={m.key} style={styles.analyticsTd}>
-                  {r.next} <span style={{ color: '#888', fontSize: 11 }}>({pct(r.next, r.sent)})</span>
-                </td>
-              );
+              const r = reactions[m.key] || { next: 0, sent: 0 };
+              return <td key={m.key} style={styles.analyticsTd}>{cell(r.next, r.sent)}</td>;
             })}
           </tr>
           <tr>
-            <td style={styles.analyticsTd}>🤔 我再想想</td>
+            <td style={styles.analyticsTd}>🤔 想想 / 再考慮</td>
             {msgs.map((m) => {
-              const r = reactions[m.key];
-              return (
-                <td key={m.key} style={styles.analyticsTd}>
-                  {r.maybe} <span style={{ color: '#888', fontSize: 11 }}>({pct(r.maybe, r.sent)})</span>
-                </td>
-              );
+              const r = reactions[m.key] || { maybe: 0, sent: 0 };
+              return <td key={m.key} style={styles.analyticsTd}>{cell(r.maybe, r.sent)}</td>;
             })}
           </tr>
           <tr>
             <td style={styles.analyticsTd}>❓ 我有問題</td>
             {msgs.map((m) => {
-              const r = reactions[m.key];
+              const r = reactions[m.key] || { question: 0, sent: 0 };
               return (
                 <td key={m.key} style={styles.analyticsTd}>
-                  {r.question} <span style={{ color: '#888', fontSize: 11 }}>({pct(r.question, r.sent)})</span>
+                  {m.hasQuestion ? cell(r.question, r.sent) : <span style={{ color: '#cbd5e1' }}>—</span>}
+                </td>
+              );
+            })}
+          </tr>
+          <tr>
+            <td style={styles.analyticsTd}>❌ 不適合</td>
+            {msgs.map((m) => {
+              const r = reactions[m.key] || { decline: 0, sent: 0 };
+              return (
+                <td key={m.key} style={styles.analyticsTd}>
+                  {m.hasDecline ? cell(r.decline, r.sent) : <span style={{ color: '#cbd5e1' }}>—</span>}
                 </td>
               );
             })}
@@ -3594,8 +3617,8 @@ function MsgReactions({ reactions }) {
           <tr style={{ color: '#888' }}>
             <td style={styles.analyticsTd}>🔕 沒回應 / 等待中</td>
             {msgs.map((m) => {
-              const r = reactions[m.key];
-              const noResp = r.sent - r.next - r.maybe - r.question;
+              const r = reactions[m.key] || { sent: 0, next: 0, maybe: 0, question: 0, decline: 0 };
+              const noResp = r.sent - r.next - r.maybe - r.question - r.decline;
               return (
                 <td key={m.key} style={styles.analyticsTd}>
                   {noResp} <span style={{ fontSize: 11 }}>({pct(noResp, r.sent)})</span>
@@ -3606,7 +3629,7 @@ function MsgReactions({ reactions }) {
         </tbody>
       </table>
       <p style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
-        ★ 互動率（往下走 + 想想 + 問題）低於 50% 代表這段文案勾不到人；「沒回應」高代表需要等用戶 / cron 自動接手。msg3/4「往下走」= 點 /apply 進報名頁。
+        ★ Q4 + 中間層 Flex 是 Q4 → Q5 中間 2 段（migration_023 才開始記資料，新資料逐步累積）。msg3/4「往下走」= 點 /apply。「沒回應」高代表用戶沒按按鈕（等 cron 接 or 流失）。
       </p>
     </div>
   );

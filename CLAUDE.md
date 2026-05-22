@@ -210,6 +210,12 @@ curl -X POST https://official-yihugh-line-bot.vercel.app/api/push \
 | q5_msg4_question_at | TIMESTAMPTZ | — | [migration_017] 訊息 4「我有問題想問」(final_question) + handoff |
 | q5_last_pushed_at | TIMESTAMPTZ | — | [migration_017] v3.2 全域節流戳記（一天最多推一則）|
 | q5_apply_from_msg | TEXT | — | [migration_017] CHECK in (msg3, msg4) — 點擊歸因 metadata，/apply/visit 解析 ?from= 寫入 |
+| q4_continue_at | TIMESTAMPTZ | — | [migration_023] Q4 末尾按「想聽聽」(q4_continue) 首次點擊時間 |
+| q4_maybe_at | TIMESTAMPTZ | — | [migration_023] Q4 末尾按「再考慮看看」(q4_maybe) 首次點擊 + handoff |
+| q4_decline_at | TIMESTAMPTZ | — | [migration_023] Q4 末尾按「不適合」(q4_decline) 首次點擊 |
+| q4_story_interested_at | TIMESTAMPTZ | — | [migration_023] 中間層 Flex 按「想了解 ABC 在做什麼」(q4_story_interested) 首次點擊 |
+| q4_story_question_at | TIMESTAMPTZ | — | [migration_023] 中間層 Flex 按「有問題想問」(q4_story_question) 首次點擊 + handoff |
+| q4_story_maybe_at | TIMESTAMPTZ | — | [migration_023] 中間層 Flex 按「我再想想」(q4_story_maybe) 首次點擊 |
 
 ### official_program_applications（migration_013，Phase 4.1 建立）
 
