@@ -21,8 +21,23 @@ export default function ResetV32Page() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const s = params.get('secret');
-    if (s) setSecret(s);
+    if (s) {
+      setSecret(s);
+      localStorage.setItem('admin_secret', s);
+      return;
+    }
+    const saved = localStorage.getItem('admin_secret');
+    if (saved) setSecret(saved);
   }, []);
+
+  function handleSecretChange(value) {
+    setSecret(value);
+    if (value) {
+      localStorage.setItem('admin_secret', value);
+    } else {
+      localStorage.removeItem('admin_secret');
+    }
+  }
 
   async function handleReset() {
     if (!secret) {
@@ -81,7 +96,7 @@ export default function ResetV32Page() {
         <input
           type="password"
           value={secret}
-          onChange={(e) => setSecret(e.target.value)}
+          onChange={(e) => handleSecretChange(e.target.value)}
           placeholder="ADMIN_SECRET"
           style={{
             width: '100%',
@@ -91,6 +106,9 @@ export default function ResetV32Page() {
             borderRadius: 6,
           }}
         />
+        <span style={{ display: 'block', fontSize: 12, color: '#888', marginTop: 6 }}>
+          會自動記在這台瀏覽器，下次打開 reset 頁會直接帶入。
+        </span>
       </label>
 
       <label style={{ display: 'block', marginBottom: 24 }}>
