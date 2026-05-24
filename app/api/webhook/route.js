@@ -464,7 +464,7 @@ async function handleQ4Maybe(event, userId) {
   if (ok) {
     await replyMessage(event.replyToken, [
       textMessage(
-        '好，沒問題。我請 fifi 助教聯絡你，她可以先分享一些學員的故事給你看——你再決定也來得及。\n上班時間會陸續回，不會讓你等太久。'
+        '好，先問清楚再決定比較安心。我請 fifi 助教聯絡你，她會看得到你前面聊到的狀況，再跟你確認適不適合。\n上班時間會陸續回，不會讓你等太久。'
       ),
     ]);
   }
@@ -1892,27 +1892,27 @@ async function handleStage3ToQ4(event, userId, text, state) {
           type: 'action',
           action: {
             type: 'postback',
-            label: '想聽聽',
+            label: '想聽聽她怎麼走出來',
             data: 'action=q4_continue',
-            displayText: '想聽聽',
+            displayText: '想聽聽她怎麼走出來',
           },
         },
         {
           type: 'action',
           action: {
             type: 'postback',
-            label: '再考慮看看',
+            label: '我想先問一個問題',
             data: 'action=q4_maybe',
-            displayText: '再考慮看看',
+            displayText: '我想先問一個問題',
           },
         },
         {
           type: 'action',
           action: {
             type: 'postback',
-            label: '不想',
+            label: '我先想到這裡',
             data: 'action=q4_decline',
-            displayText: '不想',
+            displayText: '我先想到這裡',
           },
         },
       ],

@@ -807,13 +807,16 @@ export default function ApplyPage() {
       <div style={S.page}>
         <section style={{ ...S.hero, padding: '60px 24px 36px' }}>
           <span style={{ ...S.h2Emoji, fontSize: 48 }}>🌱</span>
-          <h1 style={S.heroTitle}>收到了。</h1>
+          <h1 style={S.heroTitle}>收到了，你完成第一步了。</h1>
           <p style={S.heroSub}>
-            接下來請<span style={S.emphasis}>完成匯款</span>，
+            你剛剛做的不是「買一門課」而已，
             <br />
-            然後到 <span style={S.emphasis}>@artemis_fit</span> 告訴我們，
+            是先替自己保留一個有人陪你重建代謝的位置。
             <br />
-            我們確認後就會把你加進班級。
+            <br />
+            如果你已經確定要加入，可以照下面完成匯款。
+            <br />
+            如果你還有問題，也可以先回 LINE 找 fifi 確認。
           </p>
         </section>
 
@@ -830,7 +833,7 @@ export default function ApplyPage() {
             }}
           >
             <p style={{ ...S.para, margin: '0 0 14px', fontSize: 13, color: C.textLight }}>
-              請於報名後 3 天內完成匯款
+              已確定加入的人，請於報名後 3 天內完成匯款
             </p>
             <p
               style={{
@@ -904,7 +907,10 @@ export default function ApplyPage() {
             告訴我們<span style={S.emphasis}>付款帳號後五碼</span>，我們確認後會把你加進班級。
           </p>
           <a style={{ ...S.btn, marginTop: 18 }} href={ARTEMIS_PAY_URL}>
-            加入 @artemis_fit 通知付款 →
+            我已完成匯款，回報後五碼 →
+          </a>
+          <a style={S.btnSecondary} href={CONTACT_LINE_URL}>
+            我還想先問 fifi
           </a>
           <p
             style={{
@@ -977,13 +983,20 @@ export default function ApplyPage() {
     <div style={S.page}>
       {/* ==================== 第一章 Hero ==================== */}
       <section style={S.hero}>
-        <span style={S.heroBadge}>ABC 代謝力重建</span>
+        <span style={S.heroBadge}>LINE 初步判斷後｜ABC 代謝力重建</span>
         <h1 style={S.heroTitle}>
           你在找的，
           <br />
           不是瘦 10 公斤
         </h1>
         <p style={S.heroSub}>
+          你會看到這一頁，是因為你剛剛在 LINE 已經完成了初步判斷。
+          <br />
+          我不想直接叫你報名，我想先讓你看清楚：
+          <br />
+          這套方法是不是適合你現在卡住的狀況。
+          <br />
+          <br />
           是那個穿得下、跑得動、早上起床不累的自己。
           <br />
           是照鏡子不用躲、跟孩子跑跳不會喘、
@@ -995,7 +1008,7 @@ export default function ApplyPage() {
           <br />
           也不用每天為了體重跟自己較勁的日子。
         </p>
-        <p style={S.heroCTA}>如果這些是你要的，往下看。</p>
+        <p style={S.heroCTA}>先看我適不適合，往下看。</p>
         <div style={S.heroArrow}>↓</div>
       </section>
 
@@ -1513,7 +1526,7 @@ export default function ApplyPage() {
           <p style={S.refundTitle}>報名之後可以退費嗎？</p>
           <p style={S.para}>
             <span style={S.refundYes}>可以。</span>
-            送出報名前請看完下面 6 條，勾同意才能送。
+            送出給 fifi 確認前，請看完下面 6 條，勾同意才能送。
           </p>
           <p style={{ ...S.para, marginTop: 14, color: C.text, fontWeight: 600 }}>
             如報名且付款完成後要取消課程，退款機制依下列辦法施行：
@@ -1570,7 +1583,7 @@ export default function ApplyPage() {
           <div style={S.warnBox}>
             <p style={{ margin: 0, fontWeight: 700 }}>這個頁面需要在 LINE 裡開啟</p>
             <p style={{ margin: '8px 0 0' }}>
-              請回到 LINE 傳訊息給一休，他會給你一個專屬連結才能送出報名。
+              請回到 LINE 傳訊息給一休，他會給你一個專屬連結，才能送出給 fifi 確認。
             </p>
             <p style={{ margin: '12px 0 0' }}>
               <a style={S.btnSecondary} href={CONTACT_LINE_URL}>
@@ -1582,7 +1595,11 @@ export default function ApplyPage() {
 
         {/* 報名表 */}
         <form onSubmit={handleSubmit} style={S.form}>
-          <h3 style={{ ...S.h3, marginTop: 0 }}>填完送出，我們就準備開始</h3>
+          <h3 style={{ ...S.h3, marginTop: 0 }}>先確認你適不適合這一班</h3>
+          <p style={{ ...S.para, marginBottom: 20 }}>
+            這份資料是讓 fifi 找得到你、確認你的方案和入班方式。
+            送出後不是強迫付款，你可以先把問題問清楚。
+          </p>
 
           <label style={S.label}>姓名 *</label>
           <input
@@ -1617,6 +1634,9 @@ export default function ApplyPage() {
           {fieldErrors.email && <p style={S.errText}>{fieldErrors.email}</p>}
 
           <label style={S.label}>地址 *</label>
+          <p style={{ ...S.para, fontSize: 13, color: C.textLight, margin: '0 0 6px' }}>
+            建立學員資料與課程聯絡用，若還不確定可先填主要聯絡地址。
+          </p>
           <input
             style={{ ...S.input, ...(fieldErrors.address ? S.inputErr : {}) }}
             value={form.address}
@@ -1670,6 +1690,9 @@ export default function ApplyPage() {
           {fieldErrors.display_name && <p style={S.errText}>{fieldErrors.display_name}</p>}
 
           <label style={S.label}>LINE ID *</label>
+          <p style={{ ...S.para, fontSize: 13, color: C.textLight, margin: '0 0 6px' }}>
+            讓 fifi 找得到你；沒有設定請填「無」。
+          </p>
           <input
             style={{ ...S.input, ...(fieldErrors.line_id ? S.inputErr : {}) }}
             value={form.line_id}
@@ -1709,7 +1732,7 @@ export default function ApplyPage() {
               ...(submitting || !hasValidUrl ? S.btnDisabled : {}),
             }}
           >
-            {submitting ? '送出中…' : '送出報名'}
+            {submitting ? '送出中…' : '送出給 fifi 確認'}
           </button>
         </form>
 

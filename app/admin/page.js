@@ -2319,6 +2319,10 @@ const SETTING_LABELS = {
     label: 'Q5 主動軌文案（Q4 後 24h 無回應時）',
     desc: 'Cron 自動推送給 Q4 後 24h 未主動回訊的用戶。文案不應 reference 具體對話內容（契約 B1d）',
   },
+  q5_visit_followup_text: {
+    label: '/apply 點擊後未填表追問文案',
+    desc: '用戶點進 /apply 但未送出表單，cron 於設定時間後推送一次。第一版為純文字追問，不含 Quick Reply 按鈕',
+  },
   // === /apply 頁設定 ===
   apply_url_base: {
     label: '/apply 頁 URL base',
