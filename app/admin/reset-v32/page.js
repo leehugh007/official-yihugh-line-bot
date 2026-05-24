@@ -1,7 +1,7 @@
 'use client';
 
 // V3.2 試行測試 — 重置自己 DB 到 stage=0 一鍵頁
-// URL: /admin/reset-v32?secret=ADMIN_SECRET
+// URL: /admin/reset-v32
 // ALLOWLIST：一休 + 婉馨（後端 V32_RESET_ALLOWLIST 鎖死）
 
 import { useState, useEffect } from 'react';
@@ -12,7 +12,6 @@ const PRESETS = [
 ];
 
 export default function ResetV32Page() {
-  const [secret, setSecret] = useState('');
   const [userId, setUserId] = useState(PRESETS[0].userId);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -22,28 +21,11 @@ export default function ResetV32Page() {
     const params = new URLSearchParams(window.location.search);
     const s = params.get('secret');
     if (s) {
-      setSecret(s);
       localStorage.setItem('admin_secret', s);
-      return;
     }
-    const saved = localStorage.getItem('admin_secret');
-    if (saved) setSecret(saved);
   }, []);
 
-  function handleSecretChange(value) {
-    setSecret(value);
-    if (value) {
-      localStorage.setItem('admin_secret', value);
-    } else {
-      localStorage.removeItem('admin_secret');
-    }
-  }
-
   async function handleReset() {
-    if (!secret) {
-      setError('請輸入 admin secret');
-      return;
-    }
     if (
       !confirm(
         `確定清 ${userId.slice(0, 8)}... 到 stage=0？\n\n會清掉：\n• path_stage / path / weights\n• ai_tags（q3/q4 全清）\n• v3.2 漏斗 16 欄\n• handoff 狀態\n• Q5 軟邀請軌`
@@ -59,7 +41,6 @@ export default function ResetV32Page() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          secret,
           action: 'reset_v32_test_user',
           userId,
         }),
@@ -91,25 +72,20 @@ export default function ResetV32Page() {
         清自己 DB 到 stage=0，重新走 Q1-Q4 → 故事 Flex → V3.2 訊息 1/2/3。
       </p>
 
-      <label style={{ display: 'block', marginBottom: 16 }}>
-        <span style={{ display: 'block', fontWeight: 600, marginBottom: 4 }}>Admin Secret</span>
-        <input
-          type="password"
-          value={secret}
-          onChange={(e) => handleSecretChange(e.target.value)}
-          placeholder="ADMIN_SECRET"
-          style={{
-            width: '100%',
-            padding: '10px 12px',
-            fontSize: 14,
-            border: '1px solid #ccc',
-            borderRadius: 6,
-          }}
-        />
-        <span style={{ display: 'block', fontSize: 12, color: '#888', marginTop: 6 }}>
-          會自動記在這台瀏覽器，下次打開 reset 頁會直接帶入。
-        </span>
-      </label>
+      <div
+        style={{
+          marginBottom: 16,
+          padding: '12px 14px',
+          background: '#f8fafc',
+          border: '1px solid #e2e8f0',
+          borderRadius: 6,
+          color: '#475569',
+          fontSize: 14,
+          lineHeight: 1.6,
+        }}
+      >
+        這頁只允許重置一休 / 婉馨兩個測試帳號，不用再輸入 Admin Secret。
+      </div>
 
       <label style={{ display: 'block', marginBottom: 24 }}>
         <span style={{ display: 'block', fontWeight: 600, marginBottom: 4 }}>選用戶</span>
@@ -201,8 +177,8 @@ export default function ResetV32Page() {
         }}
       />
       <p style={{ fontSize: 12, color: '#999' }}>
-        保護：ADMIN_SECRET 驗證 + 後端 hardcode userId allowlist（僅一休/婉馨）。
-        其他 userId 會回 403。
+        保護：後端 hardcode userId allowlist（僅一休/婉馨）。其他 userId 會回 403。
+        其他後台 API 仍需要 ADMIN_SECRET。
       </p>
     </div>
   );
