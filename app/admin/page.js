@@ -349,6 +349,15 @@ export default function AdminPage() {
 
   // 自動登入（如果 sessionStorage 有密碼）
   useEffect(() => {
+    if (
+      window.location.hostname === 'localhost' &&
+      window.location.search.includes('audiences_preview=1')
+    ) {
+      setAuthed(true);
+      setTab('audiences');
+      return;
+    }
+
     const saved = localStorage.getItem('admin_secret');
     if (saved) {
       setPassword(saved);
@@ -556,6 +565,12 @@ export default function AdminPage() {
           onClick={() => setTab('analytics')}
         >
           📊 分析
+        </button>
+        <button
+          style={tab === 'audiences' ? styles.tabActive : styles.tab}
+          onClick={() => setTab('audiences')}
+        >
+          🎯 受眾
         </button>
         <button
           style={tab === 'settings' ? styles.tabActive : styles.tab}
@@ -780,6 +795,12 @@ export default function AdminPage() {
       {tab === 'analytics' && (
         <div style={styles.section}>
           <AnalyticsTab />
+        </div>
+      )}
+
+      {tab === 'audiences' && (
+        <div style={styles.section}>
+          <AudienceRetargetingPrototype />
         </div>
       )}
 
@@ -3341,7 +3362,7 @@ function AnalyticsTab() {
           {/* 每段訊息互動反應 */}
           <div style={{ marginTop: 24 }}>
             <h3 style={styles.analyticsH3}>💬 每段訊息互動反應（看哪段卡住、哪段勾不到人）</h3>
-            <MsgReactions reactions={stats.msg_reactions} />
+            <MsgReactions reactions={stats.msg_reactions} tracking={stats.tracking} />
           </div>
         </>
       )}
@@ -3548,7 +3569,7 @@ function CrossTable({ data, expanded, onToggle, onViewList }) {
   );
 }
 
-function MsgReactions({ reactions }) {
+function MsgReactions({ reactions, tracking }) {
   // 6 段：Q4 末尾 + 中間層 Flex + msg1-4
   // 每段 4 種反應分佈（不是每段都有所有反應，N/A 用 — 顯示）
   const msgs = [
@@ -3564,6 +3585,17 @@ function MsgReactions({ reactions }) {
       {val} <span style={{ color: '#888', fontSize: 11 }}>({pct(val, sent)})</span>
     </>
   );
+  const buttonStatsStartedAt = tracking?.button_stats_started_at
+    ? new Date(tracking.button_stats_started_at).toLocaleString('zh-TW', {
+        timeZone: 'Asia/Taipei',
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    : null;
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={styles.analyticsTable}>
@@ -3635,6 +3667,11 @@ function MsgReactions({ reactions }) {
       <p style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
         ★ Q4 + 中間層 Flex 是 Q4 → Q5 中間 2 段（migration_023 才開始記資料，新資料逐步累積）。msg3/4「往下走」= 點 /apply。「沒回應」高代表用戶沒按按鈕（等 cron 接 or 流失）。
       </p>
+      {buttonStatsStartedAt && (
+        <p style={{ fontSize: 12, color: '#b45309', marginTop: 4 }}>
+          Q4 末尾與中間層 Flex 按鈕統計從 {buttonStatsStartedAt} 起算；上線前已收到 Q4 的用戶不納入這兩段分母。
+        </p>
+      )}
     </div>
   );
 }
@@ -3859,6 +3896,782 @@ function UsersSummary({ users, expandedStages, onToggleStage }) {
 // ============================================================
 // 樣式
 // ============================================================
+// ============================================================
+// 受眾再行銷 Tab（本地原型）
+// ============================================================
+
+const AUDIENCE_PRESETS = [
+  {
+    id: 'dropoff',
+    title: '互動下降',
+    tone: '喚醒',
+    desc: '曾經點過文章，但最近連續幾篇沒有點擊。',
+    rules: ['曾點擊至少 2 篇', '最近連續 2 篇未點擊', '尚未報名'],
+  },
+  {
+    id: 'warm',
+    title: '暖受眾',
+    tone: '教育',
+    desc: '近期仍有點擊，但還沒有進入報名。',
+    rules: ['近 14 天內有點擊', '尚未報名', '排除已付款'],
+  },
+  {
+    id: 'apply_no_submit',
+    title: '高意願未送單',
+    tone: '解惑',
+    desc: '點過報名頁，但沒有送出報名表。',
+    rules: ['點過 /apply', '沒有送出表單', '排除已付款'],
+  },
+  {
+    id: 'pending_payment',
+    title: '送單未付款',
+    tone: '提醒',
+    desc: '已送出報名表，但尚未完成付款。',
+    rules: ['已送單', '未付款', '排除已取消'],
+  },
+  {
+    id: 'cold',
+    title: '長期冷卻',
+    tone: '低頻',
+    desc: '收到多篇文章，但從來沒有點擊。',
+    rules: ['收到至少 3 篇', '0 點擊', '加入超過 30 天'],
+  },
+];
+
+const RETARGETING_TEMPLATES = [
+  {
+    id: 'dropoff_soft',
+    title: '互動下降喚醒',
+    category: '冷卻喚醒',
+    image_url: '/images/landing/land002.png',
+    body: '前面你有看過一些內容，我猜你可能是看到某一段開始覺得「好像有點難」。\n\n如果你願意，我可以用比較生活化的方式，幫你整理一個比較好開始的方向。',
+    buttons: [
+      { label: '回來看下一篇', url: 'https://example.com/next-article' },
+      { label: '看一個真實案例', url: 'https://example.com/story' },
+      { label: '我想問問題', url: 'https://example.com/ask' },
+    ],
+  },
+  {
+    id: 'warm_story',
+    title: '學員故事補強',
+    category: '暖受眾教育',
+    image_url: '/images/landing/land006.png',
+    body: '你前面看過幾篇內容，代表這件事可能跟你現在的狀態有點關係。\n\n我想補一個更像真實生活的案例給你，不是很完美的人，而是很忙、也卡過的人怎麼開始。',
+    buttons: [
+      { label: '看學員故事', url: 'https://example.com/story' },
+      { label: '看健康文章', url: 'https://example.com/article' },
+      { label: '了解陪跑方式', url: 'https://example.com/method' },
+    ],
+  },
+  {
+    id: 'apply_faq',
+    title: '報名頁未送單 FAQ',
+    category: '高意願解惑',
+    image_url: '/images/landing/land014.png',
+    body: '你前面有點進報名頁，可能還有一些地方想確認。\n\n如果你是在想費用、時間、飲食或自己做不做得到，可以直接回我，我會請 fifi 幫你看比較適合怎麼安排。',
+    buttons: [
+      { label: '我想問問題', url: 'https://example.com/ask' },
+      { label: '看常見問題', url: 'https://example.com/faq' },
+      { label: '回到報名頁', url: 'https://example.com/apply' },
+    ],
+  },
+  {
+    id: 'payment_reminder',
+    title: '送單未付款提醒',
+    category: '付款提醒',
+    image_url: '/images/landing/land015.webp',
+    body: '有看到你的報名資料了，這邊幫你保留名額中。\n\n如果你已經匯款，可以直接回傳後五碼；如果付款方式有不清楚，也可以直接回我。',
+    buttons: [
+      { label: '查看匯款資訊', url: 'https://example.com/payment' },
+      { label: '我已完成匯款', url: 'https://example.com/paid' },
+      { label: '我想問付款問題', url: 'https://example.com/ask-payment' },
+    ],
+  },
+];
+
+function createRetargetingDraft(template) {
+  const buttons = [...(template.buttons || [])];
+  while (buttons.length < 3) buttons.push({ label: '', url: '' });
+  return {
+    image_url: template.image_url || '',
+    body: template.body || '',
+    buttons: buttons.slice(0, 3).map((button) => ({
+      label: button.label || '',
+      url: button.url || '',
+    })),
+  };
+}
+
+const RETARGETING_ACTIVITY_STATUS = {
+  draft: { label: '草稿', tone: '#64748b' },
+  scheduled: { label: '已排程', tone: '#b45309' },
+  paused: { label: '已暫停', tone: '#991b1b' },
+  sent: { label: '已發送', tone: '#166534' },
+};
+
+function AudienceConditionTuning({
+  presetId,
+  clickedMin,
+  setClickedMin,
+  inactiveSteps,
+  setInactiveSteps,
+  recentDays,
+  setRecentDays,
+  applyDelayDays,
+  setApplyDelayDays,
+  applyClicks,
+  setApplyClicks,
+  paymentDelayDays,
+  setPaymentDelayDays,
+  receivedMin,
+  setReceivedMin,
+  joinedDays,
+  setJoinedDays,
+  storyOnly,
+  setStoryOnly,
+  excludeApplyClickers,
+  setExcludeApplyClickers,
+}) {
+  if (presetId === 'dropoff') {
+    return (
+      <div style={styles.retargetingTuning}>
+        <label style={styles.fieldLabel}>曾點擊至少 {clickedMin} 篇</label>
+        <input type="range" min="1" max="4" value={clickedMin} onChange={(e) => setClickedMin(Number(e.target.value))} style={styles.retargetingRange} />
+        <label style={styles.fieldLabel}>最近連續 {inactiveSteps} 篇未點擊</label>
+        <input type="range" min="1" max="4" value={inactiveSteps} onChange={(e) => setInactiveSteps(Number(e.target.value))} style={styles.retargetingRange} />
+      </div>
+    );
+  }
+
+  if (presetId === 'warm') {
+    return (
+      <div style={styles.retargetingTuning}>
+        <label style={styles.fieldLabel}>最近 {recentDays} 天內有點擊</label>
+        <input type="range" min="7" max="30" step="7" value={recentDays} onChange={(e) => setRecentDays(Number(e.target.value))} style={styles.retargetingRange} />
+        <label style={styles.fieldLabel}>累積點擊至少 {clickedMin} 篇</label>
+        <input type="range" min="1" max="5" value={clickedMin} onChange={(e) => setClickedMin(Number(e.target.value))} style={styles.retargetingRange} />
+        <label style={styles.checkbox}>
+          <input type="checkbox" checked={storyOnly} onChange={(e) => setStoryOnly(e.target.checked)} />
+          <span>限定點過學員故事</span>
+        </label>
+        <label style={styles.checkbox}>
+          <input type="checkbox" checked={excludeApplyClickers} onChange={(e) => setExcludeApplyClickers(e.target.checked)} />
+          <span>排除已點過報名頁的人</span>
+        </label>
+      </div>
+    );
+  }
+
+  if (presetId === 'apply_no_submit') {
+    return (
+      <div style={styles.retargetingTuning}>
+        <label style={styles.fieldLabel}>點過報名頁後 {applyDelayDays} 天內未送單</label>
+        <input type="range" min="1" max="14" value={applyDelayDays} onChange={(e) => setApplyDelayDays(Number(e.target.value))} style={styles.retargetingRange} />
+        <label style={styles.fieldLabel}>點過報名頁至少 {applyClicks} 次</label>
+        <input type="range" min="1" max="5" value={applyClicks} onChange={(e) => setApplyClicks(Number(e.target.value))} style={styles.retargetingRange} />
+      </div>
+    );
+  }
+
+  if (presetId === 'pending_payment') {
+    return (
+      <div style={styles.retargetingTuning}>
+        <label style={styles.fieldLabel}>送單後 {paymentDelayDays} 天未付款</label>
+        <input type="range" min="1" max="14" value={paymentDelayDays} onChange={(e) => setPaymentDelayDays(Number(e.target.value))} style={styles.retargetingRange} />
+        <label style={styles.checkbox}>
+          <input type="checkbox" checked readOnly />
+          <span>排除已取消</span>
+        </label>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.retargetingTuning}>
+      <label style={styles.fieldLabel}>收到至少 {receivedMin} 篇文章</label>
+      <input type="range" min="1" max="8" value={receivedMin} onChange={(e) => setReceivedMin(Number(e.target.value))} style={styles.retargetingRange} />
+      <label style={styles.fieldLabel}>加入超過 {joinedDays} 天</label>
+      <input type="range" min="7" max="90" step="7" value={joinedDays} onChange={(e) => setJoinedDays(Number(e.target.value))} style={styles.retargetingRange} />
+      <label style={styles.checkbox}>
+        <input type="checkbox" checked readOnly />
+        <span>累積 0 點擊</span>
+      </label>
+    </div>
+  );
+}
+
+function AudienceRetargetingPrototype() {
+  const [selectedPreset, setSelectedPreset] = useState(AUDIENCE_PRESETS[0].id);
+  const [selectedTemplate, setSelectedTemplate] = useState(RETARGETING_TEMPLATES[0].id);
+  const [templateDraft, setTemplateDraft] = useState(() => createRetargetingDraft(RETARGETING_TEMPLATES[0]));
+  const [mode, setMode] = useState('scheduled');
+  const [clickedMin, setClickedMin] = useState(2);
+  const [inactiveSteps, setInactiveSteps] = useState(2);
+  const [recentDays, setRecentDays] = useState(14);
+  const [applyDelayDays, setApplyDelayDays] = useState(3);
+  const [applyClicks, setApplyClicks] = useState(1);
+  const [paymentDelayDays, setPaymentDelayDays] = useState(2);
+  const [receivedMin, setReceivedMin] = useState(3);
+  const [joinedDays, setJoinedDays] = useState(30);
+  const [storyOnly, setStoryOnly] = useState(false);
+  const [excludeApplyClickers, setExcludeApplyClickers] = useState(true);
+  const [waitDays, setWaitDays] = useState(3);
+  const [resumeStep, setResumeStep] = useState('next_unread');
+  const [stats, setStats] = useState(null);
+  const [selectedActivityId, setSelectedActivityId] = useState('activity_dropoff_001');
+  const [activities, setActivities] = useState(() => [
+    {
+      id: 'activity_dropoff_001',
+      name: '互動下降喚回',
+      presetId: 'dropoff',
+      templateId: 'dropoff_soft',
+      templateTitle: '互動下降溫和喚回',
+      status: 'scheduled',
+      mode: 'scheduled',
+      scheduleText: '每天 14:00 檢查',
+      rules: ['曾點擊至少 2 篇', '最近連續 2 篇未點擊', '排除已報名'],
+      conditions: { clickedMin: 2, inactiveSteps: 2 },
+      waitDays: 3,
+      resumeStep: 'next_unread',
+      audienceSize: 18,
+      sentCount: 15,
+      excludedCount: 3,
+      metrics: {
+        clicked: 5,
+        replied: 2,
+        applyClicks: 1,
+        submitted: 1,
+        paid: 0,
+        avgEngageDays: 1.6,
+        linkBreakdown: [
+          { label: '回來看下一篇', count: 3 },
+          { label: '看一個真實案例', count: 2 },
+          { label: '我想問問題', count: 1 },
+        ],
+        followUp: { engagedNext: 4, inactiveNext: 9, handoff: 2 },
+      },
+    },
+    {
+      id: 'activity_apply_001',
+      name: '報名頁 FAQ 補強',
+      presetId: 'apply_no_submit',
+      templateId: 'apply_faq',
+      templateTitle: '報名前未送單 FAQ',
+      status: 'draft',
+      mode: 'instant',
+      scheduleText: '手動確認後立即發送',
+      rules: ['點過報名頁後 3 天內未送單', '點過報名頁至少 1 次', '排除已送單'],
+      conditions: { applyDelayDays: 3, applyClicks: 1 },
+      waitDays: 2,
+      resumeStep: 'q5',
+      audienceSize: 7,
+      sentCount: 0,
+      excludedCount: 1,
+      metrics: {
+        clicked: 0,
+        replied: 0,
+        applyClicks: 0,
+        submitted: 0,
+        paid: 0,
+        avgEngageDays: null,
+        linkBreakdown: [
+          { label: '我想問問題', count: 0 },
+          { label: '看常見問題', count: 0 },
+          { label: '回到報名頁', count: 0 },
+        ],
+        followUp: { engagedNext: 0, inactiveNext: 0, handoff: 0 },
+      },
+    },
+  ]);
+
+  useEffect(() => {
+    fetch(apiUrl('funnel_stats') + '&range=all')
+      .then((r) => r.json())
+      .then(setStats)
+      .catch(() => setStats(null));
+  }, []);
+
+  const preset = AUDIENCE_PRESETS.find((p) => p.id === selectedPreset) || AUDIENCE_PRESETS[0];
+  const template = RETARGETING_TEMPLATES.find((t) => t.id === selectedTemplate) || RETARGETING_TEMPLATES[0];
+  const previewButtons = templateDraft.buttons.filter((button) => button.label.trim() && button.url.trim());
+  const overall = stats?.ok ? stats.overall : null;
+
+  const estimatedCount = (() => {
+    if (!overall) return '待連接';
+    if (preset.id === 'apply_no_submit') {
+      return Math.max((overall.clicked_apply || 0) - (overall.submitted || 0), 0);
+    }
+    if (preset.id === 'pending_payment') {
+      return Math.max((overall.submitted || 0) - (overall.paid || 0), 0);
+    }
+    return '需文章事件';
+  })();
+
+  const quickRules = (() => {
+    if (preset.id === 'dropoff') {
+      return [`曾點擊至少 ${clickedMin} 篇`, `最近連續 ${inactiveSteps} 篇未點擊`, '尚未報名'];
+    }
+    if (preset.id === 'warm') {
+      return [
+        `最近 ${recentDays} 天內有點擊`,
+        `累積點擊至少 ${clickedMin} 篇`,
+        storyOnly ? '限定學員故事' : '不限文章類型',
+        excludeApplyClickers ? '排除已點報名頁' : '可包含已點報名頁',
+        '尚未報名',
+      ];
+    }
+    if (preset.id === 'apply_no_submit') {
+      return [`點過報名頁後 ${applyDelayDays} 天未送單`, `點過報名頁至少 ${applyClicks} 次`, '排除已付款'];
+    }
+    if (preset.id === 'pending_payment') {
+      return [`送單後 ${paymentDelayDays} 天未付款`, '排除已取消'];
+    }
+    return [`收到至少 ${receivedMin} 篇文章`, '累積 0 點擊', `加入超過 ${joinedDays} 天`, '排除已報名 / 已付款'];
+  })();
+
+  const engagedAction =
+    resumeStep === 'next_unread' ? '繼續文章流程' :
+    resumeStep === 'same_step' ? '重送停住文章' :
+    resumeStep === 'q5' ? '導向 Q5' :
+    '人工接手';
+
+  const handleSelectTemplate = (templateId) => {
+    const nextTemplate = RETARGETING_TEMPLATES.find((item) => item.id === templateId) || RETARGETING_TEMPLATES[0];
+    setSelectedTemplate(templateId);
+    setTemplateDraft(createRetargetingDraft(nextTemplate));
+  };
+
+  const updateDraftButton = (index, field, value) => {
+    setTemplateDraft((draft) => {
+      const buttons = [...draft.buttons];
+      buttons[index] = { ...buttons[index], [field]: value };
+      return { ...draft, buttons };
+    });
+  };
+
+  const updateActivityField = (activityId, field, value) => {
+    setActivities((items) => items.map((item) => (
+      item.id === activityId ? { ...item, [field]: value } : item
+    )));
+  };
+
+  const handleEditActivity = (activity) => {
+    const nextTemplate = RETARGETING_TEMPLATES.find((item) => item.id === activity.templateId) || RETARGETING_TEMPLATES[0];
+    setSelectedActivityId(activity.id);
+    setSelectedPreset(activity.presetId);
+    setSelectedTemplate(activity.templateId);
+    setTemplateDraft(createRetargetingDraft(nextTemplate));
+    setMode(activity.mode);
+    setWaitDays(activity.waitDays);
+    setResumeStep(activity.resumeStep);
+
+    if (activity.conditions?.clickedMin) setClickedMin(activity.conditions.clickedMin);
+    if (activity.conditions?.inactiveSteps) setInactiveSteps(activity.conditions.inactiveSteps);
+    if (activity.conditions?.recentDays) setRecentDays(activity.conditions.recentDays);
+    if (activity.conditions?.applyDelayDays) setApplyDelayDays(activity.conditions.applyDelayDays);
+    if (activity.conditions?.applyClicks) setApplyClicks(activity.conditions.applyClicks);
+    if (activity.conditions?.paymentDelayDays) setPaymentDelayDays(activity.conditions.paymentDelayDays);
+    if (activity.conditions?.receivedMin) setReceivedMin(activity.conditions.receivedMin);
+    if (activity.conditions?.joinedDays) setJoinedDays(activity.conditions.joinedDays);
+  };
+
+  const handleSaveActivityDraft = () => {
+    const conditions = {
+      clickedMin,
+      inactiveSteps,
+      recentDays,
+      applyDelayDays,
+      applyClicks,
+      paymentDelayDays,
+      receivedMin,
+      joinedDays,
+      storyOnly,
+      excludeApplyClickers,
+    };
+
+    setActivities((items) => items.map((item) => (
+      item.id === selectedActivityId
+        ? {
+            ...item,
+            presetId: preset.id,
+            templateId: template.id,
+            templateTitle: template.title,
+            mode,
+            rules: quickRules,
+            conditions,
+            waitDays,
+            resumeStep,
+            status: item.status === 'sent' ? 'draft' : item.status,
+          }
+        : item
+    )));
+  };
+
+  const percent = (value, total) => {
+    if (!total) return '0%';
+    return `${Math.round((value / total) * 100)}%`;
+  };
+
+  return (
+    <div>
+      <h2 style={styles.sectionTitle}>🎯 受眾再行銷</h2>
+      <p style={styles.sectionDesc}>
+        先用快速受眾看操作流程；第一版會以點擊行為為核心，開封不當主要判斷。
+      </p>
+
+      <div style={styles.retargetingLayout}>
+        <section style={styles.retargetingPanel}>
+          <div style={styles.retargetingPanelHead}>
+            <span style={styles.retargetingStep}>1</span>
+            <div>
+              <h3 style={styles.analyticsH3}>建立受眾</h3>
+              <p style={styles.retargetingMuted}>先選一個常用情境，再微調條件。</p>
+            </div>
+          </div>
+
+          <div style={styles.retargetingPresetGrid}>
+            {AUDIENCE_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setSelectedPreset(p.id)}
+                style={{
+                  ...styles.retargetingPreset,
+                  ...(selectedPreset === p.id ? styles.retargetingPresetActive : {}),
+                }}
+              >
+                <span style={styles.retargetingPresetTitle}>{p.title}</span>
+                <span style={styles.retargetingPresetTone}>{p.tone}</span>
+                <span style={styles.retargetingPresetDesc}>{p.desc}</span>
+              </button>
+            ))}
+          </div>
+
+          <AudienceConditionTuning
+            presetId={preset.id}
+            clickedMin={clickedMin}
+            setClickedMin={setClickedMin}
+            inactiveSteps={inactiveSteps}
+            setInactiveSteps={setInactiveSteps}
+            recentDays={recentDays}
+            setRecentDays={setRecentDays}
+            applyDelayDays={applyDelayDays}
+            setApplyDelayDays={setApplyDelayDays}
+            applyClicks={applyClicks}
+            setApplyClicks={setApplyClicks}
+            paymentDelayDays={paymentDelayDays}
+            setPaymentDelayDays={setPaymentDelayDays}
+            receivedMin={receivedMin}
+            setReceivedMin={setReceivedMin}
+            joinedDays={joinedDays}
+            setJoinedDays={setJoinedDays}
+            storyOnly={storyOnly}
+            setStoryOnly={setStoryOnly}
+            excludeApplyClickers={excludeApplyClickers}
+            setExcludeApplyClickers={setExcludeApplyClickers}
+          />
+
+          <div style={styles.retargetingRuleBox}>
+            <div style={styles.retargetingRuleTitle}>目前條件</div>
+            {quickRules.map((rule) => (
+              <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
+            ))}
+          </div>
+        </section>
+
+        <section style={styles.retargetingPanel}>
+          <div style={styles.retargetingPanelHead}>
+            <span style={styles.retargetingStep}>2</span>
+            <div>
+              <h3 style={styles.analyticsH3}>選擇模板</h3>
+              <p style={styles.retargetingMuted}>模板之後可儲存分類，這裡先看文案位置。</p>
+            </div>
+          </div>
+
+          <div style={styles.retargetingTemplateList}>
+            {RETARGETING_TEMPLATES.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => handleSelectTemplate(t.id)}
+                style={{
+                  ...styles.retargetingTemplateBtn,
+                  ...(selectedTemplate === t.id ? styles.retargetingTemplateBtnActive : {}),
+                }}
+              >
+                <span>{t.title}</span>
+                <small>{t.category}</small>
+              </button>
+            ))}
+          </div>
+
+          <label style={styles.fieldLabel}>圖片 URL（可留空）</label>
+          <input
+            value={templateDraft.image_url}
+            onChange={(e) => setTemplateDraft((draft) => ({ ...draft, image_url: e.target.value }))}
+            style={styles.input}
+            placeholder="/images/landing/land002.png 或 https://..."
+          />
+
+          <label style={styles.fieldLabel}>訊息文字</label>
+          <textarea
+            value={templateDraft.body}
+            onChange={(e) => setTemplateDraft((draft) => ({ ...draft, body: e.target.value }))}
+            style={styles.textarea}
+            rows={5}
+          />
+
+          {[0, 1, 2].map((index) => (
+            <div key={index} style={styles.retargetingButtonEditor}>
+              <label style={styles.fieldLabel}>按鈕 {index + 1}{index === 2 && <span style={styles.retargetingMuted}>可留空</span>}</label>
+              <input
+                value={templateDraft.buttons[index]?.label || ''}
+                onChange={(e) => updateDraftButton(index, 'label', e.target.value)}
+                style={{ ...styles.input, marginBottom: 4 }}
+                placeholder={index === 0 ? '例如：繼續看下一篇' : index === 1 ? '例如：看一個真實案例' : '例如：我想問問題'}
+              />
+              <input
+                value={templateDraft.buttons[index]?.url || ''}
+                onChange={(e) => updateDraftButton(index, 'url', e.target.value)}
+                style={styles.input}
+                placeholder="https://..."
+              />
+            </div>
+          ))}
+
+          <FlexPreview
+            message={templateDraft.body}
+            buttons={previewButtons}
+            imageUrl={templateDraft.image_url || undefined}
+          />
+        </section>
+      </div>
+
+      <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
+        <div style={styles.retargetingPanelHead}>
+          <span style={styles.retargetingStep}>3</span>
+          <div>
+            <h3 style={styles.analyticsH3}>發送與後續流程</h3>
+            <p style={styles.retargetingMuted}>第一版先手動送，資料結構預留自動 follow-up。</p>
+          </div>
+        </div>
+
+        <div style={styles.retargetingFlowGrid}>
+          <div>
+            <label style={styles.fieldLabel}>發送方式</label>
+            <div style={styles.modeToggle}>
+              {[
+                { id: 'instant', label: '立即發送', desc: '手動確認後送出' },
+                { id: 'scheduled', label: '排程發送', desc: '指定時間送出' },
+              ].map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setMode(item.id)}
+                  style={mode === item.id ? styles.modeActive : styles.modeBtn}
+                >
+                  <strong>{item.label}</strong>
+                  <span style={styles.modeDesc}>{item.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label style={styles.fieldLabel}>發送後等待 {waitDays} 天</label>
+            <input
+              type="range"
+              min="1"
+              max="7"
+              value={waitDays}
+              onChange={(e) => setWaitDays(Number(e.target.value))}
+              style={styles.retargetingRange}
+            />
+
+            <label style={styles.fieldLabel}>有互動後</label>
+            <select
+              value={resumeStep}
+              onChange={(e) => setResumeStep(e.target.value)}
+              style={styles.input}
+            >
+              <option value="next_unread">從下一篇未讀文章繼續</option>
+              <option value="same_step">從停住的那一篇重送</option>
+              <option value="q5">送到 Q5 / 報名頁</option>
+              <option value="handoff">通知人工接手</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={styles.retargetingAutomationPreview}>
+          <div style={styles.retargetingFlowNode}>符合「{preset.title}」</div>
+          <div style={styles.retargetingFlowArrow}>→</div>
+          <div style={styles.retargetingFlowNode}>發送「{template.title}」</div>
+          <div style={styles.retargetingFlowArrow}>→</div>
+          <div style={styles.retargetingFlowNode}>等待 {waitDays} 天</div>
+          <div style={styles.retargetingFlowArrow}>→</div>
+          <div style={styles.retargetingFlowSplit}>
+            <div>有互動：{engagedAction}</div>
+            <div>沒互動：放入冷卻，或下次發 B 模板</div>
+          </div>
+        </div>
+
+        <div style={styles.retargetingFooter}>
+          <div>
+            <strong>預估人數：{estimatedCount}</strong>
+            <span style={styles.retargetingMuted}>每個 campaign 每位 user 只發一次，避免重複。</span>
+          </div>
+          <button type="button" style={{ ...styles.btnPrimary, opacity: 0.55, cursor: 'not-allowed' }} disabled>
+            本地原型，不會送出
+          </button>
+        </div>
+      </section>
+
+      <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
+        <div style={styles.retargetingPanelHead}>
+          <span style={styles.retargetingStep}>4</span>
+          <div>
+            <h3 style={styles.analyticsH3}>發送紀錄 / 活動紀錄</h3>
+            <p style={styles.retargetingMuted}>確認送出後會留在這裡；草稿、排程、暫停中的活動都可以再編輯。</p>
+          </div>
+        </div>
+
+        <div style={styles.retargetingActivityGrid}>
+          {activities.map((activity) => {
+            const status = RETARGETING_ACTIVITY_STATUS[activity.status] || RETARGETING_ACTIVITY_STATUS.draft;
+            const activityPreset = AUDIENCE_PRESETS.find((item) => item.id === activity.presetId);
+            return (
+              <article
+                key={activity.id}
+                style={{
+                  ...styles.retargetingActivityCard,
+                  ...(selectedActivityId === activity.id ? styles.retargetingActivityCardActive : {}),
+                }}
+              >
+                <div style={styles.retargetingActivityTop}>
+                  <div>
+                    <strong style={styles.retargetingActivityName}>{activity.name}</strong>
+                    <span style={styles.retargetingMuted}>
+                      {activityPreset?.title || '自訂受眾'} · {activity.templateTitle}
+                    </span>
+                  </div>
+                  <span style={{ ...styles.retargetingStatusPill, color: status.tone, borderColor: status.tone }}>
+                    {status.label}
+                  </span>
+                </div>
+
+                <div style={styles.retargetingActivityMeta}>
+                  <span>{activity.mode === 'instant' ? '立即發送' : '排程發送'}</span>
+                  <span>{activity.scheduleText}</span>
+                  <span>等待 {activity.waitDays} 天後追蹤</span>
+                </div>
+
+                <div style={styles.retargetingRuleBox}>
+                  {activity.rules.map((rule) => (
+                    <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
+                  ))}
+                </div>
+
+                <div style={styles.retargetingActivityNumbers}>
+                  <span>預估 {activity.audienceSize} 人</span>
+                  <span>已送 {activity.sentCount} 人</span>
+                  <span>排除 {activity.excludedCount} 人</span>
+                </div>
+
+                <div style={styles.retargetingMetricGrid}>
+                  {[
+                    { label: '點擊', value: activity.metrics.clicked, total: activity.sentCount },
+                    { label: '回覆', value: activity.metrics.replied, total: activity.sentCount },
+                    { label: '報名頁', value: activity.metrics.applyClicks, total: activity.sentCount },
+                    { label: '送單', value: activity.metrics.submitted, total: activity.sentCount },
+                    { label: '付款', value: activity.metrics.paid, total: activity.sentCount },
+                  ].map((metric) => (
+                    <div key={metric.label} style={styles.retargetingMetricBox}>
+                      <span>{metric.label}</span>
+                      <strong>{metric.value}</strong>
+                      <small>{percent(metric.value, metric.total)}</small>
+                    </div>
+                  ))}
+                </div>
+
+                <details style={styles.retargetingAnalysisDetails}>
+                  <summary>查看成效分析</summary>
+                  <div style={styles.retargetingAnalysisBody}>
+                    <div>
+                      <strong>互動速度</strong>
+                      <span>
+                        {activity.metrics.avgEngageDays
+                          ? `平均發送後 ${activity.metrics.avgEngageDays} 天互動`
+                          : '尚未累積互動資料'}
+                      </span>
+                    </div>
+                    <div>
+                      <strong>按鈕 / 連結點擊</strong>
+                      {activity.metrics.linkBreakdown.map((link) => (
+                        <span key={link.label}>{link.label}：{link.count}</span>
+                      ))}
+                    </div>
+                    <div>
+                      <strong>後續流程</strong>
+                      <span>有互動接續：{activity.metrics.followUp.engagedNext}</span>
+                      <span>未互動進 B 模板：{activity.metrics.followUp.inactiveNext}</span>
+                      <span>人工跟進：{activity.metrics.followUp.handoff}</span>
+                    </div>
+                  </div>
+                </details>
+
+                <div style={styles.retargetingActivityEditRow}>
+                  <label style={styles.fieldLabel}>
+                    狀態
+                    <select
+                      value={activity.status}
+                      onChange={(e) => updateActivityField(activity.id, 'status', e.target.value)}
+                      style={styles.input}
+                    >
+                      <option value="draft">草稿</option>
+                      <option value="scheduled">已排程</option>
+                      <option value="paused">已暫停</option>
+                      <option value="sent">已發送</option>
+                    </select>
+                  </label>
+                  <label style={styles.fieldLabel}>
+                    發送時間
+                    <input
+                      value={activity.scheduleText}
+                      onChange={(e) => updateActivityField(activity.id, 'scheduleText', e.target.value)}
+                      style={styles.input}
+                    />
+                  </label>
+                </div>
+
+                <div style={styles.retargetingActivityActions}>
+                  <button
+                    type="button"
+                    style={styles.btnSecondary}
+                    onClick={() => handleEditActivity(activity)}
+                  >
+                    載入編輯
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...styles.btnPrimary,
+                      ...(selectedActivityId !== activity.id ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+                    }}
+                    onClick={handleSaveActivityDraft}
+                    disabled={selectedActivityId !== activity.id}
+                  >
+                    更新此活動
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 const styles = {
   // Page
   page: {
@@ -4341,5 +5154,284 @@ const styles = {
     color: '#2a9d6f',
     borderRadius: 6,
     cursor: 'pointer',
+  },
+  retargetingLayout: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1.15fr) minmax(320px, 0.85fr)',
+    gap: 16,
+    alignItems: 'start',
+  },
+  retargetingPanel: {
+    background: '#fff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    padding: 16,
+  },
+  retargetingPanelHead: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 14,
+  },
+  retargetingStep: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    background: '#1f7a55',
+    color: '#fff',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 13,
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+  retargetingMuted: {
+    display: 'block',
+    color: '#64748b',
+    fontSize: 12,
+    lineHeight: 1.5,
+    marginTop: 2,
+  },
+  retargetingPresetGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+    gap: 8,
+  },
+  retargetingPreset: {
+    border: '1px solid #e5e7eb',
+    background: '#fff',
+    borderRadius: 8,
+    padding: 12,
+    textAlign: 'left',
+    cursor: 'pointer',
+    minHeight: 118,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  retargetingPresetActive: {
+    borderColor: '#1f7a55',
+    boxShadow: '0 0 0 2px rgba(31,122,85,0.12)',
+    background: '#f7fbf8',
+  },
+  retargetingPresetTitle: {
+    fontWeight: 700,
+    color: '#111827',
+    fontSize: 14,
+  },
+  retargetingPresetTone: {
+    alignSelf: 'flex-start',
+    border: '1px solid #bbf7d0',
+    background: '#f0fdf4',
+    color: '#166534',
+    borderRadius: 999,
+    padding: '2px 8px',
+    fontSize: 11,
+  },
+  retargetingPresetDesc: {
+    color: '#64748b',
+    fontSize: 12,
+    lineHeight: 1.45,
+  },
+  retargetingTuning: {
+    marginTop: 14,
+    padding: 12,
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    background: '#fafafa',
+  },
+  retargetingRange: {
+    width: '100%',
+    accentColor: '#1f7a55',
+    margin: '4px 0 12px',
+  },
+  retargetingRuleBox: {
+    marginTop: 14,
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6,
+    alignItems: 'center',
+  },
+  retargetingRuleTitle: {
+    width: '100%',
+    color: '#475569',
+    fontSize: 12,
+    fontWeight: 700,
+  },
+  retargetingRuleChip: {
+    border: '1px solid #cbd5e1',
+    borderRadius: 999,
+    padding: '5px 10px',
+    color: '#334155',
+    background: '#fff',
+    fontSize: 12,
+  },
+  retargetingTemplateList: {
+    display: 'grid',
+    gap: 8,
+    marginBottom: 12,
+  },
+  retargetingTemplateBtn: {
+    border: '1px solid #e5e7eb',
+    background: '#fff',
+    borderRadius: 8,
+    padding: '10px 12px',
+    textAlign: 'left',
+    cursor: 'pointer',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+    color: '#111827',
+  },
+  retargetingTemplateBtnActive: {
+    borderColor: '#1f7a55',
+    background: '#f7fbf8',
+  },
+  retargetingButtonEditor: {
+    padding: '8px 0',
+    borderTop: '1px solid #f1f5f9',
+  },
+  retargetingFlowGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+    gap: 16,
+  },
+  retargetingAutomationPreview: {
+    marginTop: 16,
+    display: 'flex',
+    alignItems: 'stretch',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  retargetingFlowNode: {
+    border: '1px solid #d1fae5',
+    background: '#f0fdf4',
+    color: '#14532d',
+    borderRadius: 8,
+    padding: '10px 12px',
+    fontSize: 13,
+    minWidth: 130,
+  },
+  retargetingFlowArrow: {
+    color: '#94a3b8',
+    display: 'flex',
+    alignItems: 'center',
+    fontWeight: 700,
+  },
+  retargetingFlowSplit: {
+    border: '1px solid #e5e7eb',
+    background: '#f8fafc',
+    borderRadius: 8,
+    padding: '9px 12px',
+    fontSize: 13,
+    color: '#334155',
+    display: 'grid',
+    gap: 4,
+    minWidth: 220,
+  },
+  retargetingFooter: {
+    marginTop: 16,
+    paddingTop: 14,
+    borderTop: '1px solid #e5e7eb',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  retargetingActivityGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+    gap: 12,
+  },
+  retargetingActivityCard: {
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    padding: 14,
+    background: '#fff',
+  },
+  retargetingActivityCardActive: {
+    borderColor: '#1f7a55',
+    boxShadow: '0 0 0 2px rgba(31,122,85,0.12)',
+  },
+  retargetingActivityTop: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+    marginBottom: 10,
+  },
+  retargetingActivityName: {
+    display: 'block',
+    color: '#111827',
+    fontSize: 15,
+  },
+  retargetingStatusPill: {
+    border: '1px solid',
+    borderRadius: 999,
+    padding: '3px 9px',
+    fontSize: 12,
+    fontWeight: 700,
+    whiteSpace: 'nowrap',
+    background: '#fff',
+  },
+  retargetingActivityMeta: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6,
+    color: '#475569',
+    fontSize: 12,
+  },
+  retargetingActivityNumbers: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gap: 8,
+    marginTop: 12,
+    color: '#334155',
+    fontSize: 12,
+  },
+  retargetingMetricGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(86px, 1fr))',
+    gap: 8,
+    marginTop: 12,
+  },
+  retargetingMetricBox: {
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    padding: '8px 10px',
+    background: '#f8fafc',
+    display: 'grid',
+    gap: 2,
+    color: '#475569',
+    fontSize: 12,
+  },
+  retargetingAnalysisDetails: {
+    marginTop: 12,
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    padding: '9px 10px',
+    color: '#334155',
+    fontSize: 13,
+    background: '#fff',
+  },
+  retargetingAnalysisBody: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 12,
+    marginTop: 10,
+    lineHeight: 1.6,
+  },
+  retargetingActivityEditRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(120px, 0.6fr) minmax(180px, 1fr)',
+    gap: 10,
+    marginTop: 12,
+  },
+  retargetingActivityActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 12,
   },
 };
