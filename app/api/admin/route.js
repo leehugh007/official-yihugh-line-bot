@@ -1052,6 +1052,10 @@ async function handleSaveRetargetingAdminConfig({ config }) {
   if (!cleanConfig.stageTemplates[0]?.message) {
     return NextResponse.json({ error: '第 1 階段模板缺少訊息文字' }, { status: 400 });
   }
+  const templateError = validateRetargetingTemplates(cleanConfig.stageTemplates);
+  if (templateError) {
+    return NextResponse.json({ error: templateError }, { status: 400 });
+  }
 
   const { error } = await supabase
     .from('official_settings')
@@ -1063,6 +1067,34 @@ async function handleSaveRetargetingAdminConfig({ config }) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true, config: cleanConfig });
+}
+
+function validateRetargetingTemplates(stageTemplates) {
+  for (const template of stageTemplates || []) {
+    if (!template?.message) continue;
+    if (template.message.includes('待填入')) {
+      return `第 ${template.stage || '?'} 階段模板仍含待填入文字`;
+    }
+    for (const button of template.buttons || []) {
+      if (!button?.label && !button?.url) continue;
+      if (!button?.label || !button?.url) {
+        return `第 ${template.stage || '?'} 階段模板有按鈕缺少文字或網址`;
+      }
+      let parsed;
+      try {
+        parsed = new URL(button.url);
+      } catch {
+        return `第 ${template.stage || '?'} 階段模板按鈕網址格式不正確`;
+      }
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return `第 ${template.stage || '?'} 階段模板按鈕網址必須是 http/https`;
+      }
+      if (parsed.hostname === 'example.com' || parsed.hostname.endsWith('.example.com')) {
+        return `第 ${template.stage || '?'} 階段模板仍使用 example.com 測試網址`;
+      }
+    }
+  }
+  return null;
 }
 
 async function handleResetAdminDrip() {

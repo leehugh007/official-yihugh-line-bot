@@ -19,6 +19,8 @@ import { wrapLink } from '../../../../lib/tracking.js';
 import { sendScheduledPush } from '../../../../lib/push.js';
 
 const ADMIN_TAG = '\u7ba1\u7406\u8005';
+const ENROLLED_TAG = '\u5df2\u5831\u540d\u6e1b\u91cd\u73ed';
+const PENDING_PAYMENT_RULE = 'pending_payment';
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -93,7 +95,7 @@ async function recordRetargetingObservation(userId, config, stage, windowKey, co
   if (!template?.message) return false;
 
   const linkId = `retargeting_auto_${config.ruleId || 'rule'}_s${stage}_${Date.now()}`;
-  await supabase.from('official_push_logs').insert({
+  const { error } = await supabase.from('official_push_logs').insert({
     template_id: `retargeting_auto_${config.ruleId || 'rule'}_s${stage}`,
     label: `自動再行銷觀察：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
     message: template.message,
@@ -108,6 +110,10 @@ async function recordRetargetingObservation(userId, config, stage, windowKey, co
     completed_at: new Date().toISOString(),
     exclude_enrolled: false,
   });
+  if (error) {
+    console.error('[Retargeting] observe log insert failed:', error);
+    return false;
+  }
 
   return true;
 }
@@ -121,7 +127,7 @@ async function sendRetargetingMessage(userId, config, stage, windowKey, context)
   const ok = await pushMessage(userId, lineMsg);
   if (!ok) return false;
 
-  await supabase.from('official_push_logs').insert({
+  const { error } = await supabase.from('official_push_logs').insert({
     template_id: `retargeting_auto_${config.ruleId || 'rule'}_s${stage}`,
     label: `自動再行銷${context === 'admin' ? '測試' : '正式'}：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
     message: template.message,
@@ -136,6 +142,10 @@ async function sendRetargetingMessage(userId, config, stage, windowKey, context)
     completed_at: new Date().toISOString(),
     exclude_enrolled: false,
   });
+  if (error) {
+    console.error('[Retargeting] send log insert failed:', error);
+    return false;
+  }
 
   return true;
 }
@@ -190,17 +200,42 @@ async function processRetargeting() {
 
   let usersQuery = supabase
     .from('official_line_users')
-    .select('line_user_id, last_user_reply_at')
+    .select('line_user_id, last_user_reply_at, tags')
     .eq('is_blocked', false);
 
   if (isTestMode) {
     usersQuery = usersQuery.contains('tags', [ADMIN_TAG]);
   } else {
-    usersQuery = usersQuery.not('tags', 'cs', JSON.stringify([ADMIN_TAG]));
+    usersQuery = usersQuery
+      .not('tags', 'cs', JSON.stringify([ADMIN_TAG]))
+      .not('tags', 'cs', JSON.stringify([ENROLLED_TAG]));
   }
 
   const { data: users } = await usersQuery;
-  const userIds = (users || []).map((u) => u.line_user_id).filter(Boolean);
+  let candidates = users || [];
+  let userIds = candidates.map((u) => u.line_user_id).filter(Boolean);
+  if (!isTestMode && userIds.length > 0) {
+    const { data: applications } = await supabase
+      .from('official_program_applications')
+      .select('line_user_id, status')
+      .in('line_user_id', userIds)
+      .in('status', ['pending', 'paid']);
+
+    const appStatusByUser = new Map();
+    for (const app of applications || []) {
+      if (!app.line_user_id) continue;
+      const current = appStatusByUser.get(app.line_user_id);
+      if (current === 'paid') continue;
+      appStatusByUser.set(app.line_user_id, app.status);
+    }
+
+    candidates = candidates.filter((user) => {
+      const status = appStatusByUser.get(user.line_user_id);
+      if (config.ruleId === PENDING_PAYMENT_RULE) return status === 'pending';
+      return !status;
+    });
+    userIds = candidates.map((u) => u.line_user_id).filter(Boolean);
+  }
   if (userIds.length === 0) {
     return { processed: 0, sent: 0, skipped: 0, observed: 0, message: `no ${context} users` };
   }
@@ -230,7 +265,7 @@ async function processRetargeting() {
   let pending = 0;
   let observed = 0;
   const now = new Date();
-  const usersById = Object.fromEntries((users || []).map((u) => [u.line_user_id, u]));
+  const usersById = Object.fromEntries(candidates.map((u) => [u.line_user_id, u]));
 
   for (const userId of userIds) {
     processed++;
