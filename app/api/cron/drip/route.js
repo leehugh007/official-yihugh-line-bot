@@ -18,6 +18,10 @@ import { pushMessage, pushFlexMessage } from '../../../../lib/line.js';
 import { wrapLink } from '../../../../lib/tracking.js';
 import { sendScheduledPush } from '../../../../lib/push.js';
 
+const ADMIN_TAG = '\u7ba1\u7406\u8005';
+const ENROLLED_TAG = '\u5df2\u5831\u540d\u6e1b\u91cd\u73ed';
+const PENDING_PAYMENT_RULE = 'pending_payment';
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const secret = searchParams.get('secret');
@@ -34,11 +38,353 @@ export async function GET(request) {
   try {
     const dripResult = await processDrip();
     const pushResult = await processScheduledPushes();
-    return NextResponse.json({ drip: dripResult, scheduledPush: pushResult });
+    const retargetingResult = await processRetargeting();
+    return NextResponse.json({ drip: dripResult, scheduledPush: pushResult, retargeting: retargetingResult });
   } catch (error) {
     console.error('[Drip] Error:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+}
+
+function safeJsonParse(value, fallback) {
+  try {
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function daysAgoIso(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date.toISOString();
+}
+
+function taipeiScheduledAt(delayDays, hhmm) {
+  const [hourRaw, minuteRaw] = String(hhmm || '14:00').split(':');
+  const hour = Number(hourRaw || 14);
+  const minute = Number(minuteRaw || 0);
+  const taipeiNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const y = taipeiNow.getUTCFullYear();
+  const m = taipeiNow.getUTCMonth();
+  const d = taipeiNow.getUTCDate() + Number(delayDays || 0);
+  return new Date(Date.UTC(y, m, d, hour - 8, minute, 0, 0)).toISOString();
+}
+
+function buildFlexFromTemplate(template, linkId, userId) {
+  const message = template.message || '';
+  const lines = message.split('\n').filter((l) => l.trim());
+  const title = lines[0] || template.title || '一休陪你健康瘦';
+  const body = lines.slice(1).join('\n').trim();
+  const buttons = (template.buttons || [])
+    .filter((btn) => btn.label && btn.url)
+    .map((btn, i) => ({
+      ...btn,
+      url: wrapLink(btn.url, `${linkId}_b${i}`, userId),
+    }));
+  return pushFlexMessage({
+    title,
+    body,
+    buttons,
+    imageUrl: template.imageUrl || undefined,
+  });
+}
+
+async function recordRetargetingObservation(userId, config, stage, windowKey, context) {
+  const template = config.stageTemplates?.[stage - 1] || config.stageTemplates?.[0];
+  if (!template?.message) return false;
+
+  const linkId = `retargeting_auto_${config.ruleId || 'rule'}_s${stage}_${Date.now()}`;
+  const { error } = await supabase.from('official_push_logs').insert({
+    template_id: `retargeting_auto_${config.ruleId || 'rule'}_s${stage}`,
+    label: `自動再行銷觀察：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
+    message: template.message,
+    link_id: linkId,
+    buttons: template.buttons || [],
+    image_url: template.imageUrl || null,
+    segments: [context, 'retargeting_auto', 'observe_only'],
+    mode: 'observe_only',
+    target_count: 1,
+    sent_count: 0,
+    status: 'observed',
+    completed_at: new Date().toISOString(),
+    exclude_enrolled: false,
+  });
+  if (error) {
+    console.error('[Retargeting] observe log insert failed:', error);
+    return false;
+  }
+
+  return true;
+}
+
+async function sendRetargetingMessage(userId, config, stage, windowKey, context) {
+  const template = config.stageTemplates?.[stage - 1] || config.stageTemplates?.[0];
+  if (!template?.message) return false;
+
+  const linkId = `retargeting_auto_${config.ruleId || 'rule'}_s${stage}_${Date.now()}`;
+  const lineMsg = buildFlexFromTemplate(template, linkId, userId);
+  const ok = await pushMessage(userId, lineMsg);
+  if (!ok) return false;
+
+  const { error } = await supabase.from('official_push_logs').insert({
+    template_id: `retargeting_auto_${config.ruleId || 'rule'}_s${stage}`,
+    label: `自動再行銷${context === 'admin' ? '測試' : '正式'}：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
+    message: template.message,
+    link_id: linkId,
+    buttons: template.buttons || [],
+    image_url: template.imageUrl || null,
+    segments: [context, 'retargeting_auto'],
+    mode: 'instant',
+    target_count: 1,
+    sent_count: 1,
+    status: 'completed',
+    completed_at: new Date().toISOString(),
+    exclude_enrolled: false,
+  });
+  if (error) {
+    console.error('[Retargeting] send log insert failed:', error);
+    return false;
+  }
+
+  return true;
+}
+
+function hasReplyInteraction(user, sinceIso) {
+  if (!user?.last_user_reply_at || !sinceIso) return false;
+  return new Date(user.last_user_reply_at) >= new Date(sinceIso);
+}
+
+function getNextRetargetingStage(config, userState) {
+  const sentCount = userState?.sentCount || 0;
+  if (config.repeatStrategy === 'once' && sentCount >= 1) {
+    return { action: 'skip', reason: 'already_sent_once' };
+  }
+  if (config.repeatStrategy === 'cooldown' && sentCount >= 1) {
+    return { action: 'cooldown', reason: 'repeat_cooldown' };
+  }
+  if (config.repeatStrategy === 'staged') {
+    if (sentCount === 0) return { action: 'send', stage: 1 };
+    if (sentCount === 1) return { action: 'send', stage: 2 };
+    return { action: config.thirdStageAction || 'cooldown', reason: 'third_stage' };
+  }
+  return sentCount === 0 ? { action: 'send', stage: 1 } : { action: 'skip', reason: 'already_sent' };
+}
+
+async function processRetargeting() {
+  const { data: testModeSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'drip_test_mode')
+    .single();
+  const isTestMode = testModeSetting?.value === 'true';
+  const { data: configSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'retargeting_admin_auto_config')
+    .single();
+  const config = safeJsonParse(configSetting?.value, null);
+  if (!config?.enabled) {
+    return { processed: 0, sent: 0, skipped: 0, observed: 0, message: 'retargeting disabled' };
+  }
+
+  const stateKey = isTestMode ? 'retargeting_admin_auto_state' : 'retargeting_auto_state';
+  const context = isTestMode ? 'admin' : 'member';
+
+  const { data: stateSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', stateKey)
+    .single();
+  const state = safeJsonParse(stateSetting?.value, {});
+
+  let usersQuery = supabase
+    .from('official_line_users')
+    .select('line_user_id, last_user_reply_at, tags')
+    .eq('is_blocked', false);
+
+  if (isTestMode) {
+    usersQuery = usersQuery.contains('tags', [ADMIN_TAG]);
+  } else {
+    usersQuery = usersQuery
+      .not('tags', 'cs', JSON.stringify([ADMIN_TAG]))
+      .not('tags', 'cs', JSON.stringify([ENROLLED_TAG]));
+  }
+
+  const { data: users } = await usersQuery;
+  let candidates = users || [];
+  let userIds = candidates.map((u) => u.line_user_id).filter(Boolean);
+  if (!isTestMode && userIds.length > 0) {
+    const { data: applications } = await supabase
+      .from('official_program_applications')
+      .select('line_user_id, status')
+      .in('line_user_id', userIds)
+      .in('status', ['pending', 'paid']);
+
+    const appStatusByUser = new Map();
+    for (const app of applications || []) {
+      if (!app.line_user_id) continue;
+      const current = appStatusByUser.get(app.line_user_id);
+      if (current === 'paid') continue;
+      appStatusByUser.set(app.line_user_id, app.status);
+    }
+
+    candidates = candidates.filter((user) => {
+      const status = appStatusByUser.get(user.line_user_id);
+      if (config.ruleId === PENDING_PAYMENT_RULE) return status === 'pending';
+      return !status;
+    });
+    userIds = candidates.map((u) => u.line_user_id).filter(Boolean);
+  }
+  if (userIds.length === 0) {
+    return { processed: 0, sent: 0, skipped: 0, observed: 0, message: `no ${context} users` };
+  }
+
+  const { data: logs } = await supabase
+    .from('official_drip_logs')
+    .select('line_user_id, step_number, sent_at')
+    .in('line_user_id', userIds)
+    .order('step_number', { ascending: true });
+
+  const { data: clicks } = await supabase
+    .from('official_line_clicks')
+    .select('line_user_id, link_id, clicked_at')
+    .in('line_user_id', userIds)
+    .like('link_id', 'drip_%');
+
+  const clickSet = new Set((clicks || []).map((click) => `${click.line_user_id}:${String(click.link_id).match(/^drip_(\d+)/)?.[1]}`));
+  const logsByUser = {};
+  for (const log of logs || []) {
+    if (!logsByUser[log.line_user_id]) logsByUser[log.line_user_id] = [];
+    logsByUser[log.line_user_id].push(log);
+  }
+
+  let processed = 0;
+  let sent = 0;
+  let skipped = 0;
+  let pending = 0;
+  let observed = 0;
+  const now = new Date();
+  const usersById = Object.fromEntries(candidates.map((u) => [u.line_user_id, u]));
+
+  for (const userId of userIds) {
+    processed++;
+    const userLogs = logsByUser[userId] || [];
+    const uniqueLogs = [...new Map(userLogs.map((log) => [log.step_number, log])).values()]
+      .sort((a, b) => a.step_number - b.step_number);
+
+    if (uniqueLogs.length < Number(config.receivedMin || 1)) {
+      skipped++;
+      continue;
+    }
+
+    const missedSteps = Number(config.missedSteps || 1);
+    const recentLogs = uniqueLogs.slice(-missedSteps);
+    if (recentLogs.length < missedSteps) {
+      skipped++;
+      continue;
+    }
+
+    const latestSentAt = recentLogs[recentLogs.length - 1]?.sent_at;
+    if (latestSentAt && new Date(latestSentAt) > new Date(daysAgoIso(config.checkDelayDays || 0))) {
+      skipped++;
+      continue;
+    }
+
+    const allMissed = recentLogs.every((log) => !clickSet.has(`${userId}:${log.step_number}`));
+    if (!allMissed) {
+      skipped++;
+      continue;
+    }
+
+    const userState = state[userId] || {};
+    const windowKey = recentLogs.map((log) => log.step_number).join('-');
+    const pendingForWindow = userState.pending?.windowKey === windowKey ? userState.pending : null;
+
+    if (userState.lastWindowKey === windowKey) {
+      skipped++;
+      continue;
+    }
+
+    if (pendingForWindow && new Date(pendingForWindow.scheduledAt) > now) {
+      pending++;
+      continue;
+    }
+
+    if (userState.lastSentAt && hasReplyInteraction(usersById[userId], userState.lastSentAt)) {
+      skipped++;
+      continue;
+    }
+
+    const next = pendingForWindow
+      ? { action: 'send', stage: pendingForWindow.stage }
+      : getNextRetargetingStage(config, userState);
+    if (next.action !== 'send') {
+      state[userId] = { ...userState, lastWindowKey: windowKey, lastAction: next.action, updatedAt: new Date().toISOString() };
+      skipped++;
+      continue;
+    }
+
+    if (config.observeOnly) {
+      if (userState.observedWindowKey === windowKey) {
+        skipped++;
+        continue;
+      }
+      const ok = await recordRetargetingObservation(userId, config, next.stage, windowKey, context);
+      if (ok) {
+        state[userId] = {
+          ...userState,
+          observedWindowKey: windowKey,
+          observedStage: next.stage,
+          observedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        observed++;
+      } else {
+        skipped++;
+      }
+      continue;
+    }
+
+    if (config.sendMode === 'scheduled') {
+      const scheduledAt = userState.pending?.scheduledAt || taipeiScheduledAt(config.sendDelayDays || 0, config.sendAtTime || '14:00');
+      if (new Date(scheduledAt) > now) {
+        state[userId] = {
+          ...userState,
+          pending: { stage: next.stage, windowKey, scheduledAt },
+          updatedAt: new Date().toISOString(),
+        };
+        pending++;
+        continue;
+      }
+    }
+
+    const ok = await sendRetargetingMessage(userId, config, next.stage, windowKey, context);
+    if (ok) {
+      state[userId] = {
+        ...userState,
+        sentCount: (userState.sentCount || 0) + 1,
+        lastStage: next.stage,
+        lastSentAt: new Date().toISOString(),
+        lastWindowKey: windowKey,
+        pending: null,
+        updatedAt: new Date().toISOString(),
+      };
+      sent++;
+    } else {
+      skipped++;
+    }
+  }
+
+  await supabase
+    .from('official_settings')
+    .upsert({
+      key: stateKey,
+      value: JSON.stringify(state),
+      updated_at: new Date().toISOString(),
+    });
+
+  return { processed, sent, skipped, pending, observed, testMode: isTestMode, observeOnly: !!config.observeOnly };
 }
 
 // 並發控制：最多 concurrency 個同時執行
