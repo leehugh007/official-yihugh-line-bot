@@ -4176,6 +4176,8 @@ function AudienceRetargetingPrototype() {
   const [adminTestSending, setAdminTestSending] = useState(false);
   const [adminTestResult, setAdminTestResult] = useState(null);
   const [adminAutoEnabled, setAdminAutoEnabled] = useState(false);
+  const [adminAutoSaving, setAdminAutoSaving] = useState(false);
+  const [adminAutoResult, setAdminAutoResult] = useState(null);
   const [adminAutoReceivedMin, setAdminAutoReceivedMin] = useState(3);
   const [adminAutoMissedSteps, setAdminAutoMissedSteps] = useState(2);
   const [adminAutoWaitDays, setAdminAutoWaitDays] = useState(1);
@@ -4470,6 +4472,54 @@ function AudienceRetargetingPrototype() {
     });
     setAdminTestResult(result);
     setAdminTestSending(false);
+  };
+
+  const buildRetargetingAdminConfig = (enabled = adminAutoEnabled) => ({
+    enabled,
+    ruleId: preset.id,
+    ruleTitle: preset.title,
+    receivedMin: adminAutoReceivedMin,
+    missedSteps: adminAutoMissedSteps,
+    checkDelayDays: adminAutoWaitDays,
+    sendMode: mode,
+    sendDelayDays,
+    sendAtTime,
+    observeDays: waitDays,
+    engagementCriteria,
+    repeatStrategy,
+    thirdStageAction,
+    stageTemplates: [
+      {
+        stage: 1,
+        templateId: template.id,
+        title: template.title,
+        category: template.category,
+        message: templateDraft.body,
+        imageUrl: templateDraft.image_url || '',
+        buttons: previewButtons,
+      },
+      {
+        stage: 2,
+        templateId: secondStageTemplate.id,
+        title: secondStageTemplate.title,
+        category: secondStageTemplate.category,
+        message: secondStageTemplate.id === template.id ? templateDraft.body : secondStageTemplate.body,
+        imageUrl: secondStageTemplate.id === template.id ? (templateDraft.image_url || '') : (secondStageTemplate.image_url || ''),
+        buttons: secondStageTemplate.id === template.id ? previewButtons : (secondStageTemplate.buttons || []),
+      },
+    ],
+  });
+
+  const handleSaveAdminAutoConfig = async (enabled = adminAutoEnabled) => {
+    setAdminAutoSaving(true);
+    setAdminAutoResult(null);
+    const result = await apiPost({
+      action: 'save_retargeting_admin_config',
+      config: buildRetargetingAdminConfig(enabled),
+    });
+    setAdminAutoSaving(false);
+    setAdminAutoResult(result);
+    return result;
   };
 
   return (
@@ -4976,13 +5026,41 @@ function AudienceRetargetingPrototype() {
           <input
             type="checkbox"
             checked={adminAutoEnabled}
-            onChange={(e) => setAdminAutoEnabled(e.target.checked)}
+            onChange={async (e) => {
+              const enabled = e.target.checked;
+              setAdminAutoEnabled(enabled);
+              await handleSaveAdminAutoConfig(enabled);
+            }}
           />
           <span>
             <strong>排程文章啟動後，逐篇滾動檢查是否需要再行銷</strong>
             <small>規則設計會沿用到正式會員；現在測試模式只針對標記為管理者的帳號，一般用戶不會進入這條自動流程。</small>
           </span>
         </label>
+        <div style={styles.retargetingFooter}>
+          <div>
+            <strong>{adminAutoEnabled ? '管理者自動測試已啟用' : '管理者自動測試未啟用'}</strong>
+            <span style={styles.retargetingMuted}>儲存後，drip cron 會在測試模式下只掃管理者，符合條件就自動發再行銷。</span>
+          </div>
+          <button
+            type="button"
+            style={styles.btnSecondary}
+            disabled={adminAutoSaving}
+            onClick={() => handleSaveAdminAutoConfig(adminAutoEnabled)}
+          >
+            {adminAutoSaving ? '儲存中...' : '儲存自動測試設定'}
+          </button>
+        </div>
+        {adminAutoResult && (
+          <div style={{
+            ...styles.retargetingPrototypeNotice,
+            color: adminAutoResult.error ? '#991b1b' : '#166534',
+            borderColor: adminAutoResult.error ? '#fecaca' : '#bbf7d0',
+            background: adminAutoResult.error ? '#fef2f2' : '#f0fdf4',
+          }}>
+            {adminAutoResult.error || '自動測試設定已儲存'}
+          </div>
+        )}
 
         <div style={styles.retargetingRuleBox}>
           <div style={styles.retargetingRuleTitle}>目前套用上方共用設定</div>

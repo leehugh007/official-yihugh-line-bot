@@ -136,6 +136,8 @@ export async function POST(request) {
       return handleToggleDripTestMode(data);
     case 'reset_admin_drip':
       return handleResetAdminDrip();
+    case 'save_retargeting_admin_config':
+      return handleSaveRetargetingAdminConfig(data);
     case 'add_drip_step':
       return handleAddDripStep(data);
     case 'delete_drip_step':
@@ -1023,6 +1025,45 @@ async function handleToggleDripTestMode({ enabled }) {
   return NextResponse.json({ ok: true, dripTestMode: enabled });
 }
 
+async function handleSaveRetargetingAdminConfig({ config }) {
+  if (!config || typeof config !== 'object') {
+    return NextResponse.json({ error: '缺少再行銷設定' }, { status: 400 });
+  }
+
+  const cleanConfig = {
+    enabled: !!config.enabled,
+    ruleId: String(config.ruleId || 'dropoff'),
+    ruleTitle: String(config.ruleTitle || '互動下降'),
+    receivedMin: Math.max(1, Number(config.receivedMin || 1)),
+    missedSteps: Math.max(1, Number(config.missedSteps || 1)),
+    checkDelayDays: Math.max(0, Number(config.checkDelayDays || 0)),
+    sendMode: config.sendMode === 'instant' ? 'instant' : 'scheduled',
+    sendDelayDays: Math.max(0, Number(config.sendDelayDays || 0)),
+    sendAtTime: String(config.sendAtTime || '14:00'),
+    observeDays: Math.max(1, Number(config.observeDays || 1)),
+    engagementCriteria: String(config.engagementCriteria || 'any_click_or_reply'),
+    repeatStrategy: String(config.repeatStrategy || 'staged'),
+    thirdStageAction: String(config.thirdStageAction || 'cooldown'),
+    stageTemplates: Array.isArray(config.stageTemplates) ? config.stageTemplates.slice(0, 2) : [],
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (!cleanConfig.stageTemplates[0]?.message) {
+    return NextResponse.json({ error: '第 1 階段模板缺少訊息文字' }, { status: 400 });
+  }
+
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({
+      key: 'retargeting_admin_auto_config',
+      value: JSON.stringify(cleanConfig),
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, config: cleanConfig });
+}
+
 async function handleResetAdminDrip() {
   const { data: admins, error: adminErr } = await supabase
     .from('official_line_users')
@@ -1065,6 +1106,14 @@ async function handleResetAdminDrip() {
     .select('line_user_id');
 
   if (clickErr) return NextResponse.json({ error: clickErr.message }, { status: 500 });
+
+  await supabase
+    .from('official_settings')
+    .upsert({
+      key: 'retargeting_admin_auto_state',
+      value: '{}',
+      updated_at: new Date().toISOString(),
+    });
 
   return NextResponse.json({
     ok: true,
