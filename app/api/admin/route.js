@@ -1032,6 +1032,7 @@ async function handleSaveRetargetingAdminConfig({ config }) {
 
   const cleanConfig = {
     enabled: !!config.enabled,
+    observeOnly: !!config.observeOnly,
     ruleId: String(config.ruleId || 'dropoff'),
     ruleTitle: String(config.ruleTitle || '互動下降'),
     receivedMin: Math.max(1, Number(config.receivedMin || 1)),

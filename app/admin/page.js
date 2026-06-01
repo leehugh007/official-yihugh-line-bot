@@ -4176,6 +4176,7 @@ function AudienceRetargetingPrototype() {
   const [adminTestSending, setAdminTestSending] = useState(false);
   const [adminTestResult, setAdminTestResult] = useState(null);
   const [adminAutoEnabled, setAdminAutoEnabled] = useState(false);
+  const [adminAutoObserveOnly, setAdminAutoObserveOnly] = useState(false);
   const [adminAutoSaving, setAdminAutoSaving] = useState(false);
   const [adminAutoResult, setAdminAutoResult] = useState(null);
   const [adminAutoReceivedMin, setAdminAutoReceivedMin] = useState(3);
@@ -4474,8 +4475,9 @@ function AudienceRetargetingPrototype() {
     setAdminTestSending(false);
   };
 
-  const buildRetargetingAdminConfig = (enabled = adminAutoEnabled) => ({
+  const buildRetargetingAdminConfig = (enabled = adminAutoEnabled, observeOnly = adminAutoObserveOnly) => ({
     enabled,
+    observeOnly,
     ruleId: preset.id,
     ruleTitle: preset.title,
     receivedMin: adminAutoReceivedMin,
@@ -4510,12 +4512,12 @@ function AudienceRetargetingPrototype() {
     ],
   });
 
-  const handleSaveAdminAutoConfig = async (enabled = adminAutoEnabled) => {
+  const handleSaveAdminAutoConfig = async (enabled = adminAutoEnabled, observeOnly = adminAutoObserveOnly) => {
     setAdminAutoSaving(true);
     setAdminAutoResult(null);
     const result = await apiPost({
       action: 'save_retargeting_admin_config',
-      config: buildRetargetingAdminConfig(enabled),
+      config: buildRetargetingAdminConfig(enabled, observeOnly),
     });
     setAdminAutoSaving(false);
     setAdminAutoResult(result);
@@ -5037,6 +5039,21 @@ function AudienceRetargetingPrototype() {
             <small>規則設計會沿用到正式會員；現在測試模式只針對標記為管理者的帳號，一般用戶不會進入這條自動流程。</small>
           </span>
         </label>
+        <label style={styles.retargetingSwitchRow}>
+          <input
+            type="checkbox"
+            checked={adminAutoObserveOnly}
+            onChange={async (e) => {
+              const observeOnly = e.target.checked;
+              setAdminAutoObserveOnly(observeOnly);
+              await handleSaveAdminAutoConfig(adminAutoEnabled, observeOnly);
+            }}
+          />
+          <span>
+            <strong>觀察模式：只記錄符合名單，不實際發送</strong>
+            <small>正式啟用後預設可關閉；需要先看名單是否合理時再打開，系統會留下觀察紀錄但不消耗發送。</small>
+          </span>
+        </label>
         <div style={styles.retargetingFooter}>
           <div>
             <strong>{adminAutoEnabled ? '管理者自動測試已啟用' : '管理者自動測試未啟用'}</strong>
@@ -5068,6 +5085,7 @@ function AudienceRetargetingPrototype() {
           <span style={styles.retargetingRuleChip}>最近連續 {adminAutoMissedSteps} 篇未點擊</span>
           <span style={styles.retargetingRuleChip}>每篇發出後等待 {adminAutoWaitDays} 天檢查</span>
           <span style={styles.retargetingRuleChip}>{retargetingSendText}</span>
+          <span style={styles.retargetingRuleChip}>{adminAutoObserveOnly ? '觀察模式：只記錄不發送' : '正式發送：符合就發送'}</span>
           <span style={styles.retargetingRuleChip}>送出後觀察 {waitDays} 天</span>
           <span style={styles.retargetingRuleChip}>有互動：{engagementCriteriaText}</span>
           <span style={styles.retargetingRuleChip}>{repeatStrategyText}</span>

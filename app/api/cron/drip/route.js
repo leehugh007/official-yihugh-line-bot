@@ -18,6 +18,8 @@ import { pushMessage, pushFlexMessage } from '../../../../lib/line.js';
 import { wrapLink } from '../../../../lib/tracking.js';
 import { sendScheduledPush } from '../../../../lib/push.js';
 
+const ADMIN_TAG = '\u7ba1\u7406\u8005';
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const secret = searchParams.get('secret');
@@ -34,7 +36,7 @@ export async function GET(request) {
   try {
     const dripResult = await processDrip();
     const pushResult = await processScheduledPushes();
-    const retargetingResult = await processAdminRetargeting();
+    const retargetingResult = await processRetargeting();
     return NextResponse.json({ drip: dripResult, scheduledPush: pushResult, retargeting: retargetingResult });
   } catch (error) {
     console.error('[Drip] Error:', error);
@@ -86,7 +88,31 @@ function buildFlexFromTemplate(template, linkId, userId) {
   });
 }
 
-async function sendRetargetingToAdmin(userId, config, stage, windowKey) {
+async function recordRetargetingObservation(userId, config, stage, windowKey, context) {
+  const template = config.stageTemplates?.[stage - 1] || config.stageTemplates?.[0];
+  if (!template?.message) return false;
+
+  const linkId = `retargeting_auto_${config.ruleId || 'rule'}_s${stage}_${Date.now()}`;
+  await supabase.from('official_push_logs').insert({
+    template_id: `retargeting_auto_${config.ruleId || 'rule'}_s${stage}`,
+    label: `自動再行銷觀察：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
+    message: template.message,
+    link_id: linkId,
+    buttons: template.buttons || [],
+    image_url: template.imageUrl || null,
+    segments: [context, 'retargeting_auto', 'observe_only'],
+    mode: 'observe_only',
+    target_count: 1,
+    sent_count: 0,
+    status: 'observed',
+    completed_at: new Date().toISOString(),
+    exclude_enrolled: false,
+  });
+
+  return true;
+}
+
+async function sendRetargetingMessage(userId, config, stage, windowKey, context) {
   const template = config.stageTemplates?.[stage - 1] || config.stageTemplates?.[0];
   if (!template?.message) return false;
 
@@ -97,12 +123,12 @@ async function sendRetargetingToAdmin(userId, config, stage, windowKey) {
 
   await supabase.from('official_push_logs').insert({
     template_id: `retargeting_auto_${config.ruleId || 'rule'}_s${stage}`,
-    label: `自動再行銷測試：${template.title || config.ruleTitle || '管理者測試'}（${windowKey}）`,
+    label: `自動再行銷${context === 'admin' ? '測試' : '正式'}：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
     message: template.message,
     link_id: linkId,
     buttons: template.buttons || [],
     image_url: template.imageUrl || null,
-    segments: ['admin', 'retargeting_auto'],
+    segments: [context, 'retargeting_auto'],
     mode: 'instant',
     target_count: 1,
     sent_count: 1,
@@ -135,17 +161,13 @@ function getNextRetargetingStage(config, userState) {
   return sentCount === 0 ? { action: 'send', stage: 1 } : { action: 'skip', reason: 'already_sent' };
 }
 
-async function processAdminRetargeting() {
+async function processRetargeting() {
   const { data: testModeSetting } = await supabase
     .from('official_settings')
     .select('value')
     .eq('key', 'drip_test_mode')
     .single();
   const isTestMode = testModeSetting?.value === 'true';
-  if (!isTestMode) {
-    return { processed: 0, sent: 0, skipped: 0, message: 'drip 測試模式未開啟' };
-  }
-
   const { data: configSetting } = await supabase
     .from('official_settings')
     .select('value')
@@ -153,24 +175,34 @@ async function processAdminRetargeting() {
     .single();
   const config = safeJsonParse(configSetting?.value, null);
   if (!config?.enabled) {
-    return { processed: 0, sent: 0, skipped: 0, message: '管理者自動再行銷未啟用' };
+    return { processed: 0, sent: 0, skipped: 0, observed: 0, message: 'retargeting disabled' };
   }
+
+  const stateKey = isTestMode ? 'retargeting_admin_auto_state' : 'retargeting_auto_state';
+  const context = isTestMode ? 'admin' : 'member';
 
   const { data: stateSetting } = await supabase
     .from('official_settings')
     .select('value')
-    .eq('key', 'retargeting_admin_auto_state')
+    .eq('key', stateKey)
     .single();
   const state = safeJsonParse(stateSetting?.value, {});
 
-  const { data: admins } = await supabase
+  let usersQuery = supabase
     .from('official_line_users')
     .select('line_user_id, last_user_reply_at')
-    .contains('tags', ['管理者'])
     .eq('is_blocked', false);
-  const userIds = (admins || []).map((u) => u.line_user_id).filter(Boolean);
+
+  if (isTestMode) {
+    usersQuery = usersQuery.contains('tags', [ADMIN_TAG]);
+  } else {
+    usersQuery = usersQuery.not('tags', 'cs', JSON.stringify([ADMIN_TAG]));
+  }
+
+  const { data: users } = await usersQuery;
+  const userIds = (users || []).map((u) => u.line_user_id).filter(Boolean);
   if (userIds.length === 0) {
-    return { processed: 0, sent: 0, skipped: 0, message: '沒有管理者測試帳號' };
+    return { processed: 0, sent: 0, skipped: 0, observed: 0, message: `no ${context} users` };
   }
 
   const { data: logs } = await supabase
@@ -196,8 +228,9 @@ async function processAdminRetargeting() {
   let sent = 0;
   let skipped = 0;
   let pending = 0;
+  let observed = 0;
   const now = new Date();
-  const adminsById = Object.fromEntries((admins || []).map((u) => [u.line_user_id, u]));
+  const usersById = Object.fromEntries((users || []).map((u) => [u.line_user_id, u]));
 
   for (const userId of userIds) {
     processed++;
@@ -243,7 +276,7 @@ async function processAdminRetargeting() {
       continue;
     }
 
-    if (userState.lastSentAt && hasReplyInteraction(adminsById[userId], userState.lastSentAt)) {
+    if (userState.lastSentAt && hasReplyInteraction(usersById[userId], userState.lastSentAt)) {
       skipped++;
       continue;
     }
@@ -254,6 +287,27 @@ async function processAdminRetargeting() {
     if (next.action !== 'send') {
       state[userId] = { ...userState, lastWindowKey: windowKey, lastAction: next.action, updatedAt: new Date().toISOString() };
       skipped++;
+      continue;
+    }
+
+    if (config.observeOnly) {
+      if (userState.observedWindowKey === windowKey) {
+        skipped++;
+        continue;
+      }
+      const ok = await recordRetargetingObservation(userId, config, next.stage, windowKey, context);
+      if (ok) {
+        state[userId] = {
+          ...userState,
+          observedWindowKey: windowKey,
+          observedStage: next.stage,
+          observedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        observed++;
+      } else {
+        skipped++;
+      }
       continue;
     }
 
@@ -270,7 +324,7 @@ async function processAdminRetargeting() {
       }
     }
 
-    const ok = await sendRetargetingToAdmin(userId, config, next.stage, windowKey);
+    const ok = await sendRetargetingMessage(userId, config, next.stage, windowKey, context);
     if (ok) {
       state[userId] = {
         ...userState,
@@ -290,12 +344,12 @@ async function processAdminRetargeting() {
   await supabase
     .from('official_settings')
     .upsert({
-      key: 'retargeting_admin_auto_state',
+      key: stateKey,
       value: JSON.stringify(state),
       updated_at: new Date().toISOString(),
     });
 
-  return { processed, sent, skipped, pending, testMode: true };
+  return { processed, sent, skipped, pending, observed, testMode: isTestMode, observeOnly: !!config.observeOnly };
 }
 
 // 並發控制：最多 concurrency 個同時執行
