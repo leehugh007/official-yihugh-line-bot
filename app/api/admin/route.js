@@ -134,6 +134,8 @@ export async function POST(request) {
       return handleDeleteLog(data);
     case 'toggle_drip_test_mode':
       return handleToggleDripTestMode(data);
+    case 'reset_admin_drip':
+      return handleResetAdminDrip();
     case 'add_drip_step':
       return handleAddDripStep(data);
     case 'delete_drip_step':
@@ -469,20 +471,34 @@ async function handlePush(data) {
   // Flex Message 固定使用 multicast（不支援佇列模式的個人化追蹤連結）
   if (useFlexMsg) {
     const cleanButtons = (buttons || []).filter((b) => b.label && b.url);
-    const trackedButtons = cleanButtons.map((btn, i) => ({
-      ...btn,
-      url: wrapLink(btn.url, `${linkId}_b${i}`),
-    }));
     const lines = message.split('\n').filter((l) => l.trim());
     const title = lines[0] || message;
     const body = lines.slice(1).join('\n').trim();
-    const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: imageUrl || undefined });
 
     let sent = 0;
-    for (let i = 0; i < userIds.length; i += 500) {
-      const batch = userIds.slice(i, i + 500);
-      const ok = await multicastMessage(batch, lineMsg);
-      if (ok) sent += batch.length;
+
+    if (adminOnly) {
+      for (const userId of userIds) {
+        const trackedButtons = cleanButtons.map((btn, i) => ({
+          ...btn,
+          url: wrapLink(btn.url, `${linkId}_b${i}`, userId),
+        }));
+        const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: imageUrl || undefined });
+        const ok = await pushMessage(userId, lineMsg);
+        if (ok) sent++;
+      }
+    } else {
+      const trackedButtons = cleanButtons.map((btn, i) => ({
+        ...btn,
+        url: wrapLink(btn.url, `${linkId}_b${i}`),
+      }));
+      const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: imageUrl || undefined });
+
+      for (let i = 0; i < userIds.length; i += 500) {
+        const batch = userIds.slice(i, i + 500);
+        const ok = await multicastMessage(batch, lineMsg);
+        if (ok) sent += batch.length;
+      }
     }
 
     await supabase
@@ -1005,6 +1021,57 @@ async function handleToggleDripTestMode({ enabled }) {
     .upsert({ key: 'drip_test_mode', value: String(enabled), updated_at: new Date().toISOString() });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true, dripTestMode: enabled });
+}
+
+async function handleResetAdminDrip() {
+  const { data: admins, error: adminErr } = await supabase
+    .from('official_line_users')
+    .select('line_user_id')
+    .contains('tags', ['管理者'])
+    .eq('is_blocked', false);
+
+  if (adminErr) return NextResponse.json({ error: adminErr.message }, { status: 500 });
+
+  const userIds = (admins || []).map((u) => u.line_user_id).filter(Boolean);
+  if (userIds.length === 0) {
+    return NextResponse.json({ ok: true, reset: 0, deletedLogs: 0, deletedClicks: 0 });
+  }
+
+  const now = new Date().toISOString();
+  const { error: updateErr } = await supabase
+    .from('official_line_users')
+    .update({
+      drip_week: 0,
+      drip_next_at: now,
+      drip_paused: false,
+    })
+    .in('line_user_id', userIds);
+
+  if (updateErr) return NextResponse.json({ error: updateErr.message }, { status: 500 });
+
+  const { data: deletedLogs, error: logErr } = await supabase
+    .from('official_drip_logs')
+    .delete()
+    .in('line_user_id', userIds)
+    .select('line_user_id');
+
+  if (logErr) return NextResponse.json({ error: logErr.message }, { status: 500 });
+
+  const { data: deletedClicks, error: clickErr } = await supabase
+    .from('official_line_clicks')
+    .delete()
+    .in('line_user_id', userIds)
+    .like('link_id', 'drip_%')
+    .select('line_user_id');
+
+  if (clickErr) return NextResponse.json({ error: clickErr.message }, { status: 500 });
+
+  return NextResponse.json({
+    ok: true,
+    reset: userIds.length,
+    deletedLogs: deletedLogs?.length || 0,
+    deletedClicks: deletedClicks?.length || 0,
+  });
 }
 
 // ============================================================
