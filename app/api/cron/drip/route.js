@@ -71,17 +71,37 @@ function taipeiScheduledAt(delayDays, hhmm) {
   return new Date(Date.UTC(y, m, d, hour - 8, minute, 0, 0)).toISOString();
 }
 
+function isUsableRetargetingButton(button = {}) {
+  if (!button.label) return false;
+  if (button.actionType === 'message' || (!button.url && (button.replyText || button.messageText))) {
+    return !!(button.replyText || button.messageText || button.label);
+  }
+  return !!button.url;
+}
+
+function prepareRetargetingButton(button, linkId, index, userId) {
+  if (button.actionType === 'message' || (!button.url && (button.replyText || button.messageText))) {
+    return {
+      ...button,
+      actionType: 'message',
+      messageText: button.messageText || button.label,
+    };
+  }
+
+  return {
+    ...button,
+    url: wrapLink(button.url, `${linkId}_b${index}`, userId),
+  };
+}
+
 function buildFlexFromTemplate(template, linkId, userId) {
   const message = template.message || '';
   const lines = message.split('\n').filter((l) => l.trim());
   const title = lines[0] || template.title || '一休陪你健康瘦';
   const body = lines.slice(1).join('\n').trim();
   const buttons = (template.buttons || [])
-    .filter((btn) => btn.label && btn.url)
-    .map((btn, i) => ({
-      ...btn,
-      url: wrapLink(btn.url, `${linkId}_b${i}`, userId),
-    }));
+    .filter(isUsableRetargetingButton)
+    .map((btn, i) => prepareRetargetingButton(btn, linkId, i, userId));
   return pushFlexMessage({
     title,
     body,

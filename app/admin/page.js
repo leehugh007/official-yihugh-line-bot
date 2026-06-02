@@ -100,7 +100,7 @@ function ImageUpload({ imageUrl, onChange }) {
 
 // 訊息預覽元件：模擬 LINE Flex Message 樣式
 function FlexPreview({ message, buttons, imageUrl }) {
-  const cleanButtons = (buttons || []).filter((b) => b.label && b.url);
+  const cleanButtons = (buttons || []).filter(isUsableRetargetingButton);
   if (!message && cleanButtons.length === 0 && !imageUrl) return null;
 
   const lines = (message || '').split('\n').filter((l) => l.trim());
@@ -134,6 +134,11 @@ function FlexPreview({ message, buttons, imageUrl }) {
                   cursor: 'default',
                 }}>
                   {btn.label}
+                  {(btn.actionType === 'message' || (!btn.url && btn.replyText)) && (
+                    <span style={{ display: 'block', marginTop: 3, fontSize: 11, fontWeight: 500, opacity: 0.78 }}>
+                      文字回覆
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -1848,6 +1853,7 @@ function PushHistory({ logs, onReload }) {
     completed: { label: '已完成', bg: '#dcfce7', color: '#166534' },
     sending: { label: '發送中', bg: '#dbeafe', color: '#1e40af' },
     scheduled: { label: '待發送', bg: '#fef3c7', color: '#92400e' },
+    observed: { label: '已觀察', bg: '#e0f2fe', color: '#0369a1' },
     failed: { label: '失敗', bg: '#fee2e2', color: '#991b1b' },
   };
 
@@ -3987,7 +3993,12 @@ const RETARGETING_TEMPLATES = [
     buttons: [
       { label: '回來看下一篇', url: 'https://example.com/next-article' },
       { label: '看一個真實案例', url: 'https://example.com/story' },
-      { label: '我想問問題', url: 'https://example.com/ask' },
+      {
+        label: '我想問問題',
+        actionType: 'message',
+        messageText: '我想問問題',
+        replyText: '有什麼問題都可以留言，fifi 助教看到會回覆你。',
+      },
     ],
   },
   {
@@ -4009,7 +4020,12 @@ const RETARGETING_TEMPLATES = [
     image_url: '/images/landing/land014.png',
     body: '你前面有點進報名頁，可能還有一些地方想確認。\n\n如果你是在想費用、時間、飲食或自己做不做得到，可以直接回我，我會請 fifi 幫你看比較適合怎麼安排。',
     buttons: [
-      { label: '我想問問題', url: 'https://example.com/ask' },
+      {
+        label: '我想問問題',
+        actionType: 'message',
+        messageText: '我想問問題',
+        replyText: '有什麼問題都可以留言，fifi 助教看到會回覆你。',
+      },
       { label: '看常見問題', url: 'https://example.com/faq' },
       { label: '回到報名頁', url: 'https://example.com/apply' },
     ],
@@ -4023,10 +4039,32 @@ const RETARGETING_TEMPLATES = [
     buttons: [
       { label: '查看匯款資訊', url: 'https://example.com/payment' },
       { label: '我已完成匯款', url: 'https://example.com/paid' },
-      { label: '我想問付款問題', url: 'https://example.com/ask-payment' },
+      {
+        label: '我想問付款問題',
+        actionType: 'message',
+        messageText: '我想問付款問題',
+        replyText: '付款或匯款問題都可以直接留言，fifi 助教看到會協助你確認。',
+      },
     ],
   },
 ];
+
+function normalizeRetargetingButton(button = {}) {
+  const actionType = button.actionType || button.type || (button.replyText || button.messageText ? 'message' : 'url');
+  return {
+    label: button.label || '',
+    actionType,
+    url: button.url || '',
+    messageText: button.messageText || button.text || button.label || '',
+    replyText: button.replyText || '',
+  };
+}
+
+function isUsableRetargetingButton(button = {}) {
+  if (!button.label?.trim()) return false;
+  if (button.actionType === 'message') return !!String(button.replyText || '').trim();
+  return !!button.url?.trim();
+}
 
 function createRetargetingDraft(template) {
   const buttons = [...(template.buttons || [])];
@@ -4034,10 +4072,7 @@ function createRetargetingDraft(template) {
   return {
     image_url: template.image_url || '',
     body: template.body || '',
-    buttons: buttons.slice(0, 3).map((button) => ({
-      label: button.label || '',
-      url: button.url || '',
-    })),
+    buttons: buttons.slice(0, 3).map(normalizeRetargetingButton),
   };
 }
 
@@ -4179,6 +4214,7 @@ function AudienceRetargetingPrototype() {
   const [adminAutoObserveOnly, setAdminAutoObserveOnly] = useState(false);
   const [adminAutoSaving, setAdminAutoSaving] = useState(false);
   const [adminAutoResult, setAdminAutoResult] = useState(null);
+  const [templateSaveResult, setTemplateSaveResult] = useState(null);
   const [adminAutoReceivedMin, setAdminAutoReceivedMin] = useState(3);
   const [adminAutoMissedSteps, setAdminAutoMissedSteps] = useState(2);
   const [adminAutoWaitDays, setAdminAutoWaitDays] = useState(1);
@@ -4282,7 +4318,7 @@ function AudienceRetargetingPrototype() {
   const template = selectedTemplate === 'custom'
     ? customTemplate
     : RETARGETING_TEMPLATES.find((t) => t.id === selectedTemplate) || RETARGETING_TEMPLATES[0];
-  const previewButtons = templateDraft.buttons.filter((button) => button.label.trim() && button.url.trim());
+  const previewButtons = templateDraft.buttons.filter(isUsableRetargetingButton);
   const overall = stats?.ok ? stats.overall : null;
 
   const estimatedCount = (() => {
@@ -4359,7 +4395,11 @@ function AudienceRetargetingPrototype() {
   const updateDraftButton = (index, field, value) => {
     setTemplateDraft((draft) => {
       const buttons = [...draft.buttons];
-      buttons[index] = { ...buttons[index], [field]: value };
+      const nextButton = { ...buttons[index], [field]: value };
+      if (field === 'actionType' && value === 'message' && !nextButton.messageText) {
+        nextButton.messageText = nextButton.label || '';
+      }
+      buttons[index] = nextButton;
       return { ...draft, buttons };
     });
   };
@@ -4458,6 +4498,12 @@ function AudienceRetargetingPrototype() {
   const handleAdminTestSend = async () => {
     setAdminTestSending(true);
     setAdminTestResult(null);
+    const saved = await handleSaveAdminAutoConfig(adminAutoEnabled);
+    if (saved?.error) {
+      setAdminTestResult(saved);
+      setAdminTestSending(false);
+      return;
+    }
     const result = await apiPost({
       action: 'push',
       templateId: `retargeting_${template.id}`,
@@ -4480,6 +4526,7 @@ function AudienceRetargetingPrototype() {
     observeOnly,
     ruleId: preset.id,
     ruleTitle: preset.title,
+    audienceRules: quickRules,
     receivedMin: adminAutoReceivedMin,
     missedSteps: adminAutoMissedSteps,
     checkDelayDays: adminAutoWaitDays,
@@ -4498,7 +4545,7 @@ function AudienceRetargetingPrototype() {
         category: template.category,
         message: templateDraft.body,
         imageUrl: templateDraft.image_url || '',
-        buttons: previewButtons,
+        buttons: previewButtons.map(normalizeRetargetingButton),
       },
       {
         stage: 2,
@@ -4507,7 +4554,9 @@ function AudienceRetargetingPrototype() {
         category: secondStageTemplate.category,
         message: secondStageTemplate.id === template.id ? templateDraft.body : secondStageTemplate.body,
         imageUrl: secondStageTemplate.id === template.id ? (templateDraft.image_url || '') : (secondStageTemplate.image_url || ''),
-        buttons: secondStageTemplate.id === template.id ? previewButtons : (secondStageTemplate.buttons || []),
+        buttons: (secondStageTemplate.id === template.id ? previewButtons : (secondStageTemplate.buttons || []))
+          .map(normalizeRetargetingButton)
+          .filter(isUsableRetargetingButton),
       },
     ],
   });
@@ -4521,6 +4570,7 @@ function AudienceRetargetingPrototype() {
     });
     setAdminAutoSaving(false);
     setAdminAutoResult(result);
+    setTemplateSaveResult(result);
     return result;
   };
 
@@ -4638,7 +4688,7 @@ function AudienceRetargetingPrototype() {
               </label>
 
               <div style={styles.retargetingPrototypeNotice}>
-                本地先做自訂受眾草稿；正式上線前需要建立受眾條件資料表、版本、起算日與受眾快照，才能讓數據可回溯。
+                目前自訂受眾會跟這次自動再行銷規則一起儲存；後續若要管理多組受眾，會再擴充受眾庫、版本與快照。
               </div>
             </div>
           ) : (
@@ -4720,7 +4770,7 @@ function AudienceRetargetingPrototype() {
               />
 
               <div style={styles.retargetingPrototypeNotice}>
-                本地先做自訂模板草稿；正式上線前需要建立模板資料表、版本、啟用/停用與複製功能。
+                目前自訂模板會跟這次自動再行銷規則一起儲存；後續若要管理多組模板，會再擴充模板庫、版本、啟用/停用與複製功能。
               </div>
             </div>
           )}
@@ -4747,14 +4797,65 @@ function AudienceRetargetingPrototype() {
                 style={{ ...styles.input, marginBottom: 4 }}
                 placeholder={index === 0 ? '例如：繼續看下一篇' : index === 1 ? '例如：看一個真實案例' : '例如：我想問問題'}
               />
-              <input
-                value={templateDraft.buttons[index]?.url || ''}
-                onChange={(e) => updateDraftButton(index, 'url', e.target.value)}
-                style={styles.input}
-                placeholder="https://..."
-              />
+              <select
+                value={templateDraft.buttons[index]?.actionType || 'url'}
+                onChange={(e) => updateDraftButton(index, 'actionType', e.target.value)}
+                style={{ ...styles.input, marginBottom: 4 }}
+              >
+                <option value="url">開啟連結</option>
+                <option value="message">文字回覆</option>
+              </select>
+              {(templateDraft.buttons[index]?.actionType || 'url') === 'message' ? (
+                <>
+                  <input
+                    value={templateDraft.buttons[index]?.messageText || templateDraft.buttons[index]?.label || ''}
+                    onChange={(e) => updateDraftButton(index, 'messageText', e.target.value)}
+                    style={{ ...styles.input, marginBottom: 4 }}
+                    placeholder="點擊後送出的文字，例如：我想問問題"
+                  />
+                  <textarea
+                    value={templateDraft.buttons[index]?.replyText || ''}
+                    onChange={(e) => updateDraftButton(index, 'replyText', e.target.value)}
+                    style={styles.textarea}
+                    rows={3}
+                    placeholder="BOT 回覆文字，例如：有什麼問題都可以留言，fifi 助教看到會回覆你。"
+                  />
+                </>
+              ) : (
+                <input
+                  value={templateDraft.buttons[index]?.url || ''}
+                  onChange={(e) => updateDraftButton(index, 'url', e.target.value)}
+                  style={styles.input}
+                  placeholder="https://..."
+                />
+              )}
             </div>
           ))}
+
+          <div style={styles.retargetingFooter}>
+            <div>
+              <strong>模板編輯完成後請先儲存</strong>
+              <span style={styles.retargetingMuted}>會連同目前受眾條件、發送流程與自動規則一起保存。</span>
+            </div>
+            <button
+              type="button"
+              style={styles.btnSecondary}
+              disabled={adminAutoSaving || !templateDraft.body.trim()}
+              onClick={() => handleSaveAdminAutoConfig(adminAutoEnabled)}
+            >
+              {adminAutoSaving ? '儲存中...' : '儲存模板與目前設定'}
+            </button>
+          </div>
+          {templateSaveResult && (
+            <div style={{
+              ...styles.retargetingPrototypeNotice,
+              color: templateSaveResult.error ? '#991b1b' : '#166534',
+              borderColor: templateSaveResult.error ? '#fecaca' : '#bbf7d0',
+              background: templateSaveResult.error ? '#fef2f2' : '#f0fdf4',
+            }}>
+              {templateSaveResult.error || '模板與目前設定已儲存'}
+            </div>
+          )}
 
           <FlexPreview
             message={templateDraft.body}
@@ -4769,7 +4870,7 @@ function AudienceRetargetingPrototype() {
           <span style={styles.retargetingStep}>3</span>
           <div>
             <h3 style={styles.analyticsH3}>符合條件後的發送與後續流程</h3>
-            <p style={styles.retargetingMuted}>這段跟下方自動規則共用：受眾符合條件後，決定再行銷訊息何時送、送出後多久觀察回應，以及有沒有互動時各自接哪裡。</p>
+            <p style={styles.retargetingMuted}>這段是自動觸發門檻與後續流程：第 1 區決定受眾情境，這裡決定系統何時判定未互動、何時發送、送出後怎麼接續。</p>
           </div>
         </div>
 
@@ -4778,10 +4879,10 @@ function AudienceRetargetingPrototype() {
             <span style={styles.retargetingTimelineStep}>1</span>
             <div style={styles.retargetingTimelineBody}>
               <strong>排程文章發出後，先等待再檢查互動</strong>
-              <span style={styles.retargetingMuted}>這是判斷前等待，避免文章剛發出就被判定為未互動。</span>
+              <span style={styles.retargetingMuted}>這是自動流程實際使用的觸發門檻；第 1 區是受眾情境與排除條件，兩邊不會互相覆蓋。</span>
               <div style={styles.retargetingFlowGrid}>
                 <div>
-                  <label style={styles.fieldLabel}>已收到至少幾篇排程文章</label>
+                  <label style={styles.fieldLabel}>自動流程：已收到至少幾篇排程文章</label>
                   <input
                     type="number"
                     min="1"
@@ -4792,7 +4893,7 @@ function AudienceRetargetingPrototype() {
                   />
                 </div>
                 <div>
-                  <label style={styles.fieldLabel}>最近連續幾篇沒有點擊</label>
+                  <label style={styles.fieldLabel}>自動流程：最近連續幾篇沒有點擊</label>
                   <input
                     type="number"
                     min="1"
@@ -4983,9 +5084,9 @@ function AudienceRetargetingPrototype() {
             <strong>預估人數：{estimatedCount}</strong>
             <span style={styles.retargetingMuted}>每個 campaign 每位 user 只發一次，避免重複。</span>
           </div>
-          <button type="button" style={{ ...styles.btnPrimary, opacity: 0.55, cursor: 'not-allowed' }} disabled>
-            正式受眾發送尚未開放
-          </button>
+          <span style={styles.retargetingRuleChip}>
+            正式發送由第 4 區啟用後自動執行
+          </span>
           <button
             type="button"
             style={styles.btnSecondary}
@@ -5008,10 +5109,7 @@ function AudienceRetargetingPrototype() {
           </div>
         )}
         <div style={styles.retargetingPrototypeNotice}>
-          目前只開放管理者測試發送；正式受眾條件篩選、受眾快照、排程任務與防重複發送資料表尚未建立，所以不會對一般用戶自動發送。
-        </div>
-        <div style={styles.retargetingPrototypeNotice}>
-          這裡不是另一套手動邏輯，而是「符合條件後怎麼送」的共用設定；目前可以先發管理者測試，之後正式會員也會沿用同一套發送與後續規則。
+          這裡不是另一套手動邏輯，而是「符合條件後怎麼送」的共用設定；管理者可用右側按鈕立即測試，正式會員會在第 4 區啟用後由 cron 自動檢查與發送。
         </div>
       </section>
 
@@ -5019,8 +5117,8 @@ function AudienceRetargetingPrototype() {
         <div style={styles.retargetingPanelHead}>
           <span style={styles.retargetingStep}>4</span>
           <div>
-            <h3 style={styles.analyticsH3}>自動再行銷規則（目前鎖管理者測試）</h3>
-            <p style={styles.retargetingMuted}>這是未來會套用到實際會員的正式規則；目前只把發送對象鎖定管理者，先測排程文章與再行銷是否銜接正確。</p>
+            <h3 style={styles.analyticsH3}>自動再行銷啟用設定</h3>
+            <p style={styles.retargetingMuted}>測試模式打勾時只跑管理者；測試模式取消後，會依同一套設定檢查一般會員。</p>
           </div>
         </div>
 
@@ -5036,7 +5134,7 @@ function AudienceRetargetingPrototype() {
           />
           <span>
             <strong>排程文章啟動後，逐篇滾動檢查是否需要再行銷</strong>
-            <small>規則設計會沿用到正式會員；現在測試模式只針對標記為管理者的帳號，一般用戶不會進入這條自動流程。</small>
+            <small>這是總開關。關閉時不管測試模式或觀察模式怎麼設定，都不會跑自動再行銷。</small>
           </span>
         </label>
         <label style={styles.retargetingSwitchRow}>
@@ -5056,8 +5154,8 @@ function AudienceRetargetingPrototype() {
         </label>
         <div style={styles.retargetingFooter}>
           <div>
-            <strong>{adminAutoEnabled ? '管理者自動測試已啟用' : '管理者自動測試未啟用'}</strong>
-            <span style={styles.retargetingMuted}>儲存後，drip cron 會在測試模式下只掃管理者，符合條件就自動發再行銷。</span>
+            <strong>{adminAutoEnabled ? '自動再行銷已啟用' : '自動再行銷未啟用'}</strong>
+            <span style={styles.retargetingMuted}>儲存後，測試模式跑管理者；測試模式取消後跑一般會員。觀察模式開啟時只記錄不發送。</span>
           </div>
           <button
             type="button"
@@ -5065,7 +5163,7 @@ function AudienceRetargetingPrototype() {
             disabled={adminAutoSaving}
             onClick={() => handleSaveAdminAutoConfig(adminAutoEnabled)}
           >
-            {adminAutoSaving ? '儲存中...' : '儲存自動測試設定'}
+            {adminAutoSaving ? '儲存中...' : '儲存並套用 1-4 設定'}
           </button>
         </div>
         {adminAutoResult && (
@@ -5075,7 +5173,7 @@ function AudienceRetargetingPrototype() {
             borderColor: adminAutoResult.error ? '#fecaca' : '#bbf7d0',
             background: adminAutoResult.error ? '#fef2f2' : '#f0fdf4',
           }}>
-            {adminAutoResult.error || '自動測試設定已儲存'}
+            {adminAutoResult.error || '1-4 設定已儲存並套用'}
           </div>
         )}
 

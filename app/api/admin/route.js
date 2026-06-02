@@ -416,6 +416,29 @@ async function handleCountTargets({ segments, allUsers, excludeEnrolled, adminOn
   return NextResponse.json({ count: userIds.length });
 }
 
+function isUsableFlexButton(button = {}) {
+  if (!button.label) return false;
+  if (button.actionType === 'message' || (!button.url && (button.replyText || button.messageText))) {
+    return !!(button.replyText || button.messageText || button.label);
+  }
+  return !!button.url;
+}
+
+function withTrackedButtonUrl(button, linkId, index, userId) {
+  if (button.actionType === 'message' || (!button.url && (button.replyText || button.messageText))) {
+    return {
+      ...button,
+      actionType: 'message',
+      messageText: button.messageText || button.label,
+    };
+  }
+
+  return {
+    ...button,
+    url: wrapLink(button.url, `${linkId}_b${index}`, userId),
+  };
+}
+
 async function handlePush(data) {
   const { templateId, message, linkUrl, linkText, buttons, segments, mode, allUsers, excludeEnrolled, adminOnly, imageUrl } = data;
 
@@ -472,7 +495,7 @@ async function handlePush(data) {
 
   // Flex Message 固定使用 multicast（不支援佇列模式的個人化追蹤連結）
   if (useFlexMsg) {
-    const cleanButtons = (buttons || []).filter((b) => b.label && b.url);
+    const cleanButtons = (buttons || []).filter(isUsableFlexButton);
     const lines = message.split('\n').filter((l) => l.trim());
     const title = lines[0] || message;
     const body = lines.slice(1).join('\n').trim();
@@ -481,19 +504,13 @@ async function handlePush(data) {
 
     if (adminOnly) {
       for (const userId of userIds) {
-        const trackedButtons = cleanButtons.map((btn, i) => ({
-          ...btn,
-          url: wrapLink(btn.url, `${linkId}_b${i}`, userId),
-        }));
+        const trackedButtons = cleanButtons.map((btn, i) => withTrackedButtonUrl(btn, linkId, i, userId));
         const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: imageUrl || undefined });
         const ok = await pushMessage(userId, lineMsg);
         if (ok) sent++;
       }
     } else {
-      const trackedButtons = cleanButtons.map((btn, i) => ({
-        ...btn,
-        url: wrapLink(btn.url, `${linkId}_b${i}`),
-      }));
+      const trackedButtons = cleanButtons.map((btn, i) => withTrackedButtonUrl(btn, linkId, i));
       const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: imageUrl || undefined });
 
       for (let i = 0; i < userIds.length; i += 500) {
@@ -1076,9 +1093,19 @@ function validateRetargetingTemplates(stageTemplates) {
       return `第 ${template.stage || '?'} 階段模板仍含待填入文字`;
     }
     for (const button of template.buttons || []) {
-      if (!button?.label && !button?.url) continue;
-      if (!button?.label || !button?.url) {
-        return `第 ${template.stage || '?'} 階段模板有按鈕缺少文字或網址`;
+      if (!button?.label && !button?.url && !button?.replyText && !button?.messageText) continue;
+      const isMessageButton = button.actionType === 'message' || (!button.url && (button.replyText || button.messageText));
+      if (!button?.label) {
+        return `第 ${template.stage || '?'} 階段模板有按鈕缺少文字`;
+      }
+      if (isMessageButton) {
+        if (!button.replyText) {
+          return `第 ${template.stage || '?'} 階段模板的文字回覆按鈕缺少 BOT 回覆內容`;
+        }
+        continue;
+      }
+      if (!button?.url) {
+        return `第 ${template.stage || '?'} 階段模板有連結按鈕缺少網址`;
       }
       let parsed;
       try {
