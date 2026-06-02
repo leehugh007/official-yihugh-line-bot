@@ -102,6 +102,37 @@ const TEST_ALLOWLIST = [
   'U3edf3d2114ee03ad81cff1fd35c04600', // 婉馨
 ];
 
+function safeJsonParse(value, fallback) {
+  try {
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function matchRetargetingButtonReply(text) {
+  const { data } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'retargeting_admin_auto_config')
+    .single();
+  const config = safeJsonParse(data?.value, null);
+  const normalizedText = text.trim();
+
+  for (const template of config?.stageTemplates || []) {
+    for (const button of template.buttons || []) {
+      const isMessageButton = button.actionType === 'message' || (!button.url && (button.replyText || button.messageText));
+      if (!isMessageButton || !button.replyText) continue;
+      const triggerText = String(button.messageText || button.label || '').trim();
+      if (triggerText && normalizedText === triggerText) {
+        return button.replyText;
+      }
+    }
+  }
+
+  return null;
+}
+
 async function handleEvent(event) {
   const userId = event.source?.userId;
   if (!userId) return;
@@ -116,6 +147,13 @@ async function handleEvent(event) {
     if (/^[A-Z2-9]{4}$/.test(text)) {
       const claimed = await handleCodeClaim(event, userId, text);
       if (claimed) return; // 代碼有效，已回覆
+    }
+
+    const retargetingButtonReply = await matchRetargetingButtonReply(text);
+    if (retargetingButtonReply) {
+      await recordInteraction(userId);
+      await replyMessage(event.replyToken, [textMessage(retargetingButtonReply)]);
+      return;
     }
 
     // Phase 3.3: Handoff/禮貌結束 pre-check（放在 A 軌關鍵字之前）

@@ -23,6 +23,7 @@ function unauthorized() {
 
 const ADMIN_STATS_PAGE_SIZE = 1000;
 const ADMIN_STATS_MAX_ROWS = 100000;
+const DRIP_ARTICLE_TYPES = new Set(['student_story', 'health_article', 'intro', 'method', 'apply', 'other']);
 
 async function fetchAllUsersForStats() {
   const rows = [];
@@ -416,6 +417,29 @@ async function handleCountTargets({ segments, allUsers, excludeEnrolled, adminOn
   return NextResponse.json({ count: userIds.length });
 }
 
+function isUsableFlexButton(button = {}) {
+  if (!button.label) return false;
+  if (button.actionType === 'message' || (!button.url && (button.replyText || button.messageText))) {
+    return !!(button.replyText || button.messageText || button.label);
+  }
+  return !!button.url;
+}
+
+function withTrackedButtonUrl(button, linkId, index, userId) {
+  if (button.actionType === 'message' || (!button.url && (button.replyText || button.messageText))) {
+    return {
+      ...button,
+      actionType: 'message',
+      messageText: button.messageText || button.label,
+    };
+  }
+
+  return {
+    ...button,
+    url: wrapLink(button.url, `${linkId}_b${index}`, userId),
+  };
+}
+
 async function handlePush(data) {
   const { templateId, message, linkUrl, linkText, buttons, segments, mode, allUsers, excludeEnrolled, adminOnly, imageUrl } = data;
 
@@ -472,7 +496,7 @@ async function handlePush(data) {
 
   // Flex Message 固定使用 multicast（不支援佇列模式的個人化追蹤連結）
   if (useFlexMsg) {
-    const cleanButtons = (buttons || []).filter((b) => b.label && b.url);
+    const cleanButtons = (buttons || []).filter(isUsableFlexButton);
     const lines = message.split('\n').filter((l) => l.trim());
     const title = lines[0] || message;
     const body = lines.slice(1).join('\n').trim();
@@ -481,19 +505,13 @@ async function handlePush(data) {
 
     if (adminOnly) {
       for (const userId of userIds) {
-        const trackedButtons = cleanButtons.map((btn, i) => ({
-          ...btn,
-          url: wrapLink(btn.url, `${linkId}_b${i}`, userId),
-        }));
+        const trackedButtons = cleanButtons.map((btn, i) => withTrackedButtonUrl(btn, linkId, i, userId));
         const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: imageUrl || undefined });
         const ok = await pushMessage(userId, lineMsg);
         if (ok) sent++;
       }
     } else {
-      const trackedButtons = cleanButtons.map((btn, i) => ({
-        ...btn,
-        url: wrapLink(btn.url, `${linkId}_b${i}`),
-      }));
+      const trackedButtons = cleanButtons.map((btn, i) => withTrackedButtonUrl(btn, linkId, i));
       const lineMsg = pushFlexMessage({ title, body, buttons: trackedButtons, imageUrl: imageUrl || undefined });
 
       for (let i = 0; i < userIds.length; i += 500) {
@@ -727,9 +745,31 @@ async function handleGetDripStats() {
 }
 
 async function handleUpdateDrip({ step_number, ...updates }) {
+  const validColumns = {
+    title: 1,
+    message: 1,
+    link_url: 1,
+    link_text: 1,
+    image_url: 1,
+    delay_days: 1,
+    send_hour: 1,
+    exclude_tag: 1,
+    article_type: 1,
+  };
+  const dbUpdates = {};
+  Object.keys(updates || {}).forEach((key) => {
+    if (!validColumns[key]) return;
+    dbUpdates[key] = key === 'article_type' && !DRIP_ARTICLE_TYPES.has(updates[key])
+      ? 'other'
+      : updates[key];
+  });
+  if (Object.keys(dbUpdates).length === 0) {
+    return NextResponse.json({ ok: true });
+  }
+
   const { error } = await supabase
     .from('official_drip_schedule')
-    .update(updates)
+    .update(dbUpdates)
     .eq('step_number', step_number);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -1025,18 +1065,59 @@ async function handleToggleDripTestMode({ enabled }) {
   return NextResponse.json({ ok: true, dripTestMode: enabled });
 }
 
+function clampConfigNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(Math.max(number, min), max);
+}
+
+function cleanConfigText(value, fallback = '') {
+  return String(value || fallback).slice(0, 120);
+}
+
+function sanitizeRetargetingAudienceConditions(raw = {}, fallbackConfig = {}) {
+  const conditions = raw && typeof raw === 'object' ? raw : {};
+  return {
+    presetId: cleanConfigText(conditions.presetId || fallbackConfig.ruleId || 'dropoff'),
+    ruleTitle: cleanConfigText(conditions.ruleTitle || fallbackConfig.ruleTitle || '互動下降'),
+    clickedMin: clampConfigNumber(conditions.clickedMin, 2, 0, 20),
+    inactiveSteps: clampConfigNumber(conditions.inactiveSteps || fallbackConfig.missedSteps, 2, 1, 20),
+    recentDays: clampConfigNumber(conditions.recentDays, 14, 1, 90),
+    applyDelayDays: clampConfigNumber(conditions.applyDelayDays, 3, 0, 60),
+    applyClicks: clampConfigNumber(conditions.applyClicks, 1, 1, 20),
+    paymentDelayDays: clampConfigNumber(conditions.paymentDelayDays, 2, 0, 60),
+    receivedMin: clampConfigNumber(conditions.receivedMin || fallbackConfig.receivedMin, 3, 1, 50),
+    joinedDays: clampConfigNumber(conditions.joinedDays, 30, 1, 365),
+    storyOnly: !!conditions.storyOnly,
+    excludeApplyClickers: conditions.excludeApplyClickers !== false,
+    customAudienceName: cleanConfigText(conditions.customAudienceName || ''),
+    customAudienceLogic: conditions.customAudienceLogic === 'any' ? 'any' : 'all',
+    customArticleType: ['student_story', 'health_article', 'any'].includes(conditions.customArticleType)
+      ? conditions.customArticleType
+      : 'any',
+    customMinimumClicks: clampConfigNumber(conditions.customMinimumClicks, 1, 1, 20),
+    customExcludeSubmitted: conditions.customExcludeSubmitted !== false,
+    customExcludePaid: conditions.customExcludePaid !== false,
+  };
+}
+
 async function handleSaveRetargetingAdminConfig({ config }) {
   if (!config || typeof config !== 'object') {
     return NextResponse.json({ error: '缺少再行銷設定' }, { status: 400 });
   }
 
+  const audienceConditions = sanitizeRetargetingAudienceConditions(config.audienceConditions, config);
   const cleanConfig = {
     enabled: !!config.enabled,
     observeOnly: !!config.observeOnly,
     ruleId: String(config.ruleId || 'dropoff'),
     ruleTitle: String(config.ruleTitle || '互動下降'),
-    receivedMin: Math.max(1, Number(config.receivedMin || 1)),
-    missedSteps: Math.max(1, Number(config.missedSteps || 1)),
+    audienceRules: Array.isArray(config.audienceRules)
+      ? config.audienceRules.map((rule) => cleanConfigText(rule)).filter(Boolean).slice(0, 12)
+      : [],
+    audienceConditions,
+    receivedMin: audienceConditions.receivedMin,
+    missedSteps: audienceConditions.inactiveSteps,
     checkDelayDays: Math.max(0, Number(config.checkDelayDays || 0)),
     sendMode: config.sendMode === 'instant' ? 'instant' : 'scheduled',
     sendDelayDays: Math.max(0, Number(config.sendDelayDays || 0)),
@@ -1076,9 +1157,19 @@ function validateRetargetingTemplates(stageTemplates) {
       return `第 ${template.stage || '?'} 階段模板仍含待填入文字`;
     }
     for (const button of template.buttons || []) {
-      if (!button?.label && !button?.url) continue;
-      if (!button?.label || !button?.url) {
-        return `第 ${template.stage || '?'} 階段模板有按鈕缺少文字或網址`;
+      if (!button?.label && !button?.url && !button?.replyText && !button?.messageText) continue;
+      const isMessageButton = button.actionType === 'message' || (!button.url && (button.replyText || button.messageText));
+      if (!button?.label) {
+        return `第 ${template.stage || '?'} 階段模板有按鈕缺少文字`;
+      }
+      if (isMessageButton) {
+        if (!button.replyText) {
+          return `第 ${template.stage || '?'} 階段模板的文字回覆按鈕缺少 BOT 回覆內容`;
+        }
+        continue;
+      }
+      if (!button?.url) {
+        return `第 ${template.stage || '?'} 階段模板有連結按鈕缺少網址`;
       }
       let parsed;
       try {
@@ -1177,6 +1268,7 @@ async function handleAddDripStep() {
       message: '',
       link_url: '',
       link_text: '閱讀文章',
+      article_type: 'other',
       delay_days: 1,
       send_hour: 8,
       is_active: false,
