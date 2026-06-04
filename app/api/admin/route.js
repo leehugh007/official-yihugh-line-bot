@@ -89,6 +89,8 @@ export async function GET(request) {
       return handleGetFunnelStats(searchParams);
     case 'funnel_users':
       return handleGetFunnelUsers(searchParams);
+    case 'retargeting_dashboard':
+      return handleGetRetargetingDashboard();
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   }
@@ -139,6 +141,8 @@ export async function POST(request) {
       return handleResetAdminDrip();
     case 'save_retargeting_admin_config':
       return handleSaveRetargetingAdminConfig(data);
+    case 'save_retargeting_library':
+      return handleSaveRetargetingLibrary(data);
     case 'add_drip_step':
       return handleAddDripStep(data);
     case 'delete_drip_step':
@@ -944,6 +948,101 @@ async function handleGetSettings() {
   return NextResponse.json(data || []);
 }
 
+function safeJsonParse(value, fallback) {
+  try {
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function summarizeRetargetingState(state = {}, activityId = null) {
+  const rows = Object.values(state || {}).filter((row) => !activityId || row?.activityId === activityId);
+  return {
+    users: rows.length,
+    sent: rows.filter((row) => row?.lastSentAt).length,
+    pending: rows.filter((row) => row?.pending?.scheduledAt).length,
+    observing: rows.filter((row) => row?.observingUntil && new Date(row.observingUntil) > new Date()).length,
+    observed: rows.filter((row) => row?.observedAt).length,
+    lastUpdatedAt: rows
+      .map((row) => row?.updatedAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null,
+    nextScheduledAt: rows
+      .flatMap((row) => [row?.pending?.scheduledAt, row?.observingUntil])
+      .filter(Boolean)
+      .sort()
+      .at(0) || null,
+  };
+}
+
+async function handleGetRetargetingDashboard() {
+  const settingKeys = [
+    'drip_test_mode',
+    'retargeting_admin_auto_config',
+    'retargeting_admin_auto_state',
+    'retargeting_auto_state',
+    'retargeting_audience_library',
+    'retargeting_template_library',
+  ];
+  const { data: settings, error: settingsError } = await supabase
+    .from('official_settings')
+    .select('key, value, updated_at')
+    .in('key', settingKeys);
+
+  if (settingsError) {
+    return NextResponse.json({ error: settingsError.message }, { status: 500 });
+  }
+
+  const map = Object.fromEntries((settings || []).map((row) => [row.key, row]));
+  const config = safeJsonParse(map.retargeting_admin_auto_config?.value, null);
+  const adminState = safeJsonParse(map.retargeting_admin_auto_state?.value, {});
+  const memberState = safeJsonParse(map.retargeting_auto_state?.value, {});
+
+  const { data: logs, error: logsError } = await supabase
+    .from('official_push_logs')
+    .select('*')
+    .like('template_id', 'retargeting_auto_%')
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  if (logsError) {
+    return NextResponse.json({ error: logsError.message }, { status: 500 });
+  }
+
+  const { data: clicks } = await supabase
+    .from('official_line_clicks')
+    .select('link_id')
+    .like('link_id', 'retargeting_auto_%');
+  const clickIds = (clicks || []).map((row) => row.link_id);
+  const realLogs = (logs || []).map((log) => ({
+    ...log,
+    click_count: log.link_id
+      ? clickIds.filter((linkId) => String(linkId || '').startsWith(log.link_id)).length
+      : 0,
+  }));
+
+  const { count: managerCount } = await supabase
+    .from('official_line_users')
+    .select('*', { count: 'exact', head: true })
+    .contains('tags', ['管理者'])
+    .eq('is_blocked', false);
+
+  return NextResponse.json({
+    ok: true,
+    testMode: map.drip_test_mode?.value === 'true',
+    config,
+    configUpdatedAt: map.retargeting_admin_auto_config?.updated_at || null,
+    adminState: summarizeRetargetingState(adminState, config?.activityId),
+    memberState: summarizeRetargetingState(memberState, config?.activityId),
+    audienceLibrary: safeJsonParse(map.retargeting_audience_library?.value, []),
+    templateLibrary: safeJsonParse(map.retargeting_template_library?.value, []),
+    logs: realLogs,
+    managerCount: managerCount || 0,
+  });
+}
+
 async function handleUpdateSetting({ key, value }) {
   if (!key) {
     return NextResponse.json({ error: '缺少 key' }, { status: 400 });
@@ -1068,7 +1167,8 @@ async function handleToggleDripTestMode({ enabled }) {
 function clampConfigNumber(value, fallback, min, max) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
-  return Math.min(Math.max(number, min), max);
+  const normalized = Math.max(number, min);
+  return Number.isFinite(max) ? Math.min(normalized, max) : normalized;
 }
 
 function cleanConfigText(value, fallback = '') {
@@ -1080,22 +1180,22 @@ function sanitizeRetargetingAudienceConditions(raw = {}, fallbackConfig = {}) {
   return {
     presetId: cleanConfigText(conditions.presetId || fallbackConfig.ruleId || 'dropoff'),
     ruleTitle: cleanConfigText(conditions.ruleTitle || fallbackConfig.ruleTitle || '互動下降'),
-    clickedMin: clampConfigNumber(conditions.clickedMin, 2, 0, 20),
-    inactiveSteps: clampConfigNumber(conditions.inactiveSteps || fallbackConfig.missedSteps, 2, 1, 20),
-    recentDays: clampConfigNumber(conditions.recentDays, 14, 1, 90),
-    applyDelayDays: clampConfigNumber(conditions.applyDelayDays, 3, 0, 60),
-    applyClicks: clampConfigNumber(conditions.applyClicks, 1, 1, 20),
-    paymentDelayDays: clampConfigNumber(conditions.paymentDelayDays, 2, 0, 60),
-    receivedMin: clampConfigNumber(conditions.receivedMin || fallbackConfig.receivedMin, 3, 1, 50),
-    joinedDays: clampConfigNumber(conditions.joinedDays, 30, 1, 365),
+    clickedMin: clampConfigNumber(conditions.clickedMin, 2, 0),
+    inactiveSteps: clampConfigNumber(conditions.inactiveSteps || fallbackConfig.missedSteps, 2, 1),
+    recentDays: clampConfigNumber(conditions.recentDays, 14, 1),
+    applyDelayDays: clampConfigNumber(conditions.applyDelayDays, 3, 0),
+    applyClicks: clampConfigNumber(conditions.applyClicks, 1, 1),
+    paymentDelayDays: clampConfigNumber(conditions.paymentDelayDays, 2, 0),
+    receivedMin: clampConfigNumber(conditions.receivedMin || fallbackConfig.receivedMin, 3, 1),
+    joinedDays: clampConfigNumber(conditions.joinedDays, 30, 1),
     storyOnly: !!conditions.storyOnly,
     excludeApplyClickers: conditions.excludeApplyClickers !== false,
     customAudienceName: cleanConfigText(conditions.customAudienceName || ''),
     customAudienceLogic: conditions.customAudienceLogic === 'any' ? 'any' : 'all',
-    customArticleType: ['student_story', 'health_article', 'any'].includes(conditions.customArticleType)
+    customArticleType: conditions.customArticleType === 'any' || DRIP_ARTICLE_TYPES.has(conditions.customArticleType)
       ? conditions.customArticleType
       : 'any',
-    customMinimumClicks: clampConfigNumber(conditions.customMinimumClicks, 1, 1, 20),
+    customMinimumClicks: clampConfigNumber(conditions.customMinimumClicks ?? conditions.clickedMin, 1, 1),
     customExcludeSubmitted: conditions.customExcludeSubmitted !== false,
     customExcludePaid: conditions.customExcludePaid !== false,
   };
@@ -1108,6 +1208,9 @@ async function handleSaveRetargetingAdminConfig({ config }) {
 
   const audienceConditions = sanitizeRetargetingAudienceConditions(config.audienceConditions, config);
   const cleanConfig = {
+    activityId: cleanConfigText(config.activityId || `retargeting_${Date.now()}`),
+    audienceId: cleanConfigText(config.audienceId || config.ruleId || 'dropoff'),
+    firstTemplateId: cleanConfigText(config.firstTemplateId || config.stageTemplates?.[0]?.templateId || ''),
     enabled: !!config.enabled,
     observeOnly: !!config.observeOnly,
     ruleId: String(config.ruleId || 'dropoff'),
@@ -1133,6 +1236,9 @@ async function handleSaveRetargetingAdminConfig({ config }) {
   if (!cleanConfig.stageTemplates[0]?.message) {
     return NextResponse.json({ error: '第 1 階段模板缺少訊息文字' }, { status: 400 });
   }
+  if (cleanConfig.repeatStrategy === 'staged' && !cleanConfig.stageTemplates[1]?.message) {
+    return NextResponse.json({ error: '階段式流程必須選擇第 2 次符合時要發送的模板' }, { status: 400 });
+  }
   const templateError = validateRetargetingTemplates(cleanConfig.stageTemplates);
   if (templateError) {
     return NextResponse.json({ error: templateError }, { status: 400 });
@@ -1148,6 +1254,83 @@ async function handleSaveRetargetingAdminConfig({ config }) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true, config: cleanConfig });
+}
+
+function sanitizeRetargetingLibraryId(value, prefix) {
+  const cleaned = String(value || '')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 80);
+  return cleaned || `${prefix}_${Date.now()}`;
+}
+
+async function handleSaveRetargetingLibrary({ libraryType, items }) {
+  if (!['audience', 'template'].includes(libraryType) || !Array.isArray(items)) {
+    return NextResponse.json({ error: '受眾或模板資料格式錯誤' }, { status: 400 });
+  }
+
+  const now = new Date().toISOString();
+  const cleanItems = items.slice(0, 100).map((item) => {
+    if (libraryType === 'audience') {
+      const audienceConditions = sanitizeRetargetingAudienceConditions(item.audienceConditions, {
+        ruleId: item.ruleId,
+        ruleTitle: item.title,
+      });
+      return {
+        id: sanitizeRetargetingLibraryId(item.id, 'audience'),
+        title: cleanConfigText(item.title || audienceConditions.ruleTitle || '自訂受眾'),
+        ruleId: cleanConfigText(item.ruleId || audienceConditions.presetId || 'custom'),
+        rules: Array.isArray(item.rules)
+          ? item.rules.map((rule) => cleanConfigText(rule)).filter(Boolean).slice(0, 20)
+          : [],
+        audienceConditions,
+        active: item.active !== false,
+        createdAt: item.createdAt || now,
+        updatedAt: now,
+      };
+    }
+
+    const buttons = Array.isArray(item.buttons)
+      ? item.buttons.slice(0, 3).map((button) => ({
+          label: cleanConfigText(button.label || ''),
+          actionType: button.actionType === 'message' ? 'message' : 'url',
+          url: String(button.url || '').slice(0, 1000),
+          messageText: cleanConfigText(button.messageText || button.label || ''),
+          replyText: String(button.replyText || '').slice(0, 2000),
+        }))
+      : [];
+    return {
+      id: sanitizeRetargetingLibraryId(item.id, 'template'),
+      title: cleanConfigText(item.title || '自訂模板'),
+      category: cleanConfigText(item.category || '自訂'),
+      image_url: String(item.image_url || '').slice(0, 2000),
+      body: String(item.body || '').slice(0, 10000),
+      buttons,
+      active: item.active !== false,
+      createdAt: item.createdAt || now,
+      updatedAt: now,
+    };
+  });
+
+  if (libraryType === 'template') {
+    const templateError = validateRetargetingTemplates(cleanItems.map((item, index) => ({
+      stage: index + 1,
+      message: item.body,
+      buttons: item.buttons,
+    })));
+    if (templateError) {
+      return NextResponse.json({ error: templateError }, { status: 400 });
+    }
+  }
+
+  const key = libraryType === 'audience'
+    ? 'retargeting_audience_library'
+    : 'retargeting_template_library';
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({ key, value: JSON.stringify(cleanItems), updated_at: now });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, items: cleanItems });
 }
 
 function validateRetargetingTemplates(stageTemplates) {

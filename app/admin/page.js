@@ -1567,13 +1567,13 @@ function DripTab({ dripStats, onUpdate, onToggleActive, onToggleTestMode, onRese
         <div>
           <strong>管理者測試重跑</strong>
           <span style={styles.retargetingMuted}>
-            若管理者之前已收到排程文章，可重設進度，下一次 cron 會從第 1 篇重新開始。
+            若管理者之前已收到排程文章，可重設進度。會保留管理者的真實標籤，測試模式下忽略商業排除條件，下一次 cron 從第 1 篇重新開始。
           </span>
           {adminResetResult && (
             <span style={{ ...styles.retargetingMuted, color: adminResetResult.error ? '#991b1b' : '#166534' }}>
               {adminResetResult.error
                 ? adminResetResult.error
-                : `已重置 ${adminResetResult.reset} 位管理者，清除 ${adminResetResult.deletedLogs} 筆發送紀錄 / ${adminResetResult.deletedClicks} 筆點擊紀錄`}
+                : `已重置 ${adminResetResult.reset} 位管理者，清除 ${adminResetResult.deletedLogs} 筆發送紀錄 / ${adminResetResult.deletedClicks} 筆點擊紀錄；目前等待下一次 cron 發送第 1 篇`}
             </span>
           )}
         </div>
@@ -2542,12 +2542,52 @@ function PricingTab({ settings, onUpdated }) {
   const [saving, setSaving] = useState(null);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [batchName, setBatchName] = useState(settings.program_batch_name || '下一期班');
+  const [batchStartDate, setBatchStartDate] = useState(settings.program_start_date || '');
+  const [q5Msg3Template, setQ5Msg3Template] = useState(settings.q5_msg3_template || '');
+  const [q5Msg4Template, setQ5Msg4Template] = useState(settings.q5_msg4_template || '');
 
   // settings 變動（parent reload）→ 同步 picker 預填值
   useEffect(() => {
     setSuperPicker(toLocalDateTimeInput(super_cutoff_at));
     setRegularPicker(toLocalDateTimeInput(regular_cutoff_at));
   }, [super_cutoff_at, regular_cutoff_at]);
+
+  useEffect(() => {
+    setBatchName(settings.program_batch_name || '下一期班');
+    setBatchStartDate(settings.program_start_date || '');
+    setQ5Msg3Template(settings.q5_msg3_template || '');
+    setQ5Msg4Template(settings.q5_msg4_template || '');
+  }, [
+    settings.program_batch_name,
+    settings.program_start_date,
+    settings.q5_msg3_template,
+    settings.q5_msg4_template,
+  ]);
+
+  async function saveClassCopySettings() {
+    setSaving('class_copy');
+    setError(null);
+    setResult(null);
+    const values = {
+      program_batch_name: batchName.trim() || '下一期班',
+      program_start_date: batchStartDate,
+      q5_msg3_template: q5Msg3Template,
+      q5_msg4_template: q5Msg4Template,
+    };
+    try {
+      for (const [key, value] of Object.entries(values)) {
+        const data = await apiPost({ action: 'update_setting', key, value });
+        if (!data.ok) throw new Error(data.error || `${key} 儲存失敗`);
+        if (onUpdated) onUpdated(key, value);
+      }
+      setResult({ key: '班級與 Q5 文案', cutoff_at: null, classCopy: true });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(null);
+    }
+  }
 
   async function callSet(key, cutoff_at, confirmMsg) {
     if (confirmMsg && !confirm(confirmMsg)) return;
@@ -2651,6 +2691,53 @@ function PricingTab({ settings, onUpdated }) {
         </div>
       </div>
 
+      <div style={cardStyle(true)}>
+        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}>
+          班級名稱、開課日與 Q5 文案
+        </div>
+        <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 12px' }}>
+          這裡會同步影響 Q5 第 3 / 4 段訊息與報名頁，不再固定顯示 6 月班或 6/1。
+        </p>
+        <label style={styles.fieldLabel}>班級 / 梯次名稱</label>
+        <input
+          value={batchName}
+          onChange={(e) => setBatchName(e.target.value)}
+          style={styles.input}
+          placeholder="例如：7 月班"
+        />
+        <label style={styles.fieldLabel}>開課日期</label>
+        <input
+          type="date"
+          value={batchStartDate}
+          onChange={(e) => setBatchStartDate(e.target.value)}
+          style={styles.input}
+        />
+        <label style={styles.fieldLabel}>Q5 第 3 段完整文案（選填）</label>
+        <textarea
+          value={q5Msg3Template}
+          onChange={(e) => setQ5Msg3Template(e.target.value)}
+          style={styles.textarea}
+          rows={7}
+          placeholder="留空使用系統預設。可使用 {{batch_name}}、{{start_date}}、{{price_lines}}。"
+        />
+        <label style={styles.fieldLabel}>Q5 第 4 段完整文案（選填）</label>
+        <textarea
+          value={q5Msg4Template}
+          onChange={(e) => setQ5Msg4Template(e.target.value)}
+          style={styles.textarea}
+          rows={7}
+          placeholder="留空使用系統預設。可使用 {{batch_name}}、{{start_date}}。"
+        />
+        <button
+          type="button"
+          onClick={saveClassCopySettings}
+          disabled={saving === 'class_copy'}
+          style={btnPrimary(saving === 'class_copy')}
+        >
+          {saving === 'class_copy' ? '儲存中…' : '儲存班級與 Q5 文案'}
+        </button>
+      </div>
+
       {/* 超早鳥區 */}
       <div style={cardStyle(super_active)}>
         <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}>
@@ -2750,9 +2837,15 @@ function PricingTab({ settings, onUpdated }) {
             fontSize: 13,
           }}
         >
-          ✅ 已更新 {result.key} = {toTaiwanDisplay(result.cutoff_at)}
-          <br />
-          {result.is_future ? '截止日在未來（活躍）' : '截止日已過（不活躍）'}
+          {result.classCopy ? (
+            <>✅ 班級名稱、開課日與 Q5 文案已更新</>
+          ) : (
+            <>
+              ✅ 已更新 {result.key} = {toTaiwanDisplay(result.cutoff_at)}
+              <br />
+              {result.is_future ? '截止日在未來（活躍）' : '截止日已過（不活躍）'}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -4108,1377 +4201,755 @@ function createRetargetingDraft(template) {
   };
 }
 
-const RETARGETING_ACTIVITY_STATUS = {
-  draft: { label: '草稿', tone: '#64748b' },
-  scheduled: { label: '已排程', tone: '#b45309' },
-  paused: { label: '已暫停', tone: '#991b1b' },
-  disabled: { label: '已停用', tone: '#7f1d1d' },
-  sent: { label: '已發送', tone: '#166534' },
-};
+function createRetargetingLibraryId(prefix) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
 
-function AudienceConditionTuning({
-  presetId,
-  clickedMin,
-  setClickedMin,
-  inactiveSteps,
-  setInactiveSteps,
-  recentDays,
-  setRecentDays,
-  applyDelayDays,
-  setApplyDelayDays,
-  applyClicks,
-  setApplyClicks,
-  paymentDelayDays,
-  setPaymentDelayDays,
-  receivedMin,
-  setReceivedMin,
-  joinedDays,
-  setJoinedDays,
-  storyOnly,
-  setStoryOnly,
-  excludeApplyClickers,
-  setExcludeApplyClickers,
-}) {
-  if (presetId === 'dropoff') {
-    return (
-      <div style={styles.retargetingTuning}>
-        <label style={styles.fieldLabel}>已收到至少 {receivedMin} 篇排程文章</label>
-        <input type="range" min="1" max="10" value={receivedMin} onChange={(e) => setReceivedMin(Number(e.target.value))} style={styles.retargetingRange} />
-        <label style={styles.fieldLabel}>曾點擊至少 {clickedMin} 篇</label>
-        <input type="range" min="1" max="4" value={clickedMin} onChange={(e) => setClickedMin(Number(e.target.value))} style={styles.retargetingRange} />
-        <label style={styles.fieldLabel}>最近連續 {inactiveSteps} 篇未點擊</label>
-        <input type="range" min="1" max="4" value={inactiveSteps} onChange={(e) => setInactiveSteps(Number(e.target.value))} style={styles.retargetingRange} />
-      </div>
-    );
+function retargetingAudienceFromPreset(preset) {
+  return {
+    id: preset.id,
+    title: preset.title,
+    ruleId: preset.id,
+    rules: preset.rules || [],
+    active: true,
+    builtIn: true,
+    audienceConditions: {
+      presetId: preset.id,
+      ruleTitle: preset.title,
+      clickedMin: 2,
+      inactiveSteps: 2,
+      recentDays: 14,
+      applyDelayDays: 3,
+      applyClicks: 1,
+      paymentDelayDays: 2,
+      receivedMin: 3,
+      joinedDays: 30,
+      storyOnly: false,
+      excludeApplyClickers: true,
+      customAudienceLogic: 'all',
+      customArticleType: 'any',
+      customMinimumClicks: 1,
+      customExcludeSubmitted: true,
+      customExcludePaid: true,
+    },
+  };
+}
+
+function retargetingTemplateFromBuiltIn(template) {
+  return {
+    ...template,
+    active: true,
+    builtIn: true,
+    buttons: (template.buttons || []).map(normalizeRetargetingButton),
+  };
+}
+
+function buildRetargetingAudienceRuleLabels(audience = {}) {
+  const conditions = audience.audienceConditions || {};
+  const ruleId = audience.ruleId || conditions.presetId || 'custom';
+  if (ruleId === 'dropoff') {
+    return [
+      `已收到至少 ${conditions.receivedMin ?? 3} 篇排程文章`,
+      `至少點擊 ${conditions.clickedMin ?? 2} 篇`,
+      `最近連續 ${conditions.inactiveSteps ?? 2} 篇沒有點擊`,
+    ];
   }
-
-  if (presetId === 'warm') {
-    return (
-      <div style={styles.retargetingTuning}>
-        <label style={styles.fieldLabel}>最近 {recentDays} 天內有點擊</label>
-        <input type="range" min="7" max="30" step="7" value={recentDays} onChange={(e) => setRecentDays(Number(e.target.value))} style={styles.retargetingRange} />
-        <label style={styles.fieldLabel}>累積點擊至少 {clickedMin} 篇</label>
-        <input type="range" min="1" max="5" value={clickedMin} onChange={(e) => setClickedMin(Number(e.target.value))} style={styles.retargetingRange} />
-        <label style={styles.checkbox}>
-          <input type="checkbox" checked={storyOnly} onChange={(e) => setStoryOnly(e.target.checked)} />
-          <span>限定點過學員故事</span>
-        </label>
-        <label style={styles.checkbox}>
-          <input type="checkbox" checked={excludeApplyClickers} onChange={(e) => setExcludeApplyClickers(e.target.checked)} />
-          <span>排除已點過報名頁的人</span>
-        </label>
-        {storyOnly && (
-          <div style={styles.retargetingPrototypeNotice}>
-            系統會依排程文章編輯裡的「文章類型」判斷學員故事；請先確認對應文章已選好類型。
-          </div>
-        )}
-      </div>
-    );
+  if (ruleId === 'warm') {
+    return [
+      `最近 ${conditions.recentDays ?? 14} 天有互動`,
+      `至少點擊 ${conditions.clickedMin ?? 1} 篇`,
+      conditions.customArticleType && conditions.customArticleType !== 'any'
+        ? `限定文章類型：${DRIP_ARTICLE_TYPE_LABELS[conditions.customArticleType] || conditions.customArticleType}`
+        : '不限文章類型',
+    ];
   }
-
-  if (presetId === 'apply_no_submit') {
-    return (
-      <div style={styles.retargetingTuning}>
-        <label style={styles.fieldLabel}>點過報名頁後 {applyDelayDays} 天內未送單</label>
-        <input type="range" min="1" max="14" value={applyDelayDays} onChange={(e) => setApplyDelayDays(Number(e.target.value))} style={styles.retargetingRange} />
-        <label style={styles.fieldLabel}>點過報名頁至少 {applyClicks} 次</label>
-        <input type="range" min="1" max="5" value={applyClicks} onChange={(e) => setApplyClicks(Number(e.target.value))} style={styles.retargetingRange} />
-      </div>
-    );
+  if (ruleId === 'apply_no_submit') {
+    return [
+      `至少點報名頁 ${conditions.applyClicks ?? 1} 次`,
+      `點報名頁後等待 ${conditions.applyDelayDays ?? 3} 天`,
+      '尚未送出報名',
+    ];
   }
-
-  if (presetId === 'pending_payment') {
-    return (
-      <div style={styles.retargetingTuning}>
-        <label style={styles.fieldLabel}>送單後 {paymentDelayDays} 天未付款</label>
-        <input type="range" min="1" max="14" value={paymentDelayDays} onChange={(e) => setPaymentDelayDays(Number(e.target.value))} style={styles.retargetingRange} />
-        <label style={styles.checkbox}>
-          <input type="checkbox" checked readOnly />
-          <span>排除已取消</span>
-        </label>
-      </div>
-    );
+  if (ruleId === 'pending_payment') {
+    return [`送出報名後等待 ${conditions.paymentDelayDays ?? 2} 天`, '尚未付款'];
   }
+  if (ruleId === 'cold') {
+    return [
+      `已收到至少 ${conditions.receivedMin ?? 3} 篇排程文章`,
+      `加入至少 ${conditions.joinedDays ?? 30} 天`,
+      '排程文章點擊為 0',
+    ];
+  }
+  return [
+    `限定文章類型：${DRIP_ARTICLE_TYPE_LABELS[conditions.customArticleType] || '不限類型'}`,
+    `至少點擊 ${conditions.customMinimumClicks ?? conditions.clickedMin ?? 1} 篇`,
+    conditions.customExcludeSubmitted === false ? '可包含已送單' : '排除已送單',
+    conditions.customExcludePaid === false ? '可包含已付款' : '排除已付款',
+  ];
+}
 
+function RetargetingNumberField({ label, value, onChange, min = 0 }) {
   return (
-    <div style={styles.retargetingTuning}>
-      <label style={styles.fieldLabel}>收到至少 {receivedMin} 篇文章</label>
-      <input type="range" min="1" max="8" value={receivedMin} onChange={(e) => setReceivedMin(Number(e.target.value))} style={styles.retargetingRange} />
-      <label style={styles.fieldLabel}>加入超過 {joinedDays} 天</label>
-      <input type="range" min="7" max="90" step="7" value={joinedDays} onChange={(e) => setJoinedDays(Number(e.target.value))} style={styles.retargetingRange} />
-      <label style={styles.checkbox}>
-        <input type="checkbox" checked readOnly />
-        <span>累積 0 點擊</span>
-      </label>
-    </div>
+    <label style={styles.fieldLabel}>
+      {label}
+      <input
+        type="number"
+        min={min}
+        value={value}
+        onChange={(e) => onChange(Math.max(min, Number(e.target.value || min)))}
+        style={{ ...styles.input, marginTop: 4 }}
+      />
+    </label>
   );
 }
 
-function AudienceRetargetingPrototype() {
-  const [selectedPreset, setSelectedPreset] = useState(AUDIENCE_PRESETS[0].id);
-  const [customAudienceName, setCustomAudienceName] = useState('看過學員故事但未報名');
-  const [customAudienceLogic, setCustomAudienceLogic] = useState('all');
-  const [customArticleType, setCustomArticleType] = useState('any');
-  const [customMinimumClicks, setCustomMinimumClicks] = useState(1);
-  const [customExcludeSubmitted, setCustomExcludeSubmitted] = useState(true);
-  const [customExcludePaid, setCustomExcludePaid] = useState(true);
-  const [selectedTemplate, setSelectedTemplate] = useState(RETARGETING_TEMPLATES[0].id);
-  const [customTemplateName, setCustomTemplateName] = useState('自訂喚醒訊息');
-  const [customTemplateCategory, setCustomTemplateCategory] = useState('自訂');
-  const [templateDraft, setTemplateDraft] = useState(() => createRetargetingDraft(RETARGETING_TEMPLATES[0]));
-  const [mode, setMode] = useState('scheduled');
-  const [clickedMin, setClickedMin] = useState(2);
-  const [inactiveSteps, setInactiveSteps] = useState(2);
-  const [recentDays, setRecentDays] = useState(14);
-  const [applyDelayDays, setApplyDelayDays] = useState(3);
-  const [applyClicks, setApplyClicks] = useState(1);
-  const [paymentDelayDays, setPaymentDelayDays] = useState(2);
-  const [receivedMin, setReceivedMin] = useState(3);
-  const [joinedDays, setJoinedDays] = useState(30);
-  const [storyOnly, setStoryOnly] = useState(false);
-  const [excludeApplyClickers, setExcludeApplyClickers] = useState(true);
-  const [waitDays, setWaitDays] = useState(3);
-  const [sendDelayDays, setSendDelayDays] = useState(1);
-  const [sendAtTime, setSendAtTime] = useState('14:00');
-  const [engagementCriteria, setEngagementCriteria] = useState('any_click_or_reply');
-  const [resumeStep, setResumeStep] = useState('next_unread');
-  const [repeatStrategy, setRepeatStrategy] = useState('staged');
-  const [secondStageTemplateId, setSecondStageTemplateId] = useState('warm_story');
-  const [thirdStageAction, setThirdStageAction] = useState('cooldown');
-  const [stats, setStats] = useState(null);
-  const [selectedActivityId, setSelectedActivityId] = useState('activity_dropoff_001');
-  const [adminTestSending, setAdminTestSending] = useState(false);
-  const [adminTestResult, setAdminTestResult] = useState(null);
-  const [adminAutoEnabled, setAdminAutoEnabled] = useState(false);
-  const [adminAutoObserveOnly, setAdminAutoObserveOnly] = useState(false);
-  const [adminAutoSaving, setAdminAutoSaving] = useState(false);
-  const [adminAutoResult, setAdminAutoResult] = useState(null);
-  const [templateSaveResult, setTemplateSaveResult] = useState(null);
-  const [flowSaveResult, setFlowSaveResult] = useState(null);
-  const [adminAutoWaitDays, setAdminAutoWaitDays] = useState(1);
-  const [activities, setActivities] = useState(() => [
-    {
-      id: 'activity_dropoff_001',
-      name: '互動下降喚回',
-      presetId: 'dropoff',
-      templateId: 'dropoff_soft',
-      templateTitle: '互動下降溫和喚回',
-      status: 'scheduled',
-      mode: 'scheduled',
-      scheduleText: '每天 14:00 檢查',
-      rules: ['收到至少 3 篇文章', '曾點擊至少 2 篇', '最近連續 2 篇未點擊', '排除已報名'],
-      conditions: { receivedMin: 3, clickedMin: 2, inactiveSteps: 2 },
-      waitDays: 3,
-      resumeStep: 'next_unread',
-      audienceSize: 18,
-      sentCount: 15,
-      excludedCount: 3,
-      metrics: {
-        clicked: 5,
-        replied: 2,
-        applyClicks: 1,
-        submitted: 1,
-        paid: 0,
-        avgEngageDays: 1.6,
-        linkBreakdown: [
-          { label: '回來看下一篇', count: 3 },
-          { label: '看一個真實案例', count: 2 },
-          { label: '我想問問題', count: 1 },
-        ],
-        followUp: { engagedNext: 4, inactiveNext: 9, handoff: 2 },
-      },
-    },
-    {
-      id: 'activity_apply_001',
-      name: '報名頁 FAQ 補強',
-      presetId: 'apply_no_submit',
-      templateId: 'apply_faq',
-      templateTitle: '報名前未送單 FAQ',
-      status: 'draft',
-      mode: 'instant',
-      scheduleText: '手動確認後立即發送',
-      rules: ['點過報名頁後 3 天內未送單', '點過報名頁至少 1 次', '排除已送單'],
-      conditions: { applyDelayDays: 3, applyClicks: 1 },
-      waitDays: 2,
-      resumeStep: 'q5',
-      audienceSize: 7,
-      sentCount: 0,
-      excludedCount: 1,
-      metrics: {
-        clicked: 0,
-        replied: 0,
-        applyClicks: 0,
-        submitted: 0,
-        paid: 0,
-        avgEngageDays: null,
-        linkBreakdown: [
-          { label: '我想問問題', count: 0 },
-          { label: '看常見問題', count: 0 },
-          { label: '回到報名頁', count: 0 },
-        ],
-        followUp: { engagedNext: 0, inactiveNext: 0, handoff: 0 },
-      },
-    },
-  ]);
+function formatRetargetingTime(value) {
+  if (!value) return '尚無';
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
 
-  useEffect(() => {
-    fetch(apiUrl('funnel_stats') + '&range=all')
-      .then((r) => r.json())
-      .then(setStats)
-      .catch(() => setStats(null));
+function AudienceRetargetingPrototype() {
+  const builtInAudiences = AUDIENCE_PRESETS.map(retargetingAudienceFromPreset);
+  const builtInTemplates = RETARGETING_TEMPLATES.map(retargetingTemplateFromBuiltIn);
+  const [dashboard, setDashboard] = useState(null);
+  const [audienceLibrary, setAudienceLibrary] = useState([]);
+  const [templateLibrary, setTemplateLibrary] = useState([]);
+  const [audienceDraft, setAudienceDraft] = useState(() => retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]));
+  const [templateDraft, setTemplateDraft] = useState(() => retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0]));
+  const [secondStageTemplateId, setSecondStageTemplateId] = useState(RETARGETING_TEMPLATES[1]?.id || RETARGETING_TEMPLATES[0].id);
+  const [checkDelayDays, setCheckDelayDays] = useState(1);
+  const [sendMode, setSendMode] = useState('scheduled');
+  const [sendDelayDays, setSendDelayDays] = useState(0);
+  const [sendAtTime, setSendAtTime] = useState('14:00');
+  const [observeDays, setObserveDays] = useState(3);
+  const [engagementCriteria, setEngagementCriteria] = useState('any_click_or_reply');
+  const [repeatStrategy, setRepeatStrategy] = useState('staged');
+  const [thirdStageAction, setThirdStageAction] = useState('cooldown');
+  const [enabled, setEnabled] = useState(false);
+  const [observeOnly, setObserveOnly] = useState(false);
+  const [activityId, setActivityId] = useState(() => createRetargetingLibraryId('activity'));
+  const [editingActivityId, setEditingActivityId] = useState('new');
+  const [flowChecked, setFlowChecked] = useState(false);
+  const [saving, setSaving] = useState('');
+  const [notice, setNotice] = useState(null);
+
+  const activeAudiences = [
+    ...builtInAudiences,
+    ...audienceLibrary.filter((item) => item.active !== false),
+  ];
+  const activeTemplates = [
+    ...builtInTemplates,
+    ...templateLibrary.filter((item) => item.active !== false),
+  ];
+  const firstTemplate = activeTemplates.find((item) => item.id === templateDraft.id) || templateDraft;
+  const secondTemplate = activeTemplates.find((item) => item.id === secondStageTemplateId) || firstTemplate;
+  const formLocked = !!dashboard?.config && !editingActivityId;
+
+  const loadConfigToForm = useCallback((config, libraries = {}) => {
+    if (!config) return;
+    const audienceOptions = [
+      ...AUDIENCE_PRESETS.map(retargetingAudienceFromPreset),
+      ...(libraries.audiences || []),
+    ];
+    const templateOptions = [
+      ...RETARGETING_TEMPLATES.map(retargetingTemplateFromBuiltIn),
+      ...(libraries.templates || []),
+    ];
+    const audience = audienceOptions.find((item) => item.id === config.audienceId)
+      || {
+        id: config.audienceId || config.ruleId,
+        title: config.ruleTitle,
+        ruleId: config.ruleId,
+        rules: config.audienceRules || [],
+        audienceConditions: config.audienceConditions || {},
+        active: true,
+      };
+    const stageOne = config.stageTemplates?.[0];
+    const libraryTemplate = templateOptions.find((item) => item.id === config.firstTemplateId || item.id === stageOne?.templateId);
+    const template = stageOne
+      ? {
+          ...(libraryTemplate || {}),
+          id: stageOne.templateId || config.firstTemplateId || createRetargetingLibraryId('template'),
+          title: stageOne.title || libraryTemplate?.title || '已套用模板',
+          category: stageOne.category || libraryTemplate?.category || '自動再行銷',
+          image_url: stageOne.imageUrl || '',
+          body: stageOne.message || '',
+          buttons: (stageOne.buttons || []).map(normalizeRetargetingButton),
+          active: true,
+        }
+      : libraryTemplate || retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0]);
+
+    setActivityId(config.activityId || createRetargetingLibraryId('activity'));
+    setAudienceDraft({
+      ...audience,
+      audienceConditions: { ...retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]).audienceConditions, ...(config.audienceConditions || audience.audienceConditions) },
+    });
+    setTemplateDraft({ ...template, buttons: createRetargetingDraft(template).buttons });
+    setSecondStageTemplateId(config.stageTemplates?.[1]?.templateId || templateOptions[1]?.id || template.id);
+    setCheckDelayDays(Number(config.checkDelayDays || 0));
+    setSendMode(config.sendMode === 'instant' ? 'instant' : 'scheduled');
+    setSendDelayDays(Number(config.sendDelayDays || 0));
+    setSendAtTime(config.sendAtTime || '14:00');
+    setObserveDays(Number(config.observeDays || 1));
+    setEngagementCriteria(config.engagementCriteria || 'any_click_or_reply');
+    setRepeatStrategy(config.repeatStrategy || 'staged');
+    setThirdStageAction(config.thirdStageAction || 'cooldown');
+    setEnabled(!!config.enabled);
+    setObserveOnly(!!config.observeOnly);
   }, []);
 
-  const customAudienceRules = [
-    customAudienceLogic === 'all' ? '全部條件都符合' : '符合任一條件',
-    customArticleType === 'student_story' ? '點過學員故事' : customArticleType === 'health_article' ? '點過健康文章' : '不限文章類型',
-    `累積點擊至少 ${customMinimumClicks} 次`,
-    customExcludeSubmitted ? '排除已送單' : '不排除送單者',
-    customExcludePaid ? '排除已付款' : '不排除付款者',
-  ];
-  const preset = selectedPreset === 'custom'
-    ? {
-        id: 'custom',
-        title: customAudienceName.trim() || '自訂受眾',
-        tone: '自訂',
-        desc: '自行組合條件並儲存成常用受眾。',
-        rules: customAudienceRules,
-      }
-    : AUDIENCE_PRESETS.find((p) => p.id === selectedPreset) || AUDIENCE_PRESETS[0];
-  const customTemplate = {
-    id: 'custom',
-    title: customTemplateName.trim() || '自訂模板',
-    category: customTemplateCategory.trim() || '自訂',
-    image_url: templateDraft.image_url || '',
-    body: templateDraft.body || '',
-    buttons: templateDraft.buttons || [],
-  };
-  const templateOptions = [...RETARGETING_TEMPLATES, customTemplate];
-  const template = selectedTemplate === 'custom'
-    ? customTemplate
-    : RETARGETING_TEMPLATES.find((t) => t.id === selectedTemplate) || RETARGETING_TEMPLATES[0];
-  const previewButtons = templateDraft.buttons.filter(isUsableRetargetingButton);
-  const overall = stats?.ok ? stats.overall : null;
-
-  const estimatedCount = (() => {
-    if (!overall) return '待連接';
-    if (preset.id === 'custom') {
-      return '待建立受眾快照';
-    }
-    if (preset.id === 'apply_no_submit') {
-      return Math.max((overall.clicked_apply || 0) - (overall.submitted || 0), 0);
-    }
-    if (preset.id === 'pending_payment') {
-      return Math.max((overall.submitted || 0) - (overall.paid || 0), 0);
-    }
-    return '需文章事件';
-  })();
-
-  const quickRules = (() => {
-    if (preset.id === 'dropoff') {
-      return [`收到至少 ${receivedMin} 篇文章`, `曾點擊至少 ${clickedMin} 篇`, `最近連續 ${inactiveSteps} 篇未點擊`, '尚未報名'];
-    }
-    if (preset.id === 'warm') {
-      return [
-        `最近 ${recentDays} 天內有點擊`,
-        `累積點擊至少 ${clickedMin} 篇`,
-        storyOnly ? '限定學員故事' : '不限文章類型',
-        excludeApplyClickers ? '排除已點報名頁' : '可包含已點報名頁',
-        '尚未報名',
-      ];
-    }
-    if (preset.id === 'apply_no_submit') {
-      return [`點過報名頁後 ${applyDelayDays} 天未送單`, `點過報名頁至少 ${applyClicks} 次`, '排除已付款'];
-    }
-    if (preset.id === 'pending_payment') {
-      return [`送單後 ${paymentDelayDays} 天未付款`, '排除已取消'];
-    }
-    if (preset.id === 'custom') {
-      return customAudienceRules;
-    }
-    return [`收到至少 ${receivedMin} 篇文章`, '累積 0 點擊', `加入超過 ${joinedDays} 天`, '排除已報名 / 已付款'];
-  })();
-  const audienceConditions = {
-    presetId: preset.id,
-    ruleTitle: preset.title,
-    clickedMin,
-    inactiveSteps,
-    recentDays,
-    applyDelayDays,
-    applyClicks,
-    paymentDelayDays,
-    receivedMin,
-    joinedDays,
-    storyOnly,
-    excludeApplyClickers,
-    customAudienceName: customAudienceName.trim(),
-    customAudienceLogic,
-    customArticleType,
-    customMinimumClicks,
-    customExcludeSubmitted,
-    customExcludePaid,
-  };
-
-  const engagedAction =
-    resumeStep === 'next_unread' ? '繼續文章流程' :
-    resumeStep === 'same_step' ? '重送停住文章' :
-    resumeStep === 'q5' ? '導向 Q5' :
-    '人工接手';
-  const engagementCriteriaText =
-    engagementCriteria === 'specific_button' ? '點擊指定按鈕' :
-    engagementCriteria === 'reply_only' ? '回覆 LINE 訊息' :
-    engagementCriteria === 'conversion' ? '點報名頁 / 送單 / 付款' :
-    engagementCriteria === 'effective' ? '有效互動：回覆、報名頁、送單或付款任一項' :
-    '點任一按鈕或回覆訊息';
-  const retargetingSendText = mode === 'instant'
-    ? `立即發送「${template.title}」`
-    : `延後 ${sendDelayDays} 天 ${sendAtTime} 發送「${template.title}」`;
-  const activityScheduleText = mode === 'instant'
-    ? '判定符合後立即發送'
-    : `判定符合後延後 ${sendDelayDays} 天 ${sendAtTime} 發送`;
-  const secondStageTemplate = templateOptions.find((item) => item.id === secondStageTemplateId) || RETARGETING_TEMPLATES[1] || template;
-  const thirdStageActionText =
-    thirdStageAction === 'manual' ? '通知人工查看' :
-    thirdStageAction === 'stop' ? '停止追蹤這個規則' :
-    '進入冷卻';
-  const repeatStrategyText =
-    repeatStrategy === 'once' ? '同一活動只發一次，之後略過' :
-    repeatStrategy === 'cooldown' ? '重複符合時直接進入冷卻' :
-    `第 1 次發「${template.title}」，第 2 次發「${secondStageTemplate.title}」，第 3 次${thirdStageActionText}`;
-
-  const handleSelectTemplate = (templateId) => {
-    setSelectedTemplate(templateId);
-    if (templateId !== 'custom') {
-      const nextTemplate = RETARGETING_TEMPLATES.find((item) => item.id === templateId) || RETARGETING_TEMPLATES[0];
-      setTemplateDraft(createRetargetingDraft(nextTemplate));
-    }
-  };
-
-  const updateDraftButton = (index, field, value) => {
-    setTemplateDraft((draft) => {
-      const buttons = [...draft.buttons];
-      const nextButton = { ...buttons[index], [field]: value };
-      if (field === 'label' && nextButton.actionType === 'message') {
-        nextButton.messageText = value;
-      }
-      if (field === 'actionType' && value === 'message') {
-        nextButton.messageText = nextButton.label || '';
-      }
-      buttons[index] = nextButton;
-      return { ...draft, buttons };
-    });
-  };
-
-  const updateActivityField = (activityId, field, value) => {
-    setActivities((items) => items.map((item) => (
-      item.id === activityId ? { ...item, [field]: value } : item
-    )));
-  };
-
-  const handleEditActivity = (activity) => {
-    const nextTemplate = RETARGETING_TEMPLATES.find((item) => item.id === activity.templateId) || RETARGETING_TEMPLATES[0];
-    setSelectedActivityId(activity.id);
-    setSelectedPreset(activity.presetId);
-    setSelectedTemplate(activity.templateId);
-    setTemplateDraft(createRetargetingDraft(nextTemplate));
-    setMode(activity.mode);
-    setWaitDays(activity.waitDays);
-    setResumeStep(activity.resumeStep);
-
-    if (activity.conditions?.clickedMin) setClickedMin(activity.conditions.clickedMin);
-    if (activity.conditions?.inactiveSteps) setInactiveSteps(activity.conditions.inactiveSteps);
-    if (activity.conditions?.recentDays) setRecentDays(activity.conditions.recentDays);
-    if (activity.conditions?.applyDelayDays) setApplyDelayDays(activity.conditions.applyDelayDays);
-    if (activity.conditions?.applyClicks) setApplyClicks(activity.conditions.applyClicks);
-    if (activity.conditions?.paymentDelayDays) setPaymentDelayDays(activity.conditions.paymentDelayDays);
-    if (activity.conditions?.receivedMin) setReceivedMin(activity.conditions.receivedMin);
-    if (activity.conditions?.joinedDays) setJoinedDays(activity.conditions.joinedDays);
-    if (activity.conditions?.storyOnly !== undefined) setStoryOnly(activity.conditions.storyOnly);
-    if (activity.conditions?.excludeApplyClickers !== undefined) setExcludeApplyClickers(activity.conditions.excludeApplyClickers);
-    if (activity.conditions?.sendDelayDays !== undefined) setSendDelayDays(activity.conditions.sendDelayDays);
-    if (activity.conditions?.sendAtTime) setSendAtTime(activity.conditions.sendAtTime);
-    if (activity.conditions?.engagementCriteria) setEngagementCriteria(activity.conditions.engagementCriteria);
-    if (activity.conditions?.repeatStrategy) setRepeatStrategy(activity.conditions.repeatStrategy);
-    if (activity.conditions?.secondStageTemplateId) setSecondStageTemplateId(activity.conditions.secondStageTemplateId);
-    if (activity.conditions?.thirdStageAction) setThirdStageAction(activity.conditions.thirdStageAction);
-    if (activity.conditions?.customAudienceName) setCustomAudienceName(activity.conditions.customAudienceName);
-    if (activity.conditions?.customAudienceLogic) setCustomAudienceLogic(activity.conditions.customAudienceLogic);
-    if (activity.conditions?.customArticleType) setCustomArticleType(activity.conditions.customArticleType);
-    if (activity.conditions?.customMinimumClicks) setCustomMinimumClicks(activity.conditions.customMinimumClicks);
-    if (activity.conditions?.customExcludeSubmitted !== undefined) setCustomExcludeSubmitted(activity.conditions.customExcludeSubmitted);
-    if (activity.conditions?.customExcludePaid !== undefined) setCustomExcludePaid(activity.conditions.customExcludePaid);
-    if (activity.conditions?.customTemplateName) setCustomTemplateName(activity.conditions.customTemplateName);
-    if (activity.conditions?.customTemplateCategory) setCustomTemplateCategory(activity.conditions.customTemplateCategory);
-  };
-
-  const audienceTemplateConditions = {
-    ...audienceConditions,
-    customTemplateName,
-    customTemplateCategory,
-  };
-
-  const flowConditions = {
-    sendDelayDays,
-    sendAtTime,
-    engagementCriteria,
-    repeatStrategy,
-    secondStageTemplateId,
-    thirdStageAction,
-  };
-
-  const handleConfirmAudienceTemplateDraft = () => {
-    setActivities((items) => items.map((item) => (
-      item.id === selectedActivityId
-        ? {
-            ...item,
-            presetId: preset.id,
-            templateId: template.id,
-            templateTitle: template.title,
-            rules: quickRules,
-            conditions: {
-              ...item.conditions,
-              ...audienceTemplateConditions,
-            },
-            status: item.status === 'sent' ? 'draft' : item.status,
-          }
-        : item
-    )));
-    setTemplateSaveResult({ ok: true });
-  };
-
-  const handleConfirmFlowDraft = () => {
-    setActivities((items) => items.map((item) => (
-      item.id === selectedActivityId
-        ? {
-            ...item,
-            mode,
-            scheduleText: activityScheduleText,
-            waitDays,
-            resumeStep,
-            conditions: {
-              ...item.conditions,
-              ...flowConditions,
-            },
-            status: item.status === 'sent' ? 'draft' : item.status,
-          }
-        : item
-    )));
-    setFlowSaveResult({ ok: true });
-  };
-
-  const handleSaveActivityDraft = () => {
-    const conditions = {
-      ...audienceTemplateConditions,
-      ...flowConditions,
-    };
-
-    setActivities((items) => items.map((item) => (
-      item.id === selectedActivityId
-        ? {
-            ...item,
-            presetId: preset.id,
-            templateId: template.id,
-            templateTitle: template.title,
-            mode,
-            scheduleText: activityScheduleText,
-            rules: quickRules,
-            conditions,
-            waitDays,
-            resumeStep,
-            status: item.status === 'sent' ? 'draft' : item.status,
-          }
-        : item
-    )));
-  };
-
-  const percent = (value, total) => {
-    if (!total) return '0%';
-    return `${Math.round((value / total) * 100)}%`;
-  };
-
-  const handleAdminTestSend = async () => {
-    setAdminTestSending(true);
-    setAdminTestResult(null);
-    const saved = await handleSaveAdminAutoConfig(adminAutoEnabled);
-    if (saved?.error) {
-      setAdminTestResult(saved);
-      setAdminTestSending(false);
+  const loadDashboard = useCallback(async () => {
+    const result = await fetch(apiUrl('retargeting_dashboard')).then((response) => response.json());
+    if (result.error) {
+      setNotice({ error: result.error });
       return;
     }
-    const result = await apiPost({
-      action: 'push',
-      templateId: `retargeting_${template.id}`,
-      label: `受眾測試：${template.title}`,
-      message: templateDraft.body,
-      buttons: previewButtons,
-      imageUrl: templateDraft.image_url || undefined,
-      segments: [],
-      mode: 'instant',
-      allUsers: false,
-      excludeEnrolled: false,
-      adminOnly: true,
-    });
-    setAdminTestResult(result);
-    setAdminTestSending(false);
+    const audiences = Array.isArray(result.audienceLibrary) ? result.audienceLibrary : [];
+    const templates = Array.isArray(result.templateLibrary) ? result.templateLibrary : [];
+    setDashboard(result);
+    setAudienceLibrary(audiences);
+    setTemplateLibrary(templates);
+    if (result.config) {
+      loadConfigToForm(result.config, { audiences, templates });
+      setEditingActivityId(null);
+    }
+  }, [loadConfigToForm]);
+
+  useEffect(() => {
+    loadDashboard().catch((error) => setNotice({ error: error.message }));
+  }, [loadDashboard]);
+
+  const updateAudienceCondition = (key, value) => {
+    setAudienceDraft((draft) => ({
+      ...draft,
+      audienceConditions: { ...(draft.audienceConditions || {}), [key]: value },
+    }));
+    setFlowChecked(false);
   };
 
-  const buildRetargetingAdminConfig = (enabled = adminAutoEnabled, observeOnly = adminAutoObserveOnly) => ({
+  const selectAudience = (id) => {
+    const audience = activeAudiences.find((item) => item.id === id);
+    if (!audience) return;
+    setAudienceDraft({
+      ...audience,
+      audienceConditions: {
+        ...retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]).audienceConditions,
+        ...(audience.audienceConditions || {}),
+      },
+    });
+    setFlowChecked(false);
+  };
+
+  const selectTemplate = (id) => {
+    const template = activeTemplates.find((item) => item.id === id);
+    if (!template) return;
+    setTemplateDraft({ ...template, buttons: createRetargetingDraft(template).buttons });
+    setFlowChecked(false);
+  };
+
+  const updateTemplateButton = (index, field, value) => {
+    setTemplateDraft((draft) => {
+      const buttons = createRetargetingDraft(draft).buttons;
+      buttons[index] = { ...buttons[index], [field]: value };
+      if (field === 'label' && buttons[index].actionType === 'message') buttons[index].messageText = value;
+      if (field === 'actionType' && value === 'message') buttons[index].messageText = buttons[index].label || '';
+      return { ...draft, buttons };
+    });
+    setFlowChecked(false);
+  };
+
+  const saveLibrary = async (libraryType, items, successText) => {
+    setSaving(libraryType);
+    setNotice(null);
+    const result = await apiPost({ action: 'save_retargeting_library', libraryType, items });
+    setSaving('');
+    if (result.error) {
+      setNotice({ error: result.error });
+      return null;
+    }
+    if (libraryType === 'audience') setAudienceLibrary(result.items || []);
+    if (libraryType === 'template') setTemplateLibrary(result.items || []);
+    setNotice({ ok: successText });
+    return result.items || [];
+  };
+
+  const saveAudience = async () => {
+    const now = new Date().toISOString();
+    const isBuiltIn = !!audienceDraft.builtIn;
+    const id = isBuiltIn ? createRetargetingLibraryId('audience') : audienceDraft.id;
+    const item = {
+      ...audienceDraft,
+      id,
+      builtIn: undefined,
+      rules: buildRetargetingAudienceRuleLabels(audienceDraft),
+      active: true,
+      createdAt: audienceDraft.createdAt || now,
+      updatedAt: now,
+    };
+    const items = [...audienceLibrary.filter((row) => row.id !== id), item];
+    const saved = await saveLibrary('audience', items, '受眾已獨立保存');
+    if (saved) setAudienceDraft(saved.find((row) => row.id === id) || item);
+  };
+
+  const saveTemplate = async () => {
+    const now = new Date().toISOString();
+    const isBuiltIn = !!templateDraft.builtIn;
+    const id = isBuiltIn ? createRetargetingLibraryId('template') : templateDraft.id;
+    const item = {
+      ...templateDraft,
+      id,
+      builtIn: undefined,
+      active: true,
+      buttons: (templateDraft.buttons || []).filter(isUsableRetargetingButton),
+      createdAt: templateDraft.createdAt || now,
+      updatedAt: now,
+    };
+    const items = [...templateLibrary.filter((row) => row.id !== id), item];
+    const saved = await saveLibrary('template', items, '模板已獨立保存，切換後內容不會消失');
+    if (saved) setTemplateDraft(saved.find((row) => row.id === id) || item);
+  };
+
+  const disableOrDeleteLibraryItem = async (libraryType, id, remove = false) => {
+    const source = libraryType === 'audience' ? audienceLibrary : templateLibrary;
+    const items = remove
+      ? source.filter((item) => item.id !== id)
+      : source.map((item) => item.id === id ? { ...item, active: false } : item);
+    await saveLibrary(libraryType, items, remove ? '已刪除' : '已停用');
+  };
+
+  const newAudience = () => {
+    setAudienceDraft({
+      ...retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]),
+      id: createRetargetingLibraryId('audience'),
+      title: '新受眾',
+      ruleId: 'dropoff',
+      builtIn: false,
+    });
+    setFlowChecked(false);
+  };
+
+  const newTemplate = () => {
+    setTemplateDraft({
+      id: createRetargetingLibraryId('template'),
+      title: '新模板',
+      category: '自訂',
+      image_url: '',
+      body: '',
+      buttons: createRetargetingDraft({ buttons: [] }).buttons,
+      active: true,
+    });
+    setFlowChecked(false);
+  };
+
+  const buildConfig = () => ({
+    activityId,
+    audienceId: audienceDraft.id,
+    firstTemplateId: templateDraft.id,
     enabled,
     observeOnly,
-    ruleId: preset.id,
-    ruleTitle: preset.title,
-    audienceRules: quickRules,
-    audienceConditions,
-    receivedMin: audienceConditions.receivedMin,
-    missedSteps: audienceConditions.inactiveSteps,
-    checkDelayDays: adminAutoWaitDays,
-    sendMode: mode,
+    ruleId: audienceDraft.ruleId || audienceDraft.audienceConditions?.presetId || 'custom',
+    ruleTitle: audienceDraft.title,
+    audienceRules: buildRetargetingAudienceRuleLabels(audienceDraft),
+    audienceConditions: {
+      ...(audienceDraft.audienceConditions || {}),
+      presetId: audienceDraft.ruleId || 'custom',
+      ruleTitle: audienceDraft.title,
+    },
+    checkDelayDays,
+    sendMode,
     sendDelayDays,
     sendAtTime,
-    observeDays: waitDays,
+    observeDays,
     engagementCriteria,
     repeatStrategy,
     thirdStageAction,
-    stageTemplates: [
-      {
-        stage: 1,
-        templateId: template.id,
-        title: template.title,
-        category: template.category,
-        message: templateDraft.body,
-        imageUrl: templateDraft.image_url || '',
-        buttons: previewButtons.map(normalizeRetargetingButton),
-      },
-      {
-        stage: 2,
-        templateId: secondStageTemplate.id,
-        title: secondStageTemplate.title,
-        category: secondStageTemplate.category,
-        message: secondStageTemplate.id === template.id ? templateDraft.body : secondStageTemplate.body,
-        imageUrl: secondStageTemplate.id === template.id ? (templateDraft.image_url || '') : (secondStageTemplate.image_url || ''),
-        buttons: (secondStageTemplate.id === template.id ? previewButtons : (secondStageTemplate.buttons || []))
-          .map(normalizeRetargetingButton)
-          .filter(isUsableRetargetingButton),
-      },
-    ],
+    stageTemplates: [templateDraft, secondTemplate].map((template, index) => ({
+      stage: index + 1,
+      templateId: template.id,
+      title: template.title,
+      category: template.category,
+      message: template.body,
+      imageUrl: template.image_url || '',
+      buttons: (template.buttons || []).filter(isUsableRetargetingButton).map(normalizeRetargetingButton),
+    })),
   });
 
-  const handleSaveAdminAutoConfig = async (enabled = adminAutoEnabled, observeOnly = adminAutoObserveOnly) => {
-    setAdminAutoSaving(true);
-    setAdminAutoResult(null);
+  const applyConfig = async () => {
+    setSaving('config');
+    setNotice(null);
+    const result = await apiPost({ action: 'save_retargeting_admin_config', config: buildConfig() });
+    setSaving('');
+    if (result.error) {
+      setNotice({ error: result.error });
+      return;
+    }
+    setNotice({ ok: result.config.enabled ? '設定已正式保存，等待下一次 cron 自動檢查' : '設定已保存但目前停用' });
+    setEditingActivityId(null);
+    await loadDashboard();
+  };
+
+  const disableActivity = async () => {
+    if (!dashboard?.config) return;
+    setSaving('disable');
+    setNotice(null);
     const result = await apiPost({
       action: 'save_retargeting_admin_config',
-      config: buildRetargetingAdminConfig(enabled, observeOnly),
+      config: { ...dashboard.config, enabled: false },
     });
-    setAdminAutoSaving(false);
-    setAdminAutoResult(result);
-    return result;
+    setSaving('');
+    if (result.error) {
+      setNotice({ error: result.error });
+      return;
+    }
+    setNotice({ ok: '活動已停用，既有真實紀錄仍會保留。' });
+    await loadDashboard();
   };
+
+  const config = dashboard?.config;
+  const activityLogKey = config?.activityId || config?.ruleId;
+  const activityContext = dashboard?.testMode ? 'admin' : 'member';
+  const logs = (dashboard?.logs || []).filter((log) => (
+    activityLogKey
+    && String(log.template_id || '').startsWith(`retargeting_auto_${activityLogKey}_`)
+    && Array.isArray(log.segments)
+    && log.segments.includes(activityContext)
+  ));
+  const sentCount = logs.reduce((sum, log) => sum + Number(log.sent_count || 0), 0);
+  const targetCount = logs.reduce((sum, log) => sum + Number(log.target_count || 0), 0);
+  const clickCount = logs.reduce((sum, log) => sum + Number(log.click_count || 0), 0);
+  const state = dashboard?.testMode ? dashboard?.adminState : dashboard?.memberState;
+  const activityStatus = !config
+    ? '尚未保存'
+    : !config.enabled
+      ? '已停用'
+      : config.observeOnly
+        ? '觀察模式'
+        : state?.observing > 0
+          ? '再行銷訊息已送出，觀察回應中'
+        : state?.pending > 0
+          ? '已排程待發送'
+          : sentCount > 0
+            ? '已發送'
+            : '規則已保存，尚未觸發發送';
 
   return (
     <div>
-      <h2 style={styles.sectionTitle}>🎯 受眾再行銷</h2>
+      <h2 style={styles.sectionTitle}>受眾再行銷</h2>
       <p style={styles.sectionDesc}>
-        先用快速受眾看操作流程；第一版會以點擊行為為核心，開封不當主要判斷。
+        受眾、模板與流程分開保存；目前同一時間只啟用一組自動再行銷活動，避免同一會員收到重疊訊息。
       </p>
 
-      <div style={styles.retargetingLayout}>
-        <section style={styles.retargetingPanel}>
-          <div style={styles.retargetingPanelHead}>
-            <span style={styles.retargetingStep}>1</span>
-            <div>
-              <h3 style={styles.analyticsH3}>建立受眾</h3>
-              <p style={styles.retargetingMuted}>先選一個常用情境，再微調條件。</p>
-            </div>
-          </div>
+      {formLocked && (
+        <div style={styles.retargetingPrototypeNotice}>
+          目前顯示已保存設定，預設為唯讀。請到第 5 區按「載入編輯」後再修改。
+        </div>
+      )}
+      {notice && (
+        <div style={{
+          ...styles.retargetingPrototypeNotice,
+          color: notice.error ? '#991b1b' : '#166534',
+          borderColor: notice.error ? '#fecaca' : '#bbf7d0',
+          background: notice.error ? '#fef2f2' : '#f0fdf4',
+        }}>
+          {notice.error || notice.ok}
+        </div>
+      )}
 
-          <div style={styles.retargetingPresetGrid}>
-            {AUDIENCE_PRESETS.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => setSelectedPreset(p.id)}
-                style={{
-                  ...styles.retargetingPreset,
-                  ...(selectedPreset === p.id ? styles.retargetingPresetActive : {}),
-                }}
-              >
-                <span style={styles.retargetingPresetTitle}>{p.title}</span>
-                <span style={styles.retargetingPresetTone}>{p.tone}</span>
-                <span style={styles.retargetingPresetDesc}>{p.desc}</span>
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setSelectedPreset('custom')}
-              style={{
-                ...styles.retargetingPreset,
-                ...(selectedPreset === 'custom' ? styles.retargetingPresetActive : {}),
-              }}
-            >
-              <span style={styles.retargetingPresetTitle}>自訂受眾</span>
-              <span style={styles.retargetingPresetTone}>可擴充</span>
-              <span style={styles.retargetingPresetDesc}>自行組合條件，之後可儲存、複製、停用與版本控管。</span>
-            </button>
-          </div>
-
-          {preset.id === 'custom' ? (
-            <div style={styles.retargetingTuning}>
-              <label style={styles.fieldLabel}>受眾名稱</label>
-              <input
-                value={customAudienceName}
-                onChange={(e) => setCustomAudienceName(e.target.value)}
-                style={styles.input}
-                placeholder="例如：看過學員故事但未報名"
-              />
-
-              <label style={styles.fieldLabel}>條件組合</label>
-              <div style={styles.modeToggle}>
-                {[
-                  { id: 'all', label: '全部符合', desc: '條件越精準，人數較少' },
-                  { id: 'any', label: '任一符合', desc: '人數較多，適合測試' },
-                ].map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setCustomAudienceLogic(item.id)}
-                    style={customAudienceLogic === item.id ? styles.modeActive : styles.modeBtn}
-                  >
-                    <strong>{item.label}</strong>
-                    <span style={styles.modeDesc}>{item.desc}</span>
-                  </button>
-                ))}
+      <fieldset disabled={formLocked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+        <div style={styles.retargetingLayout}>
+          <section style={styles.retargetingPanel}>
+            <div style={styles.retargetingPanelHead}>
+              <span style={styles.retargetingStep}>1</span>
+              <div>
+                <h3 style={styles.analyticsH3}>受眾資料庫</h3>
+                <p style={styles.retargetingMuted}>先保存受眾條件，之後可重複套用到不同活動。</p>
               </div>
-
-              <label style={styles.fieldLabel}>文章類型條件</label>
-              <select
-                value={customArticleType}
-                onChange={(e) => setCustomArticleType(e.target.value)}
-                style={styles.input}
-              >
-                <option value="student_story">點過學員故事</option>
-                <option value="health_article">點過健康文章</option>
-                <option value="any">不限文章類型</option>
+            </div>
+            <div style={styles.retargetingFooter}>
+              <select value={audienceDraft.id} onChange={(e) => selectAudience(e.target.value)} style={styles.input}>
+                {activeAudiences.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
               </select>
-              {customArticleType !== 'any' && (
-                <div style={styles.retargetingPrototypeNotice}>
-                  系統會依排程文章編輯裡的「文章類型」判斷；請先確認對應文章已選好學員故事或健康文章。
-                </div>
-              )}
-
-              <label style={styles.fieldLabel}>累積點擊至少 {customMinimumClicks} 次</label>
-              <input
-                type="range"
-                min="1"
-                max="5"
-                value={customMinimumClicks}
-                onChange={(e) => setCustomMinimumClicks(Number(e.target.value))}
-                style={styles.retargetingRange}
-              />
-
-              <label style={styles.checkbox}>
-                <input
-                  type="checkbox"
-                  checked={customExcludeSubmitted}
-                  onChange={(e) => setCustomExcludeSubmitted(e.target.checked)}
-                />
-                <span>排除已送單</span>
-              </label>
-              <label style={styles.checkbox}>
-                <input
-                  type="checkbox"
-                  checked={customExcludePaid}
-                  onChange={(e) => setCustomExcludePaid(e.target.checked)}
-                />
-                <span>排除已付款</span>
-              </label>
-
-              <div style={styles.retargetingPrototypeNotice}>
-                目前自訂受眾會先跟第 1-2 區草稿一起確認；第 4 區儲存後才會正式套用到自動再行銷。
-              </div>
+              <button type="button" style={styles.btnSecondary} onClick={newAudience}>＋ 新增受眾</button>
             </div>
-          ) : (
-            <AudienceConditionTuning
-              presetId={preset.id}
-              clickedMin={clickedMin}
-              setClickedMin={setClickedMin}
-              inactiveSteps={inactiveSteps}
-              setInactiveSteps={setInactiveSteps}
-              recentDays={recentDays}
-              setRecentDays={setRecentDays}
-              applyDelayDays={applyDelayDays}
-              setApplyDelayDays={setApplyDelayDays}
-              applyClicks={applyClicks}
-              setApplyClicks={setApplyClicks}
-              paymentDelayDays={paymentDelayDays}
-              setPaymentDelayDays={setPaymentDelayDays}
-              receivedMin={receivedMin}
-              setReceivedMin={setReceivedMin}
-              joinedDays={joinedDays}
-              setJoinedDays={setJoinedDays}
-              storyOnly={storyOnly}
-              setStoryOnly={setStoryOnly}
-              excludeApplyClickers={excludeApplyClickers}
-              setExcludeApplyClickers={setExcludeApplyClickers}
-            />
-          )}
-
-          <div style={styles.retargetingRuleBox}>
-            <div style={styles.retargetingRuleTitle}>目前條件</div>
-            {quickRules.map((rule) => (
-              <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
-            ))}
-          </div>
-        </section>
-
-        <section style={styles.retargetingPanel}>
-          <div style={styles.retargetingPanelHead}>
-            <span style={styles.retargetingStep}>2</span>
-            <div>
-              <h3 style={styles.analyticsH3}>選擇模板</h3>
-              <p style={styles.retargetingMuted}>模板之後可儲存分類，這裡先看文案位置。</p>
+            <label style={styles.fieldLabel}>受眾名稱</label>
+            <input value={audienceDraft.title || ''} onChange={(e) => setAudienceDraft((draft) => ({ ...draft, title: e.target.value }))} style={styles.input} />
+            <label style={styles.fieldLabel}>主要判斷類型</label>
+            <select value={audienceDraft.ruleId || 'dropoff'} onChange={(e) => setAudienceDraft((draft) => ({ ...draft, ruleId: e.target.value }))} style={styles.input}>
+              <option value="dropoff">互動下降</option>
+              <option value="warm">近期有互動</option>
+              <option value="apply_no_submit">點報名頁但未送單</option>
+              <option value="pending_payment">已送單但未付款</option>
+              <option value="cold">長期冷受眾</option>
+              <option value="custom">自訂點擊條件</option>
+            </select>
+            <div style={styles.retargetingLayout}>
+              <RetargetingNumberField label="已收到至少幾篇排程文章" min={0} value={audienceDraft.audienceConditions?.receivedMin ?? 3} onChange={(v) => updateAudienceCondition('receivedMin', v)} />
+              <RetargetingNumberField label="至少點擊幾篇" min={0} value={audienceDraft.audienceConditions?.clickedMin ?? 2} onChange={(v) => updateAudienceCondition('clickedMin', v)} />
+              <RetargetingNumberField label="最近連續幾篇沒有點擊" min={1} value={audienceDraft.audienceConditions?.inactiveSteps ?? 2} onChange={(v) => updateAudienceCondition('inactiveSteps', v)} />
+              <RetargetingNumberField label="最近幾天有互動" min={1} value={audienceDraft.audienceConditions?.recentDays ?? 14} onChange={(v) => updateAudienceCondition('recentDays', v)} />
+              <RetargetingNumberField label="加入至少幾天" min={0} value={audienceDraft.audienceConditions?.joinedDays ?? 30} onChange={(v) => updateAudienceCondition('joinedDays', v)} />
+              <RetargetingNumberField label="點報名頁後等待幾天" min={0} value={audienceDraft.audienceConditions?.applyDelayDays ?? 3} onChange={(v) => updateAudienceCondition('applyDelayDays', v)} />
+              <RetargetingNumberField label="至少點報名頁幾次" min={1} value={audienceDraft.audienceConditions?.applyClicks ?? 1} onChange={(v) => updateAudienceCondition('applyClicks', v)} />
+              <RetargetingNumberField label="送單後等待付款幾天" min={0} value={audienceDraft.audienceConditions?.paymentDelayDays ?? 2} onChange={(v) => updateAudienceCondition('paymentDelayDays', v)} />
             </div>
-          </div>
-
-          <div style={styles.retargetingTemplateList}>
-            {templateOptions.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => handleSelectTemplate(t.id)}
-                style={{
-                  ...styles.retargetingTemplateBtn,
-                  ...(selectedTemplate === t.id ? styles.retargetingTemplateBtnActive : {}),
-                }}
-              >
-                <span>{t.title}</span>
-                <small>{t.category}</small>
+            <label style={styles.fieldLabel}>限定文章類型</label>
+            <select value={audienceDraft.audienceConditions?.customArticleType || 'any'} onChange={(e) => updateAudienceCondition('customArticleType', e.target.value)} style={styles.input}>
+              <option value="any">不限類型</option>
+              {DRIP_ARTICLE_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+            </select>
+            <div style={styles.retargetingRuleBox}>
+              <div style={styles.retargetingRuleTitle}>目前實際判斷條件</div>
+              {buildRetargetingAudienceRuleLabels(audienceDraft).map((rule) => (
+                <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
+              ))}
+            </div>
+            <div style={styles.retargetingActivityActions}>
+              <button type="button" style={styles.btnPrimary} disabled={saving === 'audience'} onClick={saveAudience}>
+                {saving === 'audience' ? '儲存中...' : '儲存此受眾'}
               </button>
-            ))}
-          </div>
-
-          {selectedTemplate === 'custom' && (
-            <div style={styles.retargetingTuning}>
-              <label style={styles.fieldLabel}>模板名稱</label>
-              <input
-                value={customTemplateName}
-                onChange={(e) => setCustomTemplateName(e.target.value)}
-                style={styles.input}
-                placeholder="例如：第二次互動下降提醒"
-              />
-
-              <label style={styles.fieldLabel}>模板分類</label>
-              <input
-                value={customTemplateCategory}
-                onChange={(e) => setCustomTemplateCategory(e.target.value)}
-                style={styles.input}
-                placeholder="例如：冷卻喚醒 / 自訂"
-              />
-
-              <div style={styles.retargetingPrototypeNotice}>
-                目前自訂模板會先跟第 1-2 區草稿一起確認；第 4 區儲存後才會正式套用到自動再行銷。
-              </div>
-            </div>
-          )}
-
-          <ImageUpload
-            imageUrl={templateDraft.image_url || ''}
-            onChange={(url) => setTemplateDraft((draft) => ({ ...draft, image_url: url }))}
-          />
-
-          <label style={styles.fieldLabel}>訊息文字</label>
-          <textarea
-            value={templateDraft.body}
-            onChange={(e) => setTemplateDraft((draft) => ({ ...draft, body: e.target.value }))}
-            style={styles.textarea}
-            rows={5}
-          />
-
-          {[0, 1, 2].map((index) => (
-            <div key={index} style={styles.retargetingButtonEditor}>
-              <label style={styles.fieldLabel}>按鈕 {index + 1}{index === 2 && <span style={styles.retargetingMuted}>可留空</span>}</label>
-              <input
-                value={templateDraft.buttons[index]?.label || ''}
-                onChange={(e) => updateDraftButton(index, 'label', e.target.value)}
-                style={{ ...styles.input, marginBottom: 4 }}
-                placeholder={index === 0 ? '例如：繼續看下一篇' : index === 1 ? '例如：看一個真實案例' : '例如：我想問問題'}
-              />
-              <select
-                value={templateDraft.buttons[index]?.actionType || 'url'}
-                onChange={(e) => updateDraftButton(index, 'actionType', e.target.value)}
-                style={{ ...styles.input, marginBottom: 4 }}
-              >
-                <option value="url">開啟連結</option>
-                <option value="message">文字回覆</option>
-              </select>
-              {(templateDraft.buttons[index]?.actionType || 'url') === 'message' ? (
+              {!audienceDraft.builtIn && (
                 <>
-                  <div style={styles.retargetingInlineHint}>
-                    點擊後會送出：「{templateDraft.buttons[index]?.label || '按鈕文字'}」
-                  </div>
-                  <textarea
-                    value={templateDraft.buttons[index]?.replyText || ''}
-                    onChange={(e) => updateDraftButton(index, 'replyText', e.target.value)}
-                    style={styles.textarea}
-                    rows={3}
-                    placeholder="BOT 回覆文字，例如：有什麼問題都可以留言，fifi 助教看到會回覆你。"
-                  />
+                  <button type="button" style={styles.btnSecondary} onClick={() => setAudienceDraft((draft) => ({ ...draft, id: createRetargetingLibraryId('audience'), title: `${draft.title} 副本`, builtIn: false }))}>複製</button>
+                  <button type="button" style={styles.btnSecondary} onClick={() => disableOrDeleteLibraryItem('audience', audienceDraft.id)}>停用</button>
+                  <button type="button" style={styles.btnSecondary} onClick={() => disableOrDeleteLibraryItem('audience', audienceDraft.id, true)}>刪除</button>
                 </>
-              ) : (
-                <input
-                  value={templateDraft.buttons[index]?.url || ''}
-                  onChange={(e) => updateDraftButton(index, 'url', e.target.value)}
-                  style={styles.input}
-                  placeholder="https://..."
-                />
               )}
             </div>
-          ))}
+          </section>
 
-          <div style={styles.retargetingFooter}>
+          <section style={styles.retargetingPanel}>
+            <div style={styles.retargetingPanelHead}>
+              <span style={styles.retargetingStep}>2</span>
+              <div>
+                <h3 style={styles.analyticsH3}>模板資料庫與第一次發送</h3>
+                <p style={styles.retargetingMuted}>模板獨立保存；本區同時選擇第一次符合條件要發的模板。</p>
+              </div>
+            </div>
+            <div style={styles.retargetingFooter}>
+              <select value={templateDraft.id} onChange={(e) => selectTemplate(e.target.value)} style={styles.input}>
+                {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+              </select>
+              <button type="button" style={styles.btnSecondary} onClick={newTemplate}>＋ 新增模板</button>
+            </div>
+            <label style={styles.fieldLabel}>模板名稱</label>
+            <input value={templateDraft.title || ''} onChange={(e) => setTemplateDraft((draft) => ({ ...draft, title: e.target.value }))} style={styles.input} />
+            <label style={styles.fieldLabel}>分類</label>
+            <input value={templateDraft.category || ''} onChange={(e) => setTemplateDraft((draft) => ({ ...draft, category: e.target.value }))} style={styles.input} />
+            <ImageUpload imageUrl={templateDraft.image_url || ''} onChange={(url) => setTemplateDraft((draft) => ({ ...draft, image_url: url }))} />
+            <label style={styles.fieldLabel}>訊息文字</label>
+            <textarea value={templateDraft.body || ''} onChange={(e) => setTemplateDraft((draft) => ({ ...draft, body: e.target.value }))} style={styles.textarea} rows={6} />
+            {[0, 1, 2].map((index) => (
+              <div key={index} style={styles.retargetingButtonEditor}>
+                <label style={styles.fieldLabel}>按鈕 {index + 1}</label>
+                <input value={templateDraft.buttons?.[index]?.label || ''} onChange={(e) => updateTemplateButton(index, 'label', e.target.value)} style={styles.input} placeholder="按鈕文字" />
+                <select value={templateDraft.buttons?.[index]?.actionType || 'url'} onChange={(e) => updateTemplateButton(index, 'actionType', e.target.value)} style={styles.input}>
+                  <option value="url">開啟連結</option>
+                  <option value="message">文字回覆</option>
+                </select>
+                {(templateDraft.buttons?.[index]?.actionType || 'url') === 'message' ? (
+                  <textarea value={templateDraft.buttons?.[index]?.replyText || ''} onChange={(e) => updateTemplateButton(index, 'replyText', e.target.value)} style={styles.textarea} rows={3} placeholder="使用者點擊後，BOT 回覆的文字" />
+                ) : (
+                  <input value={templateDraft.buttons?.[index]?.url || ''} onChange={(e) => updateTemplateButton(index, 'url', e.target.value)} style={styles.input} placeholder="https://..." />
+                )}
+              </div>
+            ))}
+            <div style={styles.retargetingActivityActions}>
+              <button type="button" style={styles.btnPrimary} disabled={saving === 'template' || !templateDraft.body?.trim()} onClick={saveTemplate}>
+                {saving === 'template' ? '儲存中...' : '儲存此模板'}
+              </button>
+              {!templateDraft.builtIn && (
+                <>
+                  <button type="button" style={styles.btnSecondary} onClick={() => setTemplateDraft((draft) => ({ ...draft, id: createRetargetingLibraryId('template'), title: `${draft.title} 副本`, builtIn: false }))}>複製</button>
+                  <button type="button" style={styles.btnSecondary} onClick={() => disableOrDeleteLibraryItem('template', templateDraft.id)}>停用</button>
+                  <button type="button" style={styles.btnSecondary} onClick={() => disableOrDeleteLibraryItem('template', templateDraft.id, true)}>刪除</button>
+                </>
+              )}
+            </div>
+            <FlexPreview message={templateDraft.body} buttons={templateDraft.buttons} imageUrl={templateDraft.image_url || undefined} />
+          </section>
+        </div>
+
+        <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
+          <div style={styles.retargetingPanelHead}>
+            <span style={styles.retargetingStep}>3</span>
             <div>
-              <strong>第 1-2 區確認：受眾與模板</strong>
-              <span style={styles.retargetingMuted}>只確認目前受眾條件與模板草稿；發送流程請到第 3 區另外確認。</span>
+              <h3 style={styles.analyticsH3}>檢查、發送與後續流程</h3>
+              <p style={styles.retargetingMuted}>依照實際發生順序設定；本區只做流程檢查，不會啟用發送。</p>
             </div>
-            <button
-              type="button"
-              style={styles.btnSecondary}
-              disabled={!templateDraft.body.trim()}
-              onClick={handleConfirmAudienceTemplateDraft}
-            >
-              確認受眾與模板
-            </button>
           </div>
-          {templateSaveResult && (
-            <div style={{
-              ...styles.retargetingPrototypeNotice,
-              color: templateSaveResult.error ? '#991b1b' : '#166534',
-              borderColor: templateSaveResult.error ? '#fecaca' : '#bbf7d0',
-              background: templateSaveResult.error ? '#fef2f2' : '#f0fdf4',
-            }}>
-              {templateSaveResult.error || '受眾與模板已確認；接著可到第 3 區確認發送流程。'}
+          <div style={styles.retargetingTimeline}>
+            <div style={styles.retargetingTimelineItem}>
+              <span style={styles.retargetingTimelineStep}>1</span>
+              <div style={styles.retargetingTimelineBody}>
+                <strong>每篇排程文章發出後，先等待再檢查目前受眾條件</strong>
+                <RetargetingNumberField label="等待幾天後檢查" min={0} value={checkDelayDays} onChange={(v) => { setCheckDelayDays(v); setFlowChecked(false); }} />
+              </div>
             </div>
-          )}
-
-          <FlexPreview
-            message={templateDraft.body}
-            buttons={previewButtons}
-            imageUrl={templateDraft.image_url || undefined}
-          />
+            <div style={styles.retargetingTimelineItem}>
+              <span style={styles.retargetingTimelineStep}>2</span>
+              <div style={styles.retargetingTimelineBody}>
+                <strong>符合條件後何時發送第一次模板</strong>
+                <select value={sendMode} onChange={(e) => { setSendMode(e.target.value); setFlowChecked(false); }} style={styles.input}>
+                  <option value="instant">檢查符合後立即發送</option>
+                  <option value="scheduled">檢查符合後排程發送</option>
+                </select>
+                {sendMode === 'scheduled' && (
+                  <>
+                    <RetargetingNumberField label="符合後等待幾天發送" min={0} value={sendDelayDays} onChange={(v) => { setSendDelayDays(v); setFlowChecked(false); }} />
+                    <label style={styles.fieldLabel}>發送時間<input type="time" value={sendAtTime} onChange={(e) => { setSendAtTime(e.target.value); setFlowChecked(false); }} style={styles.input} /></label>
+                  </>
+                )}
+              </div>
+            </div>
+            <div style={styles.retargetingTimelineItem}>
+              <span style={styles.retargetingTimelineStep}>3</span>
+              <div style={styles.retargetingTimelineBody}>
+                <strong>再行銷訊息送出後，等待觀察回應</strong>
+                <RetargetingNumberField label="等待觀察幾天" min={1} value={observeDays} onChange={(v) => { setObserveDays(v); setFlowChecked(false); }} />
+                <label style={styles.fieldLabel}>什麼算有效互動</label>
+                <select value={engagementCriteria} onChange={(e) => { setEngagementCriteria(e.target.value); setFlowChecked(false); }} style={styles.input}>
+                  <option value="any_click_or_reply">任一連結點擊或 LINE 回覆，其中一個就算</option>
+                  <option value="reply_only">只計 LINE 回覆</option>
+                  <option value="conversion">只計報名頁 / 送單 / 付款</option>
+                  <option value="effective">有效互動：回覆、報名或付款其中一個</option>
+                </select>
+              </div>
+            </div>
+            <div style={styles.retargetingTimelineItem}>
+              <span style={styles.retargetingTimelineStep}>4</span>
+              <div style={styles.retargetingTimelineBody}>
+                <strong>再次符合時，決定第二次與第三次處理</strong>
+                <select value={repeatStrategy} onChange={(e) => { setRepeatStrategy(e.target.value); setFlowChecked(false); }} style={styles.input}>
+                  <option value="staged">階段式模板</option>
+                  <option value="once">只發一次</option>
+                  <option value="cooldown">發一次後進入冷卻</option>
+                </select>
+                {repeatStrategy === 'staged' && (
+                  <>
+                    <label style={styles.fieldLabel}>第 2 次符合時發送</label>
+                    <select value={secondStageTemplateId} onChange={(e) => { setSecondStageTemplateId(e.target.value); setFlowChecked(false); }} style={styles.input}>
+                      {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                    </select>
+                    <label style={styles.fieldLabel}>第 3 次符合時</label>
+                    <select value={thirdStageAction} onChange={(e) => { setThirdStageAction(e.target.value); setFlowChecked(false); }} style={styles.input}>
+                      <option value="cooldown">進入冷卻</option>
+                      <option value="manual">人工查看</option>
+                      <option value="stop">停止追蹤</option>
+                    </select>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+          <button type="button" style={styles.btnSecondary} onClick={() => { setFlowChecked(true); setNotice({ ok: '流程檢查完成；尚未啟用，請到第 4 區正式保存。' }); }}>
+            完成流程檢查
+          </button>
         </section>
-      </div>
 
-      <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
-        <div style={styles.retargetingPanelHead}>
-          <span style={styles.retargetingStep}>3</span>
-          <div>
-            <h3 style={styles.analyticsH3}>符合條件後的發送與後續流程</h3>
-            <p style={styles.retargetingMuted}>第 1 區決定誰符合受眾，這裡只決定檢查時機、發送時間，以及訊息送出後怎麼接續。</p>
-          </div>
-        </div>
-
-        <div style={styles.retargetingTimeline}>
-          <div style={styles.retargetingTimelineItem}>
-            <span style={styles.retargetingTimelineStep}>1</span>
-            <div style={styles.retargetingTimelineBody}>
-              <strong>排程文章發出後，先等待再檢查第 1 區受眾</strong>
-              <span style={styles.retargetingMuted}>受眾條件不在這裡重複設定；系統會用第 1 區目前選到的「{preset.title}」規則來判斷。</span>
-              <div style={styles.retargetingScheduleBox}>
-                <label style={styles.fieldLabel}>每篇排程文章發出後，等待 {adminAutoWaitDays} 天再檢查第 1 區條件</label>
-                <input
-                  type="range"
-                  min="0"
-                  max="14"
-                  value={adminAutoWaitDays}
-                  onChange={(e) => setAdminAutoWaitDays(Number(e.target.value))}
-                  style={styles.retargetingRange}
-                />
-                <div style={styles.retargetingRuleBox}>
-                  <div style={styles.retargetingRuleTitle}>第 1 區目前受眾條件</div>
-                  {quickRules.map((rule) => (
-                    <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
-                  ))}
-                </div>
-              </div>
+        <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
+          <div style={styles.retargetingPanelHead}>
+            <span style={styles.retargetingStep}>4</span>
+            <div>
+              <h3 style={styles.analyticsH3}>正式保存並啟用自動再行銷</h3>
+              <p style={styles.retargetingMuted}>這裡才會保存並套用第 1-3 區設定。</p>
             </div>
           </div>
-
-          <div style={styles.retargetingTimelineItem}>
-            <span style={styles.retargetingTimelineStep}>2</span>
-            <div style={styles.retargetingTimelineBody}>
-              <strong>符合條件後，決定再行銷訊息何時送</strong>
-              <span style={styles.retargetingMuted}>這是觸發後發送時間，可以立即送，也可以延後到固定時段。</span>
-              <div style={styles.modeToggle}>
-                {[
-                  { id: 'instant', label: '立即發送', desc: '判定符合後直接送出' },
-                  { id: 'scheduled', label: '排程發送', desc: '判定符合後排到指定時段' },
-                ].map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setMode(item.id)}
-                    style={mode === item.id ? styles.modeActive : styles.modeBtn}
-                  >
-                    <strong>{item.label}</strong>
-                    <span style={styles.modeDesc}>{item.desc}</span>
-                  </button>
-                ))}
-              </div>
-
-              {mode === 'scheduled' ? (
-                <div style={styles.retargetingScheduleBox}>
-                  <label style={styles.fieldLabel}>符合條件後，延後幾天發送</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="14"
-                    value={sendDelayDays}
-                    onChange={(e) => setSendDelayDays(Number(e.target.value || 0))}
-                    style={styles.input}
-                  />
-
-                  <label style={styles.fieldLabel}>固定發送時間</label>
-                  <input
-                    type="time"
-                    value={sendAtTime}
-                    onChange={(e) => setSendAtTime(e.target.value)}
-                    style={styles.input}
-                  />
-                </div>
-              ) : (
-                <div style={styles.retargetingPrototypeNotice}>
-                  立即發送代表條件成立後當下送出；若想避免太像即時追蹤，可以改選排程發送。
-                </div>
-              )}
-            </div>
+          <div style={styles.retargetingPrototypeNotice}>
+            目前執行對象：{dashboard?.testMode ? `管理者測試（共 ${dashboard?.managerCount || 0} 位）` : '一般會員正式流程'}。
+            {dashboard?.testMode ? '排程測試模式啟用時，再行銷會跟著只對管理者自動檢查。' : '取消排程測試模式後，下一次 cron 會改為一般會員正式流程。'}
           </div>
-
-          <div style={styles.retargetingTimelineItem}>
-            <span style={styles.retargetingTimelineStep}>3</span>
-            <div style={styles.retargetingTimelineBody}>
-              <strong>再行銷訊息送出後，觀察回應並接續流程</strong>
-              <span style={styles.retargetingMuted}>這是送出後觀察，不是判斷前等待。</span>
-              <label style={styles.fieldLabel}>再行銷訊息送出後，等待 {waitDays} 天觀察回應</label>
-              <input
-                type="range"
-                min="1"
-                max="7"
-                value={waitDays}
-                onChange={(e) => setWaitDays(Number(e.target.value))}
-                style={styles.retargetingRange}
-              />
-
-              <label style={styles.fieldLabel}>怎樣算有互動</label>
-              <select
-                value={engagementCriteria}
-                onChange={(e) => setEngagementCriteria(e.target.value)}
-                style={styles.input}
-              >
-                <option value="any_click_or_reply">點任一按鈕或回覆訊息</option>
-                <option value="specific_button">只算點擊指定按鈕</option>
-                <option value="reply_only">只算回覆 LINE 訊息</option>
-                <option value="conversion">只算點報名頁 / 送單 / 付款</option>
-                <option value="effective">有效互動：回覆、報名頁、送單或付款任一項</option>
-              </select>
-
-              <label style={styles.fieldLabel}>有互動後接續</label>
-              <select
-                value={resumeStep}
-                onChange={(e) => setResumeStep(e.target.value)}
-                style={styles.input}
-              >
-                <option value="next_unread">從下一篇未讀文章繼續</option>
-                <option value="same_step">從停住的那一篇重送</option>
-                <option value="q5">送到 Q5 / 報名頁</option>
-                <option value="handoff">通知人工接手</option>
-              </select>
-            </div>
-          </div>
-
-          <div style={styles.retargetingTimelineItem}>
-            <span style={styles.retargetingTimelineStep}>4</span>
-            <div style={styles.retargetingTimelineBody}>
-              <strong>重複符合時，決定發下一階段或冷卻</strong>
-              <span style={styles.retargetingMuted}>避免同一個人每次未互動都收到同一則，也保留第二次喚醒機會。</span>
-              <div style={styles.modeToggle}>
-                {[
-                  { id: 'staged', label: '階段式模板', desc: '第 1 次 A，第 2 次 B，第 3 次冷卻或人工' },
-                  { id: 'once', label: '只發一次', desc: '同一活動發過後就略過' },
-                  { id: 'cooldown', label: '直接冷卻', desc: '重複符合時先不再追' },
-                ].map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setRepeatStrategy(item.id)}
-                    style={repeatStrategy === item.id ? styles.modeActive : styles.modeBtn}
-                  >
-                    <strong>{item.label}</strong>
-                    <span style={styles.modeDesc}>{item.desc}</span>
-                  </button>
-                ))}
-              </div>
-
-              {repeatStrategy === 'staged' && (
-                <div style={styles.retargetingScheduleBox}>
-                  <div style={styles.retargetingStageRow}>
-                    <span>第 1 次符合</span>
-                    <strong>發目前模板「{template.title}」</strong>
-                  </div>
-                  <label style={styles.fieldLabel}>第 2 次符合時改發</label>
-                  <select
-                    value={secondStageTemplateId}
-                    onChange={(e) => setSecondStageTemplateId(e.target.value)}
-                    style={styles.input}
-                  >
-                    {templateOptions.map((item) => (
-                      <option key={item.id} value={item.id}>{item.title}</option>
-                    ))}
-                  </select>
-
-                  <label style={styles.fieldLabel}>第 3 次符合時</label>
-                  <select
-                    value={thirdStageAction}
-                    onChange={(e) => setThirdStageAction(e.target.value)}
-                    style={styles.input}
-                  >
-                    <option value="cooldown">進入冷卻</option>
-                    <option value="manual">通知人工查看</option>
-                    <option value="stop">停止追蹤這個規則</option>
-                  </select>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div style={styles.retargetingFooter}>
-          <div>
-            <strong>第 3 區確認：發送與後續流程</strong>
-            <span style={styles.retargetingMuted}>只確認檢查等待、發送時間、互動判定與重複符合策略；第 4 區才會正式套用自動規則。</span>
-          </div>
-          <button
-            type="button"
-            style={styles.btnSecondary}
-            onClick={handleConfirmFlowDraft}
-          >
-            確認發送流程
+          <label style={styles.retargetingSwitchRow}>
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+            <span><strong>啟用自動再行銷</strong><small>關閉時只保存設定，不會檢查或發送。</small></span>
+          </label>
+          <label style={styles.retargetingSwitchRow}>
+            <input type="checkbox" checked={observeOnly} onChange={(e) => setObserveOnly(e.target.checked)} />
+            <span><strong>觀察模式</strong><small>符合條件時只留下紀錄，不實際發送。</small></span>
+          </label>
+          <button type="button" style={styles.btnPrimary} disabled={saving === 'config' || !flowChecked || !templateDraft.body?.trim()} onClick={applyConfig}>
+            {saving === 'config'
+              ? '保存中...'
+              : !enabled
+                ? '保存設定（目前停用）'
+                : editingActivityId && editingActivityId !== 'new'
+                  ? '儲存更新並套用'
+                  : '正式保存並啟用自動再行銷'}
           </button>
-        </div>
-        {flowSaveResult && (
-          <div style={{
-            ...styles.retargetingPrototypeNotice,
-            color: flowSaveResult.error ? '#991b1b' : '#166534',
-            borderColor: flowSaveResult.error ? '#fecaca' : '#bbf7d0',
-            background: flowSaveResult.error ? '#fef2f2' : '#f0fdf4',
-          }}>
-            {flowSaveResult.error || '發送與後續流程已確認；最後到第 4 區儲存並套用自動再行銷設定。'}
-          </div>
-        )}
-
-        <div style={styles.retargetingAutomationPreview}>
-          <div style={styles.retargetingFlowNode}>符合「{preset.title}」條件</div>
-          <div style={styles.retargetingFlowArrow}>→</div>
-          <div style={styles.retargetingFlowNode}>{retargetingSendText}</div>
-          <div style={styles.retargetingFlowArrow}>→</div>
-          <div style={styles.retargetingFlowNode}>觀察 {waitDays} 天回應</div>
-          <div style={styles.retargetingFlowArrow}>→</div>
-          <div style={styles.retargetingFlowSplit}>
-            <div>有互動（{engagementCriteriaText}）：{engagedAction}</div>
-            <div>沒互動或再次符合：{repeatStrategyText}</div>
-          </div>
-        </div>
-
-        <div style={styles.retargetingFooter}>
-          <div>
-            <strong>預估人數：{estimatedCount}</strong>
-            <span style={styles.retargetingMuted}>每個 campaign 每位 user 只發一次，避免重複。</span>
-          </div>
-          <span style={styles.retargetingRuleChip}>
-            正式發送由第 4 區啟用後自動執行
-          </span>
-          <button
-            type="button"
-            style={styles.btnSecondary}
-            disabled={adminTestSending || !templateDraft.body.trim()}
-            onClick={handleAdminTestSend}
-          >
-            {adminTestSending ? '發送中...' : '發送管理者測試'}
-          </button>
-        </div>
-        {adminTestResult && (
-          <div style={{
-            ...styles.retargetingPrototypeNotice,
-            color: adminTestResult.error ? '#991b1b' : '#166534',
-            borderColor: adminTestResult.error ? '#fecaca' : '#bbf7d0',
-            background: adminTestResult.error ? '#fef2f2' : '#f0fdf4',
-          }}>
-            {adminTestResult.error
-              ? adminTestResult.error
-              : `已發送給 ${adminTestResult.sent || 0} / ${adminTestResult.total || 0} 位管理者`}
-          </div>
-        )}
-        <div style={styles.retargetingPrototypeNotice}>
-          這裡不是另一套手動邏輯，而是「符合條件後怎麼送」的共用設定；管理者可用右側按鈕立即測試，正式會員會在第 4 區啟用後由 cron 自動檢查與發送。
-        </div>
-      </section>
-
-      <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
-        <div style={styles.retargetingPanelHead}>
-          <span style={styles.retargetingStep}>4</span>
-          <div>
-            <h3 style={styles.analyticsH3}>自動再行銷啟用設定</h3>
-            <p style={styles.retargetingMuted}>測試模式打勾時只跑管理者；測試模式取消後，會依同一套設定檢查一般會員。</p>
-          </div>
-        </div>
-
-        <div style={styles.retargetingPrototypeNotice}>
-          測試流程：先在「文章排程」打勾測試模式，再開啟這裡的自動再行銷。測試 OK 後，只要取消文章排程的測試模式，這套規則就會改跑一般會員。
-        </div>
-
-        <label style={styles.retargetingSwitchRow}>
-          <input
-            type="checkbox"
-            checked={adminAutoEnabled}
-            onChange={async (e) => {
-              const enabled = e.target.checked;
-              setAdminAutoEnabled(enabled);
-              await handleSaveAdminAutoConfig(enabled);
-            }}
-          />
-          <span>
-            <strong>排程文章啟動後，逐篇滾動檢查是否需要再行銷</strong>
-            <small>這是總開關。關閉時不管測試模式或觀察模式怎麼設定，都不會跑自動再行銷。</small>
-          </span>
-        </label>
-        <label style={styles.retargetingSwitchRow}>
-          <input
-            type="checkbox"
-            checked={adminAutoObserveOnly}
-            onChange={async (e) => {
-              const observeOnly = e.target.checked;
-              setAdminAutoObserveOnly(observeOnly);
-              await handleSaveAdminAutoConfig(adminAutoEnabled, observeOnly);
-            }}
-          />
-          <span>
-            <strong>觀察模式：只記錄符合名單，不實際發送</strong>
-            <small>正式啟用後預設可關閉；需要先看名單是否合理時再打開，系統會留下觀察紀錄但不消耗發送。</small>
-          </span>
-        </label>
-        <div style={styles.retargetingFooter}>
-          <div>
-            <strong>{adminAutoEnabled ? '自動再行銷已啟用' : '自動再行銷未啟用'}</strong>
-            <span style={styles.retargetingMuted}>儲存後，測試模式跑管理者；測試模式取消後跑一般會員。觀察模式開啟時只記錄不發送。</span>
-          </div>
-          <button
-            type="button"
-            style={styles.btnSecondary}
-            disabled={adminAutoSaving}
-            onClick={() => handleSaveAdminAutoConfig(adminAutoEnabled)}
-          >
-            {adminAutoSaving ? '儲存中...' : '儲存並套用 1-4 設定'}
-          </button>
-        </div>
-        {adminAutoResult && (
-          <div style={{
-            ...styles.retargetingPrototypeNotice,
-            color: adminAutoResult.error ? '#991b1b' : '#166534',
-            borderColor: adminAutoResult.error ? '#fecaca' : '#bbf7d0',
-            background: adminAutoResult.error ? '#fef2f2' : '#f0fdf4',
-          }}>
-            {adminAutoResult.error || '1-4 設定已儲存並套用'}
-          </div>
-        )}
-
-        <div style={styles.retargetingRuleBox}>
-          <div style={styles.retargetingRuleTitle}>目前套用上方共用設定</div>
-          <span style={styles.retargetingRuleChip}>第 1 區受眾：{preset.title}</span>
-          {quickRules.map((rule) => (
-            <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
-          ))}
-          <span style={styles.retargetingRuleChip}>每篇發出後等待 {adminAutoWaitDays} 天檢查</span>
-          <span style={styles.retargetingRuleChip}>{retargetingSendText}</span>
-          <span style={styles.retargetingRuleChip}>{adminAutoObserveOnly ? '觀察模式：只記錄不發送' : '正式發送：符合就發送'}</span>
-          <span style={styles.retargetingRuleChip}>送出後觀察 {waitDays} 天</span>
-          <span style={styles.retargetingRuleChip}>有互動：{engagementCriteriaText}</span>
-          <span style={styles.retargetingRuleChip}>{repeatStrategyText}</span>
-        </div>
-
-        <div style={styles.retargetingAutomationPreview}>
-          <div style={styles.retargetingFlowNode}>每篇排程文章發出</div>
-          <div style={styles.retargetingFlowArrow}>→</div>
-          <div style={styles.retargetingFlowNode}>等待 {adminAutoWaitDays} 天</div>
-          <div style={styles.retargetingFlowArrow}>→</div>
-          <div style={styles.retargetingFlowNode}>檢查第 1 區「{preset.title}」條件</div>
-          <div style={styles.retargetingFlowArrow}>→</div>
-          <div style={styles.retargetingFlowSplit}>
-            <div>符合：{retargetingSendText}</div>
-            <div>重複符合：{repeatStrategyText}</div>
-          </div>
-        </div>
-
-        <div style={styles.retargetingPrototypeNotice}>
-          例：如果預排 10 篇，第 1 區條件是收到至少 {receivedMin} 篇、最近連續 {inactiveSteps} 篇未點擊，當第 4 篇發出並等待完成後，就檢查目前最後幾篇；符合就觸發再行銷，不會等到第 10 篇。
-        </div>
-
-        <div style={styles.retargetingPrototypeNotice}>
-          本地目前先顯示設定與流程。推上線前還要接排程檢查任務、活動發送紀錄、每位用戶的去重紀錄；測試確認後，同一套規則才會從管理者測試擴大到正式會員。
-        </div>
-      </section>
+          {!flowChecked && <p style={styles.retargetingMuted}>請先在第 3 區按「完成流程檢查」。</p>}
+        </section>
+      </fieldset>
 
       <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
         <div style={styles.retargetingPanelHead}>
           <span style={styles.retargetingStep}>5</span>
           <div>
             <h3 style={styles.analyticsH3}>發送紀錄 / 活動紀錄</h3>
-            <p style={styles.retargetingMuted}>載入編輯會把受眾、模板、發送時間與後續流程載回第 1-4 區；改完可更新此活動，或在第 4 區正式套用。</p>
+            <p style={styles.retargetingMuted}>只顯示真實保存設定、cron 狀態與實際發送紀錄。</p>
           </div>
         </div>
-
-        <div style={styles.retargetingActivityGrid}>
-          {activities.map((activity) => {
-            const status = RETARGETING_ACTIVITY_STATUS[activity.status] || RETARGETING_ACTIVITY_STATUS.draft;
-            const activityPreset = AUDIENCE_PRESETS.find((item) => item.id === activity.presetId);
-            return (
-              <article
-                key={activity.id}
-                style={{
-                  ...styles.retargetingActivityCard,
-                  ...(selectedActivityId === activity.id ? styles.retargetingActivityCardActive : {}),
-                }}
-              >
-                <div style={styles.retargetingActivityTop}>
-                  <div>
-                    <strong style={styles.retargetingActivityName}>{activity.name}</strong>
-                    <span style={styles.retargetingMuted}>
-                      {activityPreset?.title || '自訂受眾'} · {activity.templateTitle}
-                    </span>
-                  </div>
-                  <span style={{ ...styles.retargetingStatusPill, color: status.tone, borderColor: status.tone }}>
-                    {status.label}
-                  </span>
-                </div>
-
-                <div style={styles.retargetingActivityMeta}>
-                  <span>{activity.mode === 'instant' ? '立即發送' : '排程發送'}</span>
-                  <span>{activity.scheduleText}</span>
-                  <span>等待 {activity.waitDays} 天後追蹤</span>
-                </div>
-
-                <div style={styles.retargetingRuleBox}>
-                  {activity.rules.map((rule) => (
-                    <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
-                  ))}
-                </div>
-
-                <div style={styles.retargetingActivityNumbers}>
-                  <span>預估 {activity.audienceSize} 人</span>
-                  <span>已送 {activity.sentCount} 人</span>
-                  <span>排除 {activity.excludedCount} 人</span>
-                </div>
-
-                <div style={styles.retargetingMetricGrid}>
-                  {[
-                    { label: '點擊', value: activity.metrics.clicked, total: activity.sentCount },
-                    { label: '回覆', value: activity.metrics.replied, total: activity.sentCount },
-                    { label: '報名頁', value: activity.metrics.applyClicks, total: activity.sentCount },
-                    { label: '送單', value: activity.metrics.submitted, total: activity.sentCount },
-                    { label: '付款', value: activity.metrics.paid, total: activity.sentCount },
-                  ].map((metric) => (
-                    <div key={metric.label} style={styles.retargetingMetricBox}>
-                      <span>{metric.label}</span>
-                      <strong>{metric.value}</strong>
-                      <small>{percent(metric.value, metric.total)}</small>
-                    </div>
-                  ))}
-                </div>
-
-                <details style={styles.retargetingAnalysisDetails}>
-                  <summary>查看成效分析</summary>
-                  <div style={styles.retargetingAnalysisBody}>
-                    <div>
-                      <strong>互動速度</strong>
-                      <span>
-                        {activity.metrics.avgEngageDays
-                          ? `平均發送後 ${activity.metrics.avgEngageDays} 天互動`
-                          : '尚未累積互動資料'}
-                      </span>
-                    </div>
-                    <div>
-                      <strong>按鈕 / 連結點擊</strong>
-                      {activity.metrics.linkBreakdown.map((link) => (
-                        <span key={link.label}>{link.label}：{link.count}</span>
-                      ))}
-                    </div>
-                    <div>
-                      <strong>後續流程</strong>
-                      <span>有互動接續：{activity.metrics.followUp.engagedNext}</span>
-                      <span>未互動進 B 模板：{activity.metrics.followUp.inactiveNext}</span>
-                      <span>人工跟進：{activity.metrics.followUp.handoff}</span>
-                    </div>
-                  </div>
-                </details>
-
-                <div style={styles.retargetingActivityEditRow}>
-                  <label style={styles.fieldLabel}>
-                    狀態
-                    <select
-                      value={activity.status}
-                      onChange={(e) => updateActivityField(activity.id, 'status', e.target.value)}
-                      style={styles.input}
-                    >
-                      <option value="draft">草稿</option>
-                      <option value="scheduled">已排程</option>
-                      <option value="paused">已暫停</option>
-                      <option value="disabled">已停用</option>
-                      <option value="sent">已發送</option>
-                    </select>
-                  </label>
-                  <label style={styles.fieldLabel}>
-                    發送時間
-                    <input
-                      value={activity.scheduleText}
-                      onChange={(e) => updateActivityField(activity.id, 'scheduleText', e.target.value)}
-                      style={styles.input}
-                    />
-                  </label>
-                </div>
-
-                <div style={styles.retargetingActivityActions}>
-                  <button
-                    type="button"
-                    style={styles.btnSecondary}
-                    onClick={() => handleEditActivity(activity)}
-                  >
-                    載入受眾 / 模板 / 流程
-                  </button>
-                  <button
-                    type="button"
-                    style={{
-                      ...styles.btnSecondary,
-                      color: activity.status === 'disabled' ? '#94a3b8' : '#991b1b',
-                      borderColor: activity.status === 'disabled' ? '#e5e7eb' : '#fecaca',
-                    }}
-                    onClick={() => updateActivityField(activity.id, 'status', 'disabled')}
-                    disabled={activity.status === 'disabled'}
-                  >
-                    {activity.status === 'disabled' ? '已停用' : '停用'}
-                  </button>
-                  <button
-                    type="button"
-                    style={{
-                      ...styles.btnPrimary,
-                      ...(selectedActivityId !== activity.id ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
-                    }}
-                    onClick={handleSaveActivityDraft}
-                    disabled={selectedActivityId !== activity.id}
-                  >
-                    更新此活動
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
+        {!config ? (
+          <div style={styles.retargetingPrototypeNotice}>尚未保存自動再行銷活動，未完成的畫面草稿不會顯示在這裡。</div>
+        ) : (
+          <article style={styles.retargetingActivityCard}>
+            <div style={styles.retargetingActivityTop}>
+              <div>
+                <strong style={styles.retargetingActivityName}>{config.ruleTitle || '自動再行銷活動'}</strong>
+                <span style={styles.retargetingMuted}>最後保存：{formatRetargetingTime(dashboard?.configUpdatedAt)}</span>
+              </div>
+              <span style={{ ...styles.retargetingStatusPill, color: '#166534', borderColor: '#166534' }}>{activityStatus}</span>
+            </div>
+            <div style={styles.retargetingActivityMeta}>
+              <span>{dashboard?.testMode ? '管理者測試' : '一般會員正式流程'}</span>
+              <span>{config.sendMode === 'instant' ? '符合後立即發送' : `符合後 ${config.sendDelayDays || 0} 天 ${config.sendAtTime || '14:00'} 發送`}</span>
+              <span>下一筆待發：{formatRetargetingTime(state?.nextScheduledAt)}</span>
+            </div>
+            <div style={styles.retargetingActivityNumbers}>
+              <span>已處理 {state?.users || 0} 人</span>
+              <span>待發 {state?.pending || 0} 人</span>
+              <span>觀察回應中 {state?.observing || 0} 人</span>
+              <span>實際發送 {sentCount} 人</span>
+              <span>點擊 {clickCount} 次</span>
+              <span>真實紀錄 {logs.length} 筆</span>
+              <span>目標累計 {targetCount} 人次</span>
+            </div>
+            <div style={styles.retargetingRuleBox}>
+              {(config.audienceRules || []).map((rule) => <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>)}
+            </div>
+            <details style={styles.retargetingAnalysisDetails}>
+              <summary>最近真實發送 / 觀察紀錄</summary>
+              <div style={styles.retargetingAnalysisBody}>
+                {logs.length === 0 ? (
+                  <span>規則已保存，尚未觸發發送。</span>
+                ) : logs.slice(0, 10).map((log) => (
+                  <span key={log.id}>{formatRetargetingTime(log.created_at)}｜{log.label}｜{log.status}｜發送 {log.sent_count || 0}｜點擊 {log.click_count || 0}</span>
+                ))}
+              </div>
+            </details>
+            <div style={styles.retargetingActivityActions}>
+              <button type="button" style={styles.btnSecondary} onClick={() => { loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary }); setEditingActivityId(config.activityId || 'current'); setFlowChecked(false); setNotice({ ok: '正在編輯既有活動；修改後請重新完成流程檢查，再儲存更新。' }); }}>
+                載入編輯
+              </button>
+              <button type="button" style={styles.btnSecondary} onClick={() => { loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary }); setActivityId(createRetargetingLibraryId('activity')); setEditingActivityId('new'); setEnabled(false); setFlowChecked(false); setNotice({ ok: '已複製成新活動草稿；正式保存時會取代目前唯一啟用活動。' }); }}>
+                複製成新活動
+              </button>
+              <button type="button" style={styles.btnSecondary} disabled={!config.enabled || saving === 'disable'} onClick={disableActivity}>
+                {saving === 'disable' ? '停用中...' : config.enabled ? '停用活動' : '已停用'}
+              </button>
+              {editingActivityId && editingActivityId !== 'new' && (
+                <button type="button" style={styles.btnSecondary} onClick={() => { setEditingActivityId(null); setNotice({ ok: '已取消編輯，活動回到唯讀狀態。' }); }}>取消編輯</button>
+              )}
+            </div>
+          </article>
+        )}
       </section>
     </div>
   );

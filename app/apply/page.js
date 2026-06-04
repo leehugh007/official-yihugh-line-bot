@@ -6,7 +6,7 @@
 //     + 三大堅持 (不依賴產品/不挨餓/不受時空限制)
 //     + 市面主流比拼表（瘦瘦針/手術/代餐/ABC）
 //   - Ch.5 加雙人早鳥 $3,333/人 anchor 卡（限雙人團報，CTA 回 LINE 人工走，不改 form enum）
-//   - 6 月班開放報名中（不寫具體日期）
+//   - 班級名稱與開課日由後台定價設定同步
 //   - 「業界平均 10%」改「一般節食減重平均只有 10%」
 //
 // 視覺層（v4.1 保留）：
@@ -713,6 +713,8 @@ export default function ApplyPage() {
   const [submitted, setSubmitted] = useState(false);
   // V3.2 Phase 4：超早鳥定價狀態（從 /api/apply/visit 回傳，含 cutoff_at + super_early_active + 4 個 price tiers）
   const [pricing, setPricing] = useState(null);
+  const batchName = pricing?.batch?.name || '下一期班';
+  const batchStartDate = pricing?.batch?.start_date || '';
 
   const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -1422,7 +1424,9 @@ export default function ApplyPage() {
         <SectionHeading emoji="🌿" title="如果你準備好了" />
         <p style={S.para}>如果你看到這裡還沒關掉，我想你已經準備好了。</p>
         <div>
-          <span style={S.batchBadge}>📅 6 月班｜開放報名中</span>
+          <span style={S.batchBadge}>
+            📅 {batchName}｜{batchStartDate ? `${batchStartDate} 開課` : '開放報名中'}
+          </span>
         </div>
 
         {/* 方案 A */}
@@ -1507,7 +1511,7 @@ export default function ApplyPage() {
           <p style={S.planPrice}>NT$ 3,333 <span style={{ fontSize: 18, fontWeight: 600 }}>/ 月 · 每人</span></p>
           <p style={S.planMeta}>12 週每人總價 $9,999｜<span style={{ ...S.highlight, fontSize: 13 }}>限定 5 組</span></p>
           <p style={S.para}>
-            <span style={S.emphasis}>限雙人團報，6 月班只開 5 組</span>
+            <span style={S.emphasis}>限雙人團報，{batchName}只開 5 組</span>
             。找一個想一起改變的人，兩個人一起走完，比一個人容易得多。
           </p>
           <p style={S.para}>
