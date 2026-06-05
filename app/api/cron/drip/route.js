@@ -22,6 +22,9 @@ const ADMIN_TAG = '\u7ba1\u7406\u8005';
 const ENROLLED_TAG = '\u5df2\u5831\u540d\u6e1b\u91cd\u73ed';
 const PENDING_PAYMENT_RULE = 'pending_payment';
 const DRIP_ARTICLE_TYPES = new Set(['student_story', 'health_article', 'intro', 'method', 'apply', 'other']);
+const SUPABASE_PAGE_SIZE = 1000;
+const SUPABASE_IN_CHUNK_SIZE = 500;
+const SUPABASE_MAX_ROWS = 100000;
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -53,6 +56,45 @@ function safeJsonParse(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function chunkArray(items, size = SUPABASE_IN_CHUNK_SIZE) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+async function fetchAllRows(buildQuery, label, maxRows = SUPABASE_MAX_ROWS) {
+  const rows = [];
+
+  for (let offset = 0; ; offset += SUPABASE_PAGE_SIZE) {
+    const { data, error } = await buildQuery().range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+    if (error) {
+      console.error(`[${label}] paged fetch failed:`, error);
+      throw error;
+    }
+    if (!data || data.length === 0) break;
+
+    rows.push(...data);
+    if (data.length < SUPABASE_PAGE_SIZE) break;
+    if (rows.length >= maxRows) {
+      console.warn(`[${label}] stopped at safety limit ${maxRows}`);
+      break;
+    }
+  }
+
+  return rows;
+}
+
+async function fetchRowsForUsers(userIds, buildQuery, label) {
+  const rows = [];
+  for (const chunk of chunkArray(userIds)) {
+    const chunkRows = await fetchAllRows(() => buildQuery(chunk), label);
+    rows.push(...chunkRows);
+  }
+  return rows;
 }
 
 function daysAgoIso(days) {
@@ -357,6 +399,65 @@ function evaluateRetargetingAudience(config, user, uniqueLogs, userClicks, appRe
   return { matched: true, ...latestLogWindow(uniqueLogs) };
 }
 
+async function fetchRetargetingUsers(isTestMode) {
+  return fetchAllRows(() => {
+    let usersQuery = supabase
+      .from('official_line_users')
+      .select('line_user_id, last_user_reply_at, tags, joined_at, q5_clicked_at, q5_click_count')
+      .eq('is_blocked', false)
+      .order('joined_at', { ascending: true })
+      .order('line_user_id', { ascending: true });
+
+    if (isTestMode) {
+      usersQuery = usersQuery.contains('tags', [ADMIN_TAG]);
+    } else {
+      usersQuery = usersQuery
+        .not('tags', 'cs', JSON.stringify([ADMIN_TAG]))
+        .not('tags', 'cs', JSON.stringify([ENROLLED_TAG]));
+    }
+
+    return usersQuery;
+  }, 'Retargeting users');
+}
+
+async function fetchRetargetingStepTypeMap() {
+  let articleTypeFallback = false;
+  let dripSchedule = [];
+
+  try {
+    dripSchedule = await fetchAllRows(
+      () => supabase
+        .from('official_drip_schedule')
+        .select('step_number, article_type')
+        .order('step_number', { ascending: true }),
+      'Retargeting drip schedule article types',
+      1000
+    );
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (error?.code !== '42703' && !message.includes('article_type')) throw error;
+
+    articleTypeFallback = true;
+    console.warn('[Retargeting] article_type missing; fallback all drip steps to article_type=other');
+    dripSchedule = await fetchAllRows(
+      () => supabase
+        .from('official_drip_schedule')
+        .select('step_number')
+        .order('step_number', { ascending: true }),
+      'Retargeting drip schedule fallback',
+      1000
+    );
+  }
+
+  return {
+    articleTypeFallback,
+    stepTypeMap: new Map((dripSchedule || []).map((step) => [
+      Number(step.step_number),
+      step.article_type || 'other',
+    ])),
+  };
+}
+
 async function processRetargeting() {
   const { data: testModeSetting } = await supabase
     .from('official_settings')
@@ -384,31 +485,22 @@ async function processRetargeting() {
     .single();
   const state = safeJsonParse(stateSetting?.value, {});
 
-  let usersQuery = supabase
-    .from('official_line_users')
-    .select('line_user_id, last_user_reply_at, tags, joined_at, q5_clicked_at, q5_click_count')
-    .eq('is_blocked', false);
-
-  if (isTestMode) {
-    usersQuery = usersQuery.contains('tags', [ADMIN_TAG]);
-  } else {
-    usersQuery = usersQuery
-      .not('tags', 'cs', JSON.stringify([ADMIN_TAG]))
-      .not('tags', 'cs', JSON.stringify([ENROLLED_TAG]));
-  }
-
-  const { data: users } = await usersQuery;
+  const users = await fetchRetargetingUsers(isTestMode);
   let candidates = users || [];
   let userIds = candidates.map((u) => u.line_user_id).filter(Boolean);
   const audienceConditions = getRetargetingAudienceConditions(config);
   const appStatusByUser = new Map();
   if (userIds.length > 0) {
-    const { data: applications } = await supabase
-      .from('official_program_applications')
-      .select('line_user_id, status, submitted_at, paid_at')
-      .in('line_user_id', userIds)
-      .in('status', ['pending', 'paid'])
-      .order('submitted_at', { ascending: false });
+    const applications = await fetchRowsForUsers(
+      userIds,
+      (ids) => supabase
+        .from('official_program_applications')
+        .select('line_user_id, status, submitted_at, paid_at')
+        .in('line_user_id', ids)
+        .in('status', ['pending', 'paid'])
+        .order('submitted_at', { ascending: false }),
+      'Retargeting applications'
+    );
 
     for (const app of applications || []) {
       if (!app.line_user_id) continue;
@@ -439,30 +531,37 @@ async function processRetargeting() {
     return { processed: 0, sent: 0, skipped: 0, observed: 0, message: `no ${context} users` };
   }
 
-  const { data: dripSchedule } = await supabase
-    .from('official_drip_schedule')
-    .select('step_number, article_type');
-  const stepTypeMap = new Map((dripSchedule || []).map((step) => [
-    Number(step.step_number),
-    step.article_type || 'other',
-  ]));
+  const { stepTypeMap, articleTypeFallback } = await fetchRetargetingStepTypeMap();
 
-  const { data: logs } = await supabase
-    .from('official_drip_logs')
-    .select('line_user_id, step_number, sent_at')
-    .in('line_user_id', userIds)
-    .order('step_number', { ascending: true });
+  const logs = await fetchRowsForUsers(
+    userIds,
+    (ids) => supabase
+      .from('official_drip_logs')
+      .select('line_user_id, step_number, sent_at')
+      .in('line_user_id', ids)
+      .order('step_number', { ascending: true }),
+    'Retargeting drip logs'
+  );
 
-  const { data: clicks } = await supabase
-    .from('official_line_clicks')
-    .select('line_user_id, link_id, clicked_at')
-    .in('line_user_id', userIds)
-    .like('link_id', 'drip_%');
-  const { data: retargetingClicks } = await supabase
-    .from('official_line_clicks')
-    .select('line_user_id, link_id, clicked_at')
-    .in('line_user_id', userIds)
-    .like('link_id', 'retargeting_auto_%');
+  const clicks = await fetchRowsForUsers(
+    userIds,
+    (ids) => supabase
+      .from('official_line_clicks')
+      .select('line_user_id, link_id, clicked_at')
+      .in('line_user_id', ids)
+      .like('link_id', 'drip_%'),
+    'Retargeting drip clicks'
+  );
+
+  const retargetingClicks = await fetchRowsForUsers(
+    userIds,
+    (ids) => supabase
+      .from('official_line_clicks')
+      .select('line_user_id, link_id, clicked_at')
+      .in('line_user_id', ids)
+      .like('link_id', 'retargeting_auto_%'),
+    'Retargeting auto clicks'
+  );
 
   const logsByUser = {};
   for (const log of logs || []) {
@@ -650,7 +749,16 @@ async function processRetargeting() {
       updated_at: new Date().toISOString(),
     });
 
-  return { processed, sent, skipped, pending, observed, testMode: isTestMode, observeOnly: !!config.observeOnly };
+  return {
+    processed,
+    sent,
+    skipped,
+    pending,
+    observed,
+    testMode: isTestMode,
+    observeOnly: !!config.observeOnly,
+    articleTypeFallback,
+  };
 }
 
 // 並發控制：最多 concurrency 個同時執行
@@ -692,20 +800,24 @@ async function processDrip() {
   const totalSteps = schedule.length;
 
   // 2. 找出到期的用戶
-  let usersQuery = supabase
-    .from('official_line_users')
-    .select('line_user_id, drip_week, tags')
-    .lte('drip_next_at', now)
-    .eq('drip_paused', false)
-    .eq('is_blocked', false)
-    .lt('drip_week', totalSteps);
+  const users = await fetchAllRows(() => {
+    let usersQuery = supabase
+      .from('official_line_users')
+      .select('line_user_id, drip_week, tags')
+      .lte('drip_next_at', now)
+      .eq('drip_paused', false)
+      .eq('is_blocked', false)
+      .lt('drip_week', totalSteps)
+      .order('drip_next_at', { ascending: true })
+      .order('line_user_id', { ascending: true });
 
-  // 測試模式：只推給管理者
-  if (isTestMode) {
-    usersQuery = usersQuery.contains('tags', ['管理者']);
-  }
+    // 測試模式：只推給管理者
+    if (isTestMode) {
+      usersQuery = usersQuery.contains('tags', ['管理者']);
+    }
 
-  const { data: users } = await usersQuery;
+    return usersQuery;
+  }, 'Drip due users');
 
   if (!users || users.length === 0) {
     return { processed: 0, skipped: 0, sent: 0, testMode: isTestMode, message: '沒有到期的用戶' };
