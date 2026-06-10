@@ -14,9 +14,10 @@
 
 import { NextResponse } from 'next/server';
 import supabase from '../../../../lib/supabase.js';
-import { pushMessage, pushFlexMessage } from '../../../../lib/line.js';
+import { pushMessage, pushMessageWithResult, pushFlexMessage } from '../../../../lib/line.js';
 import { wrapLink } from '../../../../lib/tracking.js';
 import { sendScheduledPush } from '../../../../lib/push.js';
+import { normalizePublicUrl, isPublicHttpsUrl } from '../../../../lib/config.js';
 
 const ADMIN_TAG = '\u7ba1\u7406\u8005';
 const ENROLLED_TAG = '\u5df2\u5831\u540d\u6e1b\u91cd\u73ed';
@@ -155,12 +156,63 @@ function buildFlexFromTemplate(template, linkId, userId) {
     title,
     body,
     buttons,
-    imageUrl: template.imageUrl || undefined,
+    imageUrl: normalizePublicUrl(template.imageUrl) || undefined,
   });
 }
 
 function getRetargetingActivityKey(config = {}) {
   return config.activityId || config.ruleId || 'rule';
+}
+
+function textHasTestMarker(value) {
+  return /測試|test/i.test(String(value || ''));
+}
+
+function getActiveRetargetingStageTemplates(config = {}) {
+  const templates = Array.isArray(config.stageTemplates) ? config.stageTemplates : [];
+  if (config.repeatStrategy !== 'staged') return templates.slice(0, 1);
+  const active = templates.slice(0, 1);
+  if (config.stage2Enabled !== false && templates[1]) active.push(templates[1]);
+  if (config.stage2Enabled !== false && config.stage3Enabled && templates[2]) active.push(templates[2]);
+  return active;
+}
+
+function validateRetargetingFormalConfig(config = {}) {
+  if (!config?.enabled) return null;
+  for (const template of getActiveRetargetingStageTemplates(config)) {
+    if (!String(template?.message || '').trim()) {
+      return `模板「${template?.title || '未命名'}」缺少訊息文字`;
+    }
+    const imageUrl = normalizePublicUrl(template.imageUrl);
+    if (imageUrl && !isPublicHttpsUrl(imageUrl)) {
+      return `模板「${template.title || '未命名'}」圖片不是公開 HTTPS 網址`;
+    }
+    const textFields = [
+      template.title,
+      template.category,
+      template.message,
+      ...(template.buttons || []).flatMap((button) => [
+        button.label,
+        button.messageText,
+        button.replyText,
+      ]),
+    ];
+    if (textFields.some(textHasTestMarker)) {
+      return `模板「${template.title || '未命名'}」仍含測試字樣`;
+    }
+    for (const button of template.buttons || []) {
+      if (button.actionType === 'message') {
+        if (!String(button.replyText || '').trim()) {
+          return `模板「${template.title || '未命名'}」文字回覆按鈕缺少 BOT 回覆文字`;
+        }
+        continue;
+      }
+      if (!button.url || button.url.includes('example.com') || !isPublicHttpsUrl(button.url)) {
+        return `模板「${template.title || '未命名'}」有未完成的按鈕連結`;
+      }
+    }
+  }
+  return null;
 }
 
 async function recordRetargetingObservation(userId, config, stage, windowKey, context) {
@@ -194,13 +246,32 @@ async function recordRetargetingObservation(userId, config, stage, windowKey, co
 
 async function sendRetargetingMessage(userId, config, stage, windowKey, context) {
   const template = config.stageTemplates?.[stage - 1] || config.stageTemplates?.[0];
-  if (!template?.message) return false;
+  if (!template?.message) return { ok: false, error: 'template message missing' };
 
   const activityKey = getRetargetingActivityKey(config);
   const linkId = `retargeting_auto_${activityKey}_s${stage}_${Date.now()}`;
   const lineMsg = buildFlexFromTemplate(template, linkId, userId);
-  const ok = await pushMessage(userId, lineMsg);
-  if (!ok) return false;
+  const pushResult = await pushMessageWithResult(userId, lineMsg);
+  const normalizedImageUrl = normalizePublicUrl(template.imageUrl);
+  if (!pushResult.ok) {
+    const errorText = (pushResult.errorText || `LINE push failed (${pushResult.status})`).slice(0, 700);
+    await supabase.from('official_push_logs').insert({
+      template_id: `retargeting_auto_${activityKey}_s${stage}`,
+      label: `自動再行銷發送失敗：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
+      message: `${template.message}\n\n[系統錯誤] ${errorText}`,
+      link_id: linkId,
+      buttons: template.buttons || [],
+      image_url: normalizedImageUrl || null,
+      segments: [context, 'retargeting_auto'],
+      mode: 'instant',
+      target_count: 1,
+      sent_count: 0,
+      status: 'failed',
+      completed_at: new Date().toISOString(),
+      exclude_enrolled: false,
+    });
+    return { ok: false, error: errorText };
+  }
 
   const { error } = await supabase.from('official_push_logs').insert({
     template_id: `retargeting_auto_${activityKey}_s${stage}`,
@@ -208,7 +279,7 @@ async function sendRetargetingMessage(userId, config, stage, windowKey, context)
     message: template.message,
     link_id: linkId,
     buttons: template.buttons || [],
-    image_url: template.imageUrl || null,
+    image_url: normalizedImageUrl || null,
     segments: [context, 'retargeting_auto'],
     mode: 'instant',
     target_count: 1,
@@ -219,10 +290,10 @@ async function sendRetargetingMessage(userId, config, stage, windowKey, context)
   });
   if (error) {
     console.error('[Retargeting] send log insert failed:', error);
-    return false;
+    return { ok: false, error: error.message };
   }
 
-  return true;
+  return { ok: true };
 }
 
 function hasReplyInteraction(user, sinceIso) {
@@ -255,10 +326,28 @@ function getNextRetargetingStage(config, userState) {
   }
   if (config.repeatStrategy === 'staged') {
     if (sentCount === 0) return { action: 'send', stage: 1 };
-    if (sentCount === 1) return { action: 'send', stage: 2 };
+    if (sentCount === 1) {
+      return config.stage2Enabled === false
+        ? { action: config.thirdStageAction || 'cooldown', reason: 'stage2_disabled' }
+        : { action: 'send', stage: 2 };
+    }
+    if (sentCount === 2) {
+      return config.stage3Enabled
+        ? { action: 'send', stage: 3 }
+        : { action: config.thirdStageAction || 'cooldown', reason: 'stage3_disabled' };
+    }
     return { action: config.thirdStageAction || 'cooldown', reason: 'third_stage' };
   }
   return sentCount === 0 ? { action: 'send', stage: 1 } : { action: 'skip', reason: 'already_sent' };
+}
+
+function isCompletedRetargetingWindow(userState = {}, windowKey) {
+  if (!windowKey) return false;
+  if (userState.completedWindowKey === windowKey) return true;
+  if (userState.lastAction && ['engaged', 'cooldown', 'manual', 'stop', 'skip'].includes(userState.lastAction)) {
+    return userState.lastWindowKey === windowKey;
+  }
+  return false;
 }
 
 function configNumber(value, fallback, min = 0) {
@@ -267,12 +356,43 @@ function configNumber(value, fallback, min = 0) {
   return Math.max(number, min);
 }
 
+function defaultRetargetingEnabledConditions(ruleId = 'dropoff') {
+  const base = {
+    receivedMin: false,
+    clickedMin: false,
+    inactiveSteps: false,
+    recentDays: false,
+    joinedDays: false,
+    applyDelayDays: false,
+    applyClicks: false,
+    paymentDelayDays: false,
+    customArticleType: false,
+    excludeApplyClickers: false,
+    customExcludeSubmitted: false,
+    customExcludePaid: false,
+  };
+  if (ruleId === 'dropoff') return { ...base, receivedMin: true, clickedMin: true, inactiveSteps: true };
+  if (ruleId === 'warm') return { ...base, clickedMin: true, recentDays: true, excludeApplyClickers: true, customArticleType: true };
+  if (ruleId === 'apply_no_submit') return { ...base, applyClicks: true, applyDelayDays: true, customExcludeSubmitted: true, customExcludePaid: true };
+  if (ruleId === 'pending_payment') return { ...base, paymentDelayDays: true };
+  if (ruleId === 'cold') return { ...base, receivedMin: true, joinedDays: true, clickedMin: true };
+  return { ...base, clickedMin: true, customExcludeSubmitted: true, customExcludePaid: true, customArticleType: true };
+}
+
 function getRetargetingAudienceConditions(config = {}) {
   const raw = config.audienceConditions && typeof config.audienceConditions === 'object'
     ? config.audienceConditions
     : {};
+  const presetId = raw.presetId || config.ruleId || 'dropoff';
+  const defaults = defaultRetargetingEnabledConditions(presetId);
+  const incomingEnabled = raw.enabledConditions && typeof raw.enabledConditions === 'object'
+    ? raw.enabledConditions
+    : {};
   return {
-    presetId: raw.presetId || config.ruleId || 'dropoff',
+    presetId,
+    enabledConditions: Object.fromEntries(
+      Object.keys(defaults).map((key) => [key, incomingEnabled[key] ?? defaults[key]])
+    ),
     clickedMin: configNumber(raw.clickedMin, 2, 0),
     inactiveSteps: configNumber(raw.inactiveSteps || config.missedSteps, 2, 1),
     recentDays: configNumber(raw.recentDays, 14, 1),
@@ -340,34 +460,40 @@ function latestLogWindow(uniqueLogs, size = 1) {
 function evaluateRetargetingAudience(config, user, uniqueLogs, userClicks, appRecord, stepTypeMap) {
   const ruleId = config.ruleId || 'dropoff';
   const conditions = getRetargetingAudienceConditions(config);
+  const enabled = conditions.enabledConditions || {};
   const userClickSteps = getUniqueDripClickSteps(userClicks, stepTypeMap);
   const dripClickCount = userClickSteps.size;
   const applyClickCount = Number(user?.q5_click_count || 0);
   const applyClickedAt = user?.q5_clicked_at;
 
   if (ruleId === 'dropoff') {
-    if (uniqueLogs.length < conditions.receivedMin) return { matched: false };
-    if (dripClickCount < conditions.clickedMin) return { matched: false };
-    const { recentLogs, windowKey } = latestLogWindow(uniqueLogs, conditions.inactiveSteps);
-    if (recentLogs.length < conditions.inactiveSteps) return { matched: false };
-    const allMissed = recentLogs.every((log) => !userClickSteps.has(Number(log.step_number)));
+    if (enabled.receivedMin && uniqueLogs.length < conditions.receivedMin) return { matched: false };
+    if (enabled.clickedMin && dripClickCount < conditions.clickedMin) return { matched: false };
+    const inactiveSize = enabled.inactiveSteps ? conditions.inactiveSteps : 1;
+    const { recentLogs, windowKey } = latestLogWindow(uniqueLogs, inactiveSize);
+    if (enabled.inactiveSteps && recentLogs.length < conditions.inactiveSteps) return { matched: false };
+    const allMissed = enabled.inactiveSteps
+      ? recentLogs.every((log) => !userClickSteps.has(Number(log.step_number)))
+      : true;
     return { matched: allMissed, recentLogs, windowKey };
   }
 
   if (ruleId === 'warm') {
-    const warmArticleType = conditions.customArticleType !== 'any'
+    const warmArticleType = enabled.customArticleType && conditions.customArticleType !== 'any'
       ? conditions.customArticleType
       : conditions.storyOnly ? 'student_story' : 'any';
     const warmClickCount = getUniqueDripClickSteps(userClicks, stepTypeMap, warmArticleType).size;
-    if (warmClickCount < conditions.clickedMin) return { matched: false };
-    if (!hasClickSince(userClicks, conditions.recentDays, stepTypeMap, warmArticleType)) return { matched: false };
-    if (conditions.excludeApplyClickers && applyClickCount > 0) return { matched: false };
+    if (enabled.clickedMin && warmClickCount < conditions.clickedMin) return { matched: false };
+    if (enabled.recentDays && !hasClickSince(userClicks, conditions.recentDays, stepTypeMap, warmArticleType)) return { matched: false };
+    if (enabled.excludeApplyClickers && conditions.excludeApplyClickers && applyClickCount > 0) return { matched: false };
     return { matched: true, ...latestLogWindow(uniqueLogs) };
   }
 
   if (ruleId === 'apply_no_submit') {
-    if (applyClickCount < conditions.applyClicks) return { matched: false };
-    if (!isOlderThanDays(applyClickedAt, conditions.applyDelayDays)) return { matched: false };
+    if (enabled.applyClicks && applyClickCount < conditions.applyClicks) return { matched: false };
+    if (enabled.applyDelayDays && !isOlderThanDays(applyClickedAt, conditions.applyDelayDays)) return { matched: false };
+    if (enabled.customExcludeSubmitted && appRecord?.status) return { matched: false };
+    if (enabled.customExcludePaid && appRecord?.status === 'paid') return { matched: false };
     return {
       matched: true,
       ...latestLogWindow(uniqueLogs),
@@ -377,7 +503,7 @@ function evaluateRetargetingAudience(config, user, uniqueLogs, userClicks, appRe
 
   if (ruleId === PENDING_PAYMENT_RULE) {
     if (appRecord?.status !== 'pending') return { matched: false };
-    if (!isOlderThanDays(appRecord.submitted_at, conditions.paymentDelayDays)) return { matched: false };
+    if (enabled.paymentDelayDays && !isOlderThanDays(appRecord.submitted_at, conditions.paymentDelayDays)) return { matched: false };
     return {
       matched: true,
       ...latestLogWindow(uniqueLogs),
@@ -385,18 +511,23 @@ function evaluateRetargetingAudience(config, user, uniqueLogs, userClicks, appRe
     };
   }
 
-  if (ruleId === 'custom') {
-    const customClickCount = getUniqueDripClickSteps(userClicks, stepTypeMap, conditions.customArticleType).size;
-    if (customClickCount < conditions.customMinimumClicks) return { matched: false };
-    if (conditions.customExcludePaid && appRecord?.status === 'paid') return { matched: false };
-    if (conditions.customExcludeSubmitted && appRecord?.status) return { matched: false };
+  if (ruleId === 'cold') {
+    if (enabled.receivedMin && uniqueLogs.length < conditions.receivedMin) return { matched: false };
+    if (enabled.clickedMin && dripClickCount > 0) return { matched: false };
+    if (enabled.joinedDays && !isOlderThanDays(user?.joined_at, conditions.joinedDays)) return { matched: false };
     return { matched: true, ...latestLogWindow(uniqueLogs) };
   }
 
-  if (uniqueLogs.length < conditions.receivedMin) return { matched: false };
-  if (dripClickCount > 0) return { matched: false };
-  if (!isOlderThanDays(user?.joined_at, conditions.joinedDays)) return { matched: false };
-  return { matched: true, ...latestLogWindow(uniqueLogs) };
+  if (ruleId === 'custom') {
+    const customArticleType = enabled.customArticleType ? conditions.customArticleType : 'any';
+    const customClickCount = getUniqueDripClickSteps(userClicks, stepTypeMap, customArticleType).size;
+    if (enabled.clickedMin && customClickCount < conditions.customMinimumClicks) return { matched: false };
+    if (enabled.customExcludePaid && conditions.customExcludePaid && appRecord?.status === 'paid') return { matched: false };
+    if (enabled.customExcludeSubmitted && conditions.customExcludeSubmitted && appRecord?.status) return { matched: false };
+    return { matched: true, ...latestLogWindow(uniqueLogs) };
+  }
+
+  return { matched: false };
 }
 
 async function fetchRetargetingUsers(isTestMode) {
@@ -473,6 +604,19 @@ async function processRetargeting() {
   const config = safeJsonParse(configSetting?.value, null);
   if (!config?.enabled) {
     return { processed: 0, sent: 0, skipped: 0, observed: 0, message: 'retargeting disabled' };
+  }
+  if (!isTestMode) {
+    const formalError = validateRetargetingFormalConfig(config);
+    if (formalError) {
+      return {
+        processed: 0,
+        sent: 0,
+        skipped: 0,
+        observed: 0,
+        blocked: true,
+        message: formalError,
+      };
+    }
   }
 
   const stateKey = isTestMode ? 'retargeting_admin_auto_state' : 'retargeting_auto_state';
@@ -620,8 +764,35 @@ async function processRetargeting() {
       : storedState;
     const windowKey = audience.windowKey || recentLogs.map((log) => log.step_number).join('-') || 'audience-match';
     const pendingForWindow = userState.pending?.windowKey === windowKey ? userState.pending : null;
+    const engagedSinceLastSent = !!(
+      userState.lastSentAt
+      && userState.lastEngagementHandledForSentAt !== userState.lastSentAt
+      && hasRetargetingEngagement(
+        usersById[userId],
+        retargetingClicksByUser[userId] || [],
+        appStatusByUser.get(userId),
+        userState.lastSentAt,
+        config.engagementCriteria
+      )
+    );
 
-    if (userState.lastWindowKey === windowKey) {
+    if (isCompletedRetargetingWindow(userState, windowKey)) {
+      skipped++;
+      continue;
+    }
+
+    if (engagedSinceLastSent) {
+      state[userId] = {
+        ...userState,
+        activityId: config.activityId || userState.activityId,
+        lastWindowKey: windowKey,
+        completedWindowKey: windowKey,
+        lastEngagementHandledForSentAt: userState.lastSentAt,
+        observingUntil: null,
+        pending: null,
+        lastAction: 'engaged',
+        updatedAt: new Date().toISOString(),
+      };
       skipped++;
       continue;
     }
@@ -645,31 +816,6 @@ async function processRetargeting() {
       continue;
     }
 
-    if (
-      userState.lastSentAt
-      && userState.lastEngagementHandledForSentAt !== userState.lastSentAt
-      && hasRetargetingEngagement(
-        usersById[userId],
-        retargetingClicksByUser[userId] || [],
-        appStatusByUser.get(userId),
-        userState.lastSentAt,
-        config.engagementCriteria
-      )
-    ) {
-      state[userId] = {
-        ...userState,
-        activityId: config.activityId || userState.activityId,
-        lastWindowKey: windowKey,
-        lastEngagementHandledForSentAt: userState.lastSentAt,
-        observingUntil: null,
-        pending: null,
-        lastAction: 'engaged',
-        updatedAt: new Date().toISOString(),
-      };
-      skipped++;
-      continue;
-    }
-
     const next = pendingForWindow
       ? { action: 'send', stage: pendingForWindow.stage }
       : getNextRetargetingStage(config, userState);
@@ -678,6 +824,7 @@ async function processRetargeting() {
         ...userState,
         activityId: config.activityId || userState.activityId,
         lastWindowKey: windowKey,
+        completedWindowKey: windowKey,
         lastAction: next.action,
         updatedAt: new Date().toISOString(),
       };
@@ -721,8 +868,8 @@ async function processRetargeting() {
       }
     }
 
-    const ok = await sendRetargetingMessage(userId, config, next.stage, windowKey, context);
-    if (ok) {
+    const sendResult = await sendRetargetingMessage(userId, config, next.stage, windowKey, context);
+    if (sendResult.ok) {
       state[userId] = {
         ...userState,
         activityId: config.activityId || userState.activityId,
@@ -732,11 +879,22 @@ async function processRetargeting() {
         lastEngagementHandledForSentAt: null,
         observingUntil: daysAfterIso(new Date().toISOString(), config.observeDays || 1),
         lastWindowKey: windowKey,
+        completedWindowKey: null,
         pending: null,
+        lastError: null,
         updatedAt: new Date().toISOString(),
       };
       sent++;
     } else {
+      state[userId] = {
+        ...userState,
+        activityId: config.activityId || userState.activityId,
+        pending: userState.pending || { stage: next.stage, windowKey, scheduledAt: new Date().toISOString() },
+        lastAttemptAt: new Date().toISOString(),
+        lastError: sendResult.error || 'send failed',
+        attemptCount: (userState.attemptCount || 0) + 1,
+        updatedAt: new Date().toISOString(),
+      };
       skipped++;
     }
   }
