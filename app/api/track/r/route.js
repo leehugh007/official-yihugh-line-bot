@@ -4,7 +4,6 @@
 
 import { NextResponse } from 'next/server';
 import { recordPushClick } from '../../../../lib/users.js';
-import { logClick } from '../../../../lib/tracking.js';
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -16,13 +15,12 @@ export async function GET(request) {
     return NextResponse.json({ error: 'Missing url' }, { status: 400 });
   }
 
-  // 非阻塞記錄點擊
   if (userId && linkId) {
-    // 不 await，讓轉址先走
-    Promise.all([
-      recordPushClick(userId, linkId),
-      logClick(linkId, userId),
-    ]).catch((err) => console.error('[Track] Error:', err));
+    try {
+      await recordPushClick(userId, linkId);
+    } catch (err) {
+      console.error('[Track] Error:', err);
+    }
   }
 
   // 302 轉址

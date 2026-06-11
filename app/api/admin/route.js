@@ -8,6 +8,7 @@ import { multicastMessage, pushMessage, textMessage, pushFlexMessage } from '../
 import { getUsersBySegment, getAllActiveUsers } from '../../../lib/users.js';
 import { wrapLink } from '../../../lib/tracking.js';
 import { sendScheduledPush } from '../../../lib/push.js';
+import { normalizePublicUrl, isPublicHttpsUrl } from '../../../lib/config.js';
 import {
   listApplications,
   getApplicationFull,
@@ -43,6 +44,31 @@ async function fetchAllUsersForStats() {
 
     if (rows.length >= ADMIN_STATS_MAX_ROWS) {
       console.warn(`[Admin stats] stopped at safety limit ${ADMIN_STATS_MAX_ROWS}`);
+      break;
+    }
+  }
+
+  return rows;
+}
+
+async function fetchAllAdminRows(buildQuery, label, maxRows = ADMIN_STATS_MAX_ROWS) {
+  const rows = [];
+
+  for (let offset = 0; ; offset += ADMIN_STATS_PAGE_SIZE) {
+    const { data, error } = await buildQuery()
+      .range(offset, offset + ADMIN_STATS_PAGE_SIZE - 1);
+
+    if (error) {
+      console.error(`[Admin] ${label} paged fetch failed:`, error);
+      throw error;
+    }
+
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < ADMIN_STATS_PAGE_SIZE) break;
+
+    if (rows.length >= maxRows) {
+      console.warn(`[Admin] ${label} stopped at safety limit ${maxRows}`);
       break;
     }
   }
@@ -958,17 +984,69 @@ function safeJsonParse(value, fallback) {
 
 function summarizeRetargetingState(state = {}, activityId = null) {
   const rows = Object.values(state || {}).filter((row) => !activityId || row?.activityId === activityId);
+  const stageCounts = { 1: { pending: 0, sent: 0, observing: 0, failed: 0 }, 2: { pending: 0, sent: 0, observing: 0, failed: 0 }, 3: { pending: 0, sent: 0, observing: 0, failed: 0 } };
+  const cycleStageCounts = {};
+  const now = new Date();
+  const ensureCycleStage = (cycle, stage) => {
+    const cycleKey = String(Number(cycle) || 1);
+    const stageKey = String(Number(stage) || 1);
+    if (!cycleStageCounts[cycleKey]) cycleStageCounts[cycleKey] = {};
+    if (!cycleStageCounts[cycleKey][stageKey]) {
+      cycleStageCounts[cycleKey][stageKey] = { pending: 0, sent: 0, observing: 0, failed: 0 };
+    }
+    return cycleStageCounts[cycleKey][stageKey];
+  };
+  for (const row of rows) {
+    const pendingStage = Number(row?.pending?.stage || 0);
+    const pendingCycle = Number(row?.pending?.cycle || 1);
+    if (stageCounts[pendingStage]) stageCounts[pendingStage].pending += 1;
+    if (pendingStage) ensureCycleStage(pendingCycle, pendingStage).pending += 1;
+    const lastStage = Number(row?.lastStage || 0);
+    const lastCycle = Number(row?.lastCycle || row?.currentCycle || 1);
+    if (stageCounts[lastStage]) {
+      if (row?.lastSentAt) stageCounts[lastStage].sent += 1;
+      if (row?.observingUntil && new Date(row.observingUntil) > now) stageCounts[lastStage].observing += 1;
+      if (row?.lastError) stageCounts[lastStage].failed += 1;
+    }
+    if (lastStage) {
+      const nested = ensureCycleStage(lastCycle, lastStage);
+      if (row?.lastSentAt) nested.sent += 1;
+      if (row?.observingUntil && new Date(row.observingUntil) > now) nested.observing += 1;
+      if (row?.lastError) nested.failed += 1;
+    }
+  }
   return {
     users: rows.length,
     sent: rows.filter((row) => row?.lastSentAt).length,
     pending: rows.filter((row) => row?.pending?.scheduledAt).length,
+    failed: rows.filter((row) => row?.lastError).length,
     observing: rows.filter((row) => row?.observingUntil && new Date(row.observingUntil) > new Date()).length,
     observed: rows.filter((row) => row?.observedAt).length,
+    lastAttemptAt: rows
+      .map((row) => row?.lastAttemptAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null,
+    lastError: rows
+      .filter((row) => row?.lastError)
+      .sort((a, b) => String(a.updatedAt || '').localeCompare(String(b.updatedAt || '')))
+      .at(-1)?.lastError || null,
     lastUpdatedAt: rows
       .map((row) => row?.updatedAt)
       .filter(Boolean)
       .sort()
       .at(-1) || null,
+    lastSkipAt: rows
+      .map((row) => row?.lastSkipAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null,
+    lastSkipReason: rows
+      .filter((row) => row?.lastSkipReason)
+      .sort((a, b) => String(a.lastSkipAt || a.updatedAt || '').localeCompare(String(b.lastSkipAt || b.updatedAt || '')))
+      .at(-1)?.lastSkipReason || null,
+    stageCounts,
+    cycleStageCounts,
     nextScheduledAt: rows
       .flatMap((row) => [row?.pending?.scheduledAt, row?.observingUntil])
       .filter(Boolean)
@@ -1011,10 +1089,19 @@ async function handleGetRetargetingDashboard() {
     return NextResponse.json({ error: logsError.message }, { status: 500 });
   }
 
-  const { data: clicks } = await supabase
-    .from('official_line_clicks')
-    .select('link_id')
-    .like('link_id', 'retargeting_auto_%');
+  let clicks = [];
+  try {
+    clicks = await fetchAllAdminRows(
+      () => supabase
+        .from('official_line_clicks')
+        .select('link_id, clicked_at')
+        .like('link_id', 'retargeting_auto_%')
+        .order('clicked_at', { ascending: true }),
+      'retargeting click stats'
+    );
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
   const clickIds = (clicks || []).map((row) => row.link_id);
   const realLogs = (logs || []).map((log) => ({
     ...log,
@@ -1157,6 +1244,21 @@ async function handleDeleteLog(data) {
 // Drip 測試模式開關（存 official_settings）
 // ============================================================
 async function handleToggleDripTestMode({ enabled }) {
+  if (!enabled) {
+    const { data: configSetting } = await supabase
+      .from('official_settings')
+      .select('value')
+      .eq('key', 'retargeting_admin_auto_config')
+      .maybeSingle();
+    const config = safeJsonParse(configSetting?.value, null);
+    const readinessError = validateRetargetingFormalReadiness(config);
+    if (readinessError) {
+      return NextResponse.json({
+        error: `正式會員啟用前請先修正再行銷設定：${readinessError}`,
+      }, { status: 400 });
+    }
+  }
+
   const { error } = await supabase
     .from('official_settings')
     .upsert({ key: 'drip_test_mode', value: String(enabled), updated_at: new Date().toISOString() });
@@ -1175,11 +1277,172 @@ function cleanConfigText(value, fallback = '') {
   return String(value || fallback).slice(0, 120);
 }
 
+function defaultRetargetingEnabledConditions(ruleId = 'dropoff') {
+  const base = {
+    receivedMin: false,
+    clickedMin: false,
+    inactiveSteps: false,
+    recentDays: false,
+    joinedDays: false,
+    applyDelayDays: false,
+    applyClicks: false,
+    paymentDelayDays: false,
+    customArticleType: false,
+    excludeApplyClickers: false,
+    customExcludeSubmitted: false,
+    customExcludePaid: false,
+  };
+  if (ruleId === 'dropoff') return { ...base, receivedMin: true, clickedMin: true, inactiveSteps: true };
+  if (ruleId === 'warm') return { ...base, clickedMin: true, recentDays: true, excludeApplyClickers: true, customArticleType: true };
+  if (ruleId === 'apply_no_submit') return { ...base, applyClicks: true, applyDelayDays: true, customExcludeSubmitted: true, customExcludePaid: true };
+  if (ruleId === 'pending_payment') return { ...base, paymentDelayDays: true };
+  if (ruleId === 'cold') return { ...base, receivedMin: true, joinedDays: true, clickedMin: true };
+  return { ...base, clickedMin: true, customExcludeSubmitted: true, customExcludePaid: true, customArticleType: true };
+}
+
+function textHasTestMarker(value) {
+  return /測試|test/i.test(String(value || ''));
+}
+
+function sanitizeRetargetingButton(button = {}) {
+  const actionType = button.actionType === 'message' ? 'message' : 'url';
+  const label = cleanConfigText(button.label || '');
+  if (actionType === 'message') {
+    return {
+      label,
+      actionType,
+      url: '',
+      messageText: cleanConfigText(button.messageText || label),
+      replyText: String(button.replyText || '').slice(0, 2000),
+    };
+  }
+  return {
+    label,
+    actionType,
+    url: String(button.url || '').slice(0, 1000),
+    messageText: cleanConfigText(button.messageText || label),
+    replyText: '',
+  };
+}
+
+function sanitizeRetargetingStageTemplate(template = {}, stage = 1) {
+  return {
+    stage,
+    templateId: cleanConfigText(template.templateId || template.id || `stage_${stage}`),
+    title: cleanConfigText(template.title || `第 ${stage} 階段模板`),
+    category: cleanConfigText(template.category || '自動再行銷'),
+    message: String(template.message || template.body || '').slice(0, 10000),
+    imageUrl: normalizePublicUrl(template.imageUrl || template.image_url || ''),
+    buttons: Array.isArray(template.buttons)
+      ? template.buttons.slice(0, 3).map(sanitizeRetargetingButton)
+      : [],
+  };
+}
+
+function sanitizeRetargetingCycleFlow(flow = {}, cycle = 1, legacyTemplates = []) {
+  const stages = Array.isArray(flow.stages) ? flow.stages : [];
+  return {
+    cycle,
+    enabled: cycle === 1 ? flow.enabled !== false : !!flow.enabled,
+    finalAction: ['cooldown', 'manual', 'stop'].includes(flow.finalAction) ? flow.finalAction : 'cooldown',
+    stages: [1, 2, 3].map((stageNumber) => {
+      const stage = stages.find((item) => Number(item?.stage) === stageNumber) || legacyTemplates[stageNumber - 1] || {};
+      const sanitized = sanitizeRetargetingStageTemplate(stage, stageNumber);
+      return {
+        ...sanitized,
+        cycle,
+        enabled: stageNumber === 1
+          ? (cycle === 1 ? flow.enabled !== false : !!flow.enabled)
+          : !!stage.enabled,
+      };
+    }),
+  };
+}
+
+function buildRetargetingCycleFlows(config = {}, legacyTemplates = []) {
+  const rawFlows = Array.isArray(config.cycleFlows) ? config.cycleFlows.slice(0, 3) : [];
+  if (rawFlows.length > 0) {
+    return [1, 2, 3].map((cycle) => sanitizeRetargetingCycleFlow(rawFlows[cycle - 1] || { cycle, enabled: cycle === 1 }, cycle));
+  }
+  return [sanitizeRetargetingCycleFlow({
+    cycle: 1,
+    enabled: true,
+    finalAction: config.thirdStageAction || 'cooldown',
+    stages: legacyTemplates.map((template, index) => ({
+      ...template,
+      enabled: index === 0
+        ? true
+        : index === 1
+          ? config.stage2Enabled !== false
+          : config.stage2Enabled !== false && !!config.stage3Enabled,
+    })),
+  }, 1, legacyTemplates)];
+}
+
+function getActiveRetargetingStageTemplates(config = {}) {
+  if (Array.isArray(config.cycleFlows) && config.cycleFlows.length > 0) {
+    if (config.repeatStrategy !== 'staged') {
+      return (config.cycleFlows[0]?.stages || []).filter((stage) => Number(stage.stage) === 1 && stage.enabled !== false);
+    }
+    return config.cycleFlows
+      .filter((flow) => flow.enabled !== false)
+      .flatMap((flow) => (flow.stages || []).filter((stage) => stage.enabled !== false && stage.message));
+  }
+  const templates = Array.isArray(config.stageTemplates) ? config.stageTemplates : [];
+  if (config.repeatStrategy !== 'staged') return templates.slice(0, 1);
+  const active = templates.slice(0, 1);
+  if (config.stage2Enabled !== false && templates[1]) active.push(templates[1]);
+  if (config.stage2Enabled !== false && config.stage3Enabled && templates[2]) active.push(templates[2]);
+  return active;
+}
+
+function validateRetargetingFormalReadiness(config = {}) {
+  if (!config?.enabled) return null;
+  for (const template of getActiveRetargetingStageTemplates(config)) {
+    if (!template?.message?.trim()) return `第 ${template.stage || '?'} 階段模板缺少訊息文字`;
+    if (template.imageUrl && !isPublicHttpsUrl(template.imageUrl)) {
+      return `「${template.title || '未命名模板'}」圖片必須是公開 HTTPS 網址`;
+    }
+    const textFields = [
+      template.title,
+      template.category,
+      template.message,
+      ...(template.buttons || []).flatMap((button) => [
+        button.label,
+        button.messageText,
+        button.replyText,
+      ]),
+    ];
+    if (textFields.some(textHasTestMarker)) {
+      return `「${template.title || '未命名模板'}」仍含測試字樣，不能開放正式會員`;
+    }
+    for (const button of template.buttons || []) {
+      if (!button?.label && !button?.url && !button?.replyText && !button?.messageText) continue;
+      if (button.actionType === 'message') {
+        if (!button.replyText?.trim()) return `「${template.title || '未命名模板'}」的文字回覆按鈕缺少 BOT 回覆文字`;
+        continue;
+      }
+      if (!button.url || button.url.includes('example.com') || !isPublicHttpsUrl(button.url)) {
+        return `「${template.title || '未命名模板'}」有未完成或非 HTTPS 的按鈕連結`;
+      }
+    }
+  }
+  return null;
+}
+
 function sanitizeRetargetingAudienceConditions(raw = {}, fallbackConfig = {}) {
   const conditions = raw && typeof raw === 'object' ? raw : {};
+  const presetId = cleanConfigText(conditions.presetId || fallbackConfig.ruleId || 'dropoff');
+  const defaults = defaultRetargetingEnabledConditions(presetId);
+  const incomingEnabled = conditions.enabledConditions && typeof conditions.enabledConditions === 'object'
+    ? conditions.enabledConditions
+    : {};
   return {
-    presetId: cleanConfigText(conditions.presetId || fallbackConfig.ruleId || 'dropoff'),
+    presetId,
     ruleTitle: cleanConfigText(conditions.ruleTitle || fallbackConfig.ruleTitle || '互動下降'),
+    enabledConditions: Object.fromEntries(
+      Object.keys(defaults).map((key) => [key, incomingEnabled[key] ?? defaults[key]])
+    ),
     clickedMin: clampConfigNumber(conditions.clickedMin, 2, 0),
     inactiveSteps: clampConfigNumber(conditions.inactiveSteps || fallbackConfig.missedSteps, 2, 1),
     recentDays: clampConfigNumber(conditions.recentDays, 14, 1),
@@ -1207,8 +1470,12 @@ async function handleSaveRetargetingAdminConfig({ config }) {
   }
 
   const audienceConditions = sanitizeRetargetingAudienceConditions(config.audienceConditions, config);
+  const rawStageTemplates = Array.isArray(config.stageTemplates) ? config.stageTemplates.slice(0, 3) : [];
+  const stageTemplates = rawStageTemplates.map((template, index) => sanitizeRetargetingStageTemplate(template, index + 1));
+  const cycleFlows = buildRetargetingCycleFlows(config, stageTemplates);
   const cleanConfig = {
     activityId: cleanConfigText(config.activityId || `retargeting_${Date.now()}`),
+    activityName: cleanConfigText(config.activityName || config.ruleTitle || '自動再行銷活動'),
     audienceId: cleanConfigText(config.audienceId || config.ruleId || 'dropoff'),
     firstTemplateId: cleanConfigText(config.firstTemplateId || config.stageTemplates?.[0]?.templateId || ''),
     enabled: !!config.enabled,
@@ -1228,20 +1495,37 @@ async function handleSaveRetargetingAdminConfig({ config }) {
     observeDays: Math.max(1, Number(config.observeDays || 1)),
     engagementCriteria: String(config.engagementCriteria || 'any_click_or_reply'),
     repeatStrategy: String(config.repeatStrategy || 'staged'),
+    stage2Enabled: cycleFlows[0]?.stages?.[1]?.enabled === true,
+    stage3Enabled: cycleFlows[0]?.stages?.[2]?.enabled === true,
     thirdStageAction: String(config.thirdStageAction || 'cooldown'),
-    stageTemplates: Array.isArray(config.stageTemplates) ? config.stageTemplates.slice(0, 2) : [],
+    stageTemplates: cycleFlows[0]?.stages || stageTemplates,
+    cycleFlows,
     updatedAt: new Date().toISOString(),
   };
 
-  if (!cleanConfig.stageTemplates[0]?.message) {
-    return NextResponse.json({ error: '第 1 階段模板缺少訊息文字' }, { status: 400 });
+  const enabledTemplates = getActiveRetargetingStageTemplates(cleanConfig);
+  if (!enabledTemplates.some((template) => Number(template.cycle || 1) === 1 && Number(template.stage || 1) === 1 && template.message)) {
+    return NextResponse.json({ error: '第 1 次符合的第 1 階段模板缺少訊息文字' }, { status: 400 });
   }
-  if (cleanConfig.repeatStrategy === 'staged' && !cleanConfig.stageTemplates[1]?.message) {
-    return NextResponse.json({ error: '階段式流程必須選擇第 2 次符合時要發送的模板' }, { status: 400 });
+  for (const template of enabledTemplates) {
+    if (!template?.message?.trim()) {
+      return NextResponse.json({ error: `第 ${template.cycle || 1} 次符合 / 第 ${template.stage || '?'} 階段模板缺少訊息文字` }, { status: 400 });
+    }
   }
-  const templateError = validateRetargetingTemplates(cleanConfig.stageTemplates);
+  const templateError = validateRetargetingTemplates(enabledTemplates);
   if (templateError) {
     return NextResponse.json({ error: templateError }, { status: 400 });
+  }
+  const { data: testModeSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'drip_test_mode')
+    .maybeSingle();
+  if (testModeSetting?.value !== 'true') {
+    const readinessError = validateRetargetingFormalReadiness(cleanConfig);
+    if (readinessError) {
+      return NextResponse.json({ error: `正式會員啟用前請先修正：${readinessError}` }, { status: 400 });
+    }
   }
 
   const { error } = await supabase
@@ -1290,19 +1574,13 @@ async function handleSaveRetargetingLibrary({ libraryType, items }) {
     }
 
     const buttons = Array.isArray(item.buttons)
-      ? item.buttons.slice(0, 3).map((button) => ({
-          label: cleanConfigText(button.label || ''),
-          actionType: button.actionType === 'message' ? 'message' : 'url',
-          url: String(button.url || '').slice(0, 1000),
-          messageText: cleanConfigText(button.messageText || button.label || ''),
-          replyText: String(button.replyText || '').slice(0, 2000),
-        }))
+      ? item.buttons.slice(0, 3).map(sanitizeRetargetingButton)
       : [];
     return {
       id: sanitizeRetargetingLibraryId(item.id, 'template'),
       title: cleanConfigText(item.title || '自訂模板'),
       category: cleanConfigText(item.category || '自訂'),
-      image_url: String(item.image_url || '').slice(0, 2000),
+      image_url: normalizePublicUrl(item.image_url || '').slice(0, 2000),
       body: String(item.body || '').slice(0, 10000),
       buttons,
       active: item.active !== false,
@@ -1315,6 +1593,7 @@ async function handleSaveRetargetingLibrary({ libraryType, items }) {
     const templateError = validateRetargetingTemplates(cleanItems.map((item, index) => ({
       stage: index + 1,
       message: item.body,
+      imageUrl: item.image_url,
       buttons: item.buttons,
     })));
     if (templateError) {
@@ -1335,36 +1614,42 @@ async function handleSaveRetargetingLibrary({ libraryType, items }) {
 
 function validateRetargetingTemplates(stageTemplates) {
   for (const template of stageTemplates || []) {
+    const label = template.cycle
+      ? `第 ${template.cycle} 次符合 / 第 ${template.stage || '?'} 階段`
+      : `第 ${template.stage || '?'} 階段`;
     if (!template?.message) continue;
     if (template.message.includes('待填入')) {
-      return `第 ${template.stage || '?'} 階段模板仍含待填入文字`;
+      return `${label}模板仍含待填入文字`;
+    }
+    if (template.imageUrl && !isPublicHttpsUrl(template.imageUrl)) {
+      return `${label}模板圖片必須是公開 HTTPS 網址`;
     }
     for (const button of template.buttons || []) {
       if (!button?.label && !button?.url && !button?.replyText && !button?.messageText) continue;
       const isMessageButton = button.actionType === 'message' || (!button.url && (button.replyText || button.messageText));
       if (!button?.label) {
-        return `第 ${template.stage || '?'} 階段模板有按鈕缺少文字`;
+        return `${label}模板有按鈕缺少文字`;
       }
       if (isMessageButton) {
         if (!button.replyText) {
-          return `第 ${template.stage || '?'} 階段模板的文字回覆按鈕缺少 BOT 回覆內容`;
+          return `${label}模板的文字回覆按鈕缺少 BOT 回覆內容`;
         }
         continue;
       }
       if (!button?.url) {
-        return `第 ${template.stage || '?'} 階段模板有連結按鈕缺少網址`;
+        return `${label}模板有連結按鈕缺少網址`;
       }
       let parsed;
       try {
         parsed = new URL(button.url);
       } catch {
-        return `第 ${template.stage || '?'} 階段模板按鈕網址格式不正確`;
+        return `${label}模板按鈕網址格式不正確`;
       }
       if (!['http:', 'https:'].includes(parsed.protocol)) {
-        return `第 ${template.stage || '?'} 階段模板按鈕網址必須是 http/https`;
+        return `${label}模板按鈕網址必須是 http/https`;
       }
       if (parsed.hostname === 'example.com' || parsed.hostname.endsWith('.example.com')) {
-        return `第 ${template.stage || '?'} 階段模板仍使用 example.com 測試網址`;
+        return `${label}模板仍使用 example.com 測試網址`;
       }
     }
   }

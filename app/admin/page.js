@@ -12,6 +12,15 @@ const SEGMENT_LABELS = {
   silent: { label: '沉默', icon: '🧊', color: '#94a3b8' },
   admin: { label: '管理者', icon: '👨‍💼', color: '#8b5cf6' },
 };
+const BOT_BASE_URL = 'https://official-yihugh-line-bot.vercel.app';
+
+function normalizeAdminPublicUrl(url) {
+  const value = String(url || '').trim();
+  if (!value) return '';
+  if (/^https:\/\//i.test(value)) return value;
+  if (/^\/(?!\/)/.test(value)) return `${BOT_BASE_URL}${value}`;
+  return value;
+}
 
 // 圖片上傳元件
 function ImageUpload({ imageUrl, onChange }) {
@@ -4113,7 +4122,7 @@ const RETARGETING_TEMPLATES = [
     id: 'dropoff_soft',
     title: '互動下降喚醒',
     category: '冷卻喚醒',
-    image_url: '/images/landing/land002.png',
+    image_url: `${BOT_BASE_URL}/images/landing/land002.png`,
     body: '前面你有看過一些內容，我猜你可能是看到某一段開始覺得「好像有點難」。\n\n如果你願意，我可以用比較生活化的方式，幫你整理一個比較好開始的方向。',
     buttons: [
       { label: '回來看下一篇', url: 'https://example.com/next-article' },
@@ -4130,7 +4139,7 @@ const RETARGETING_TEMPLATES = [
     id: 'warm_story',
     title: '學員故事補強',
     category: '暖受眾教育',
-    image_url: '/images/landing/land006.png',
+    image_url: `${BOT_BASE_URL}/images/landing/land006.png`,
     body: '你前面看過幾篇內容，代表這件事可能跟你現在的狀態有點關係。\n\n我想補一個更像真實生活的案例給你，不是很完美的人，而是很忙、也卡過的人怎麼開始。',
     buttons: [
       { label: '看學員故事', url: 'https://example.com/story' },
@@ -4142,7 +4151,7 @@ const RETARGETING_TEMPLATES = [
     id: 'apply_faq',
     title: '報名頁未送單 FAQ',
     category: '高意願解惑',
-    image_url: '/images/landing/land014.png',
+    image_url: `${BOT_BASE_URL}/images/landing/land014.png`,
     body: '你前面有點進報名頁，可能還有一些地方想確認。\n\n如果你是在想費用、時間、飲食或自己做不做得到，可以直接回我，我會請 fifi 幫你看比較適合怎麼安排。',
     buttons: [
       {
@@ -4159,7 +4168,7 @@ const RETARGETING_TEMPLATES = [
     id: 'payment_reminder',
     title: '送單未付款提醒',
     category: '付款提醒',
-    image_url: '/images/landing/land015.webp',
+    image_url: `${BOT_BASE_URL}/images/landing/land015.webp`,
     body: '有看到你的報名資料了，這邊幫你保留名額中。\n\n如果你已經匯款，可以直接回傳後五碼；如果付款方式有不清楚，也可以直接回我。',
     buttons: [
       { label: '查看匯款資訊', url: 'https://example.com/payment' },
@@ -4205,7 +4214,31 @@ function createRetargetingLibraryId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function defaultRetargetingEnabledConditions(ruleId = 'dropoff') {
+  const base = {
+    receivedMin: false,
+    clickedMin: false,
+    inactiveSteps: false,
+    recentDays: false,
+    joinedDays: false,
+    applyDelayDays: false,
+    applyClicks: false,
+    paymentDelayDays: false,
+    customArticleType: false,
+    excludeApplyClickers: false,
+    customExcludeSubmitted: false,
+    customExcludePaid: false,
+  };
+  if (ruleId === 'dropoff') return { ...base, receivedMin: true, clickedMin: true, inactiveSteps: true };
+  if (ruleId === 'warm') return { ...base, clickedMin: true, recentDays: true, excludeApplyClickers: true, customArticleType: true };
+  if (ruleId === 'apply_no_submit') return { ...base, applyClicks: true, applyDelayDays: true, customExcludeSubmitted: true, customExcludePaid: true };
+  if (ruleId === 'pending_payment') return { ...base, paymentDelayDays: true };
+  if (ruleId === 'cold') return { ...base, receivedMin: true, joinedDays: true, clickedMin: true };
+  return { ...base, clickedMin: true, customExcludeSubmitted: true, customExcludePaid: true, customArticleType: true };
+}
+
 function retargetingAudienceFromPreset(preset) {
+  const enabledConditions = defaultRetargetingEnabledConditions(preset.id);
   return {
     id: preset.id,
     title: preset.title,
@@ -4231,6 +4264,7 @@ function retargetingAudienceFromPreset(preset) {
       customMinimumClicks: 1,
       customExcludeSubmitted: true,
       customExcludePaid: true,
+      enabledConditions,
     },
   };
 }
@@ -4244,48 +4278,105 @@ function retargetingTemplateFromBuiltIn(template) {
   };
 }
 
+function defaultRetargetingCycleFlows() {
+  const first = RETARGETING_TEMPLATES[0]?.id || '';
+  const second = RETARGETING_TEMPLATES[1]?.id || first;
+  const third = RETARGETING_TEMPLATES[2]?.id || second;
+  return [1, 2, 3].map((cycle) => ({
+    cycle,
+    enabled: cycle === 1,
+    stage1TemplateId: cycle === 1 ? first : second,
+    stage2Enabled: false,
+    stage2TemplateId: cycle === 1 ? second : first,
+    stage3Enabled: false,
+    stage3TemplateId: third,
+    finalAction: 'cooldown',
+  }));
+}
+
+function cycleFlowFromConfig(config = {}) {
+  const rawFlows = Array.isArray(config.cycleFlows) ? config.cycleFlows : [];
+  if (rawFlows.length > 0) {
+    const legacy = defaultRetargetingCycleFlows();
+    return [1, 2, 3].map((cycle) => {
+      const flow = rawFlows.find((item) => Number(item?.cycle) === cycle) || {};
+      const stages = Array.isArray(flow.stages) ? flow.stages : [];
+      const stage = (stageNumber) => stages.find((item) => Number(item?.stage) === stageNumber) || {};
+      return {
+        ...legacy[cycle - 1],
+        cycle,
+        enabled: cycle === 1 ? flow.enabled !== false : !!flow.enabled,
+        stage1TemplateId: stage(1).templateId || legacy[cycle - 1].stage1TemplateId,
+        stage2Enabled: !!stage(2).enabled,
+        stage2TemplateId: stage(2).templateId || legacy[cycle - 1].stage2TemplateId,
+        stage3Enabled: !!stage(3).enabled,
+        stage3TemplateId: stage(3).templateId || legacy[cycle - 1].stage3TemplateId,
+        finalAction: flow.finalAction || legacy[cycle - 1].finalAction,
+      };
+    });
+  }
+  const legacy = defaultRetargetingCycleFlows();
+  return legacy.map((flow, index) => ({
+    ...flow,
+    stage1TemplateId: config.stageTemplates?.[index === 0 ? 0 : 1]?.templateId || flow.stage1TemplateId,
+    stage2Enabled: index === 0 ? config.stage2Enabled !== false && !!config.stageTemplates?.[1]?.templateId : false,
+    stage2TemplateId: config.stageTemplates?.[1]?.templateId || flow.stage2TemplateId,
+    stage3Enabled: index === 0 ? !!config.stage3Enabled && !!config.stageTemplates?.[2]?.templateId : false,
+    stage3TemplateId: config.stageTemplates?.[2]?.templateId || flow.stage3TemplateId,
+    finalAction: config.thirdStageAction || flow.finalAction,
+  }));
+}
+
 function buildRetargetingAudienceRuleLabels(audience = {}) {
   const conditions = audience.audienceConditions || {};
   const ruleId = audience.ruleId || conditions.presetId || 'custom';
+  const enabled = {
+    ...defaultRetargetingEnabledConditions(ruleId),
+    ...(conditions.enabledConditions || {}),
+  };
   if (ruleId === 'dropoff') {
     return [
-      `已收到至少 ${conditions.receivedMin ?? 3} 篇排程文章`,
-      `至少點擊 ${conditions.clickedMin ?? 2} 篇`,
-      `最近連續 ${conditions.inactiveSteps ?? 2} 篇沒有點擊`,
-    ];
+      enabled.receivedMin && `已收到至少 ${conditions.receivedMin ?? 3} 篇排程文章`,
+      enabled.clickedMin && `至少點擊 ${conditions.clickedMin ?? 2} 篇`,
+      enabled.inactiveSteps && `最近連續 ${conditions.inactiveSteps ?? 2} 篇沒有點擊`,
+    ].filter(Boolean);
   }
   if (ruleId === 'warm') {
     return [
-      `最近 ${conditions.recentDays ?? 14} 天有互動`,
-      `至少點擊 ${conditions.clickedMin ?? 1} 篇`,
-      conditions.customArticleType && conditions.customArticleType !== 'any'
-        ? `限定文章類型：${DRIP_ARTICLE_TYPE_LABELS[conditions.customArticleType] || conditions.customArticleType}`
-        : '不限文章類型',
-    ];
+      enabled.recentDays && `最近 ${conditions.recentDays ?? 14} 天有互動`,
+      enabled.clickedMin && `至少點擊 ${conditions.clickedMin ?? 1} 篇`,
+      enabled.customArticleType
+        ? (conditions.customArticleType && conditions.customArticleType !== 'any'
+          ? `限定文章類型：${DRIP_ARTICLE_TYPE_LABELS[conditions.customArticleType] || conditions.customArticleType}`
+          : '不限文章類型')
+        : null,
+      enabled.excludeApplyClickers && '排除已點報名頁',
+    ].filter(Boolean);
   }
   if (ruleId === 'apply_no_submit') {
     return [
-      `至少點報名頁 ${conditions.applyClicks ?? 1} 次`,
-      `點報名頁後等待 ${conditions.applyDelayDays ?? 3} 天`,
-      '尚未送出報名',
-    ];
+      enabled.applyClicks && `至少點報名頁 ${conditions.applyClicks ?? 1} 次`,
+      enabled.applyDelayDays && `點報名頁後等待 ${conditions.applyDelayDays ?? 3} 天`,
+      enabled.customExcludeSubmitted && '尚未送出報名',
+      enabled.customExcludePaid && '尚未付款',
+    ].filter(Boolean);
   }
   if (ruleId === 'pending_payment') {
-    return [`送出報名後等待 ${conditions.paymentDelayDays ?? 2} 天`, '尚未付款'];
+    return [enabled.paymentDelayDays && `送出報名後等待 ${conditions.paymentDelayDays ?? 2} 天`, '尚未付款'].filter(Boolean);
   }
   if (ruleId === 'cold') {
     return [
-      `已收到至少 ${conditions.receivedMin ?? 3} 篇排程文章`,
-      `加入至少 ${conditions.joinedDays ?? 30} 天`,
-      '排程文章點擊為 0',
-    ];
+      enabled.receivedMin && `已收到至少 ${conditions.receivedMin ?? 3} 篇排程文章`,
+      enabled.joinedDays && `加入至少 ${conditions.joinedDays ?? 30} 天`,
+      enabled.clickedMin && '排程文章點擊為 0',
+    ].filter(Boolean);
   }
   return [
-    `限定文章類型：${DRIP_ARTICLE_TYPE_LABELS[conditions.customArticleType] || '不限類型'}`,
-    `至少點擊 ${conditions.customMinimumClicks ?? conditions.clickedMin ?? 1} 篇`,
-    conditions.customExcludeSubmitted === false ? '可包含已送單' : '排除已送單',
-    conditions.customExcludePaid === false ? '可包含已付款' : '排除已付款',
-  ];
+    enabled.customArticleType && `限定文章類型：${DRIP_ARTICLE_TYPE_LABELS[conditions.customArticleType] || '不限類型'}`,
+    enabled.clickedMin && `至少點擊 ${conditions.customMinimumClicks ?? conditions.clickedMin ?? 1} 篇`,
+    enabled.customExcludeSubmitted && (conditions.customExcludeSubmitted === false ? '可包含已送單' : '排除已送單'),
+    enabled.customExcludePaid && (conditions.customExcludePaid === false ? '可包含已付款' : '排除已付款'),
+  ].filter(Boolean);
 }
 
 function RetargetingNumberField({ label, value, onChange, min = 0 }) {
@@ -4301,6 +4392,73 @@ function RetargetingNumberField({ label, value, onChange, min = 0 }) {
       />
     </label>
   );
+}
+
+function RetargetingConditionNumberField({ label, conditionKey, value, onChange, enabled, onToggle, min = 0 }) {
+  return (
+    <div style={{ ...styles.retargetingConditionBox, opacity: enabled ? 1 : 0.62 }}>
+      <label style={styles.retargetingConditionToggle}>
+        <input type="checkbox" checked={!!enabled} onChange={(e) => onToggle(conditionKey, e.target.checked)} />
+        <span>{label}</span>
+      </label>
+      <input
+        type="number"
+        min={min}
+        disabled={!enabled}
+        value={value}
+        onChange={(e) => onChange(conditionKey, Math.max(min, Number(e.target.value || min)))}
+        style={{ ...styles.input, marginBottom: 0 }}
+      />
+    </div>
+  );
+}
+
+function RetargetingConditionSwitch({ label, conditionKey, enabled, onToggle, checked, onCheckedChange }) {
+  return (
+    <div style={{ ...styles.retargetingConditionBox, opacity: enabled ? 1 : 0.62 }}>
+      <label style={styles.retargetingConditionToggle}>
+        <input type="checkbox" checked={!!enabled} onChange={(e) => onToggle(conditionKey, e.target.checked)} />
+        <span>{label}</span>
+      </label>
+      <label style={{ ...styles.retargetingSwitchRow, marginBottom: 0, background: '#fff', borderColor: '#e5e7eb' }}>
+        <input type="checkbox" disabled={!enabled} checked={!!checked} onChange={(e) => onCheckedChange(conditionKey, e.target.checked)} />
+        <span><strong>{checked ? '已套用' : '未套用'}</strong><small>勾選左側條件後才會進入實際判斷。</small></span>
+      </label>
+    </div>
+  );
+}
+
+function getRetargetingConditionEnabled(audience, key) {
+  const ruleId = audience?.ruleId || audience?.audienceConditions?.presetId || 'dropoff';
+  const defaults = defaultRetargetingEnabledConditions(ruleId);
+  const enabled = audience?.audienceConditions?.enabledConditions || {};
+  return enabled[key] ?? defaults[key] ?? false;
+}
+
+function hasRetargetingTestMarker(value) {
+  return /測試|test/i.test(String(value || ''));
+}
+
+function getRetargetingTemplateWarnings(template, label) {
+  const warnings = [];
+  const imageUrl = normalizeAdminPublicUrl(template?.image_url || template?.imageUrl || '');
+  if (imageUrl && !/^https:\/\//i.test(imageUrl)) warnings.push(`${label}圖片不是公開 HTTPS 網址`);
+  if (hasRetargetingTestMarker(template?.title) || hasRetargetingTestMarker(template?.category) || hasRetargetingTestMarker(template?.body)) {
+    warnings.push(`${label}仍含測試字樣`);
+  }
+  for (const button of (template?.buttons || []).filter((btn) => btn?.label || btn?.url || btn?.replyText || btn?.messageText)) {
+    if (hasRetargetingTestMarker(button.label) || hasRetargetingTestMarker(button.replyText) || hasRetargetingTestMarker(button.messageText)) {
+      warnings.push(`${label}按鈕仍含測試字樣`);
+    }
+    if ((button.actionType || 'url') === 'message') {
+      if (!String(button.replyText || '').trim()) warnings.push(`${label}文字回覆按鈕缺少 BOT 回覆文字`);
+      continue;
+    }
+    if (!button.url || button.url.includes('example.com') || !/^https:\/\//i.test(button.url)) {
+      warnings.push(`${label}有未完成或非 HTTPS 的連結按鈕`);
+    }
+  }
+  return warnings;
 }
 
 function formatRetargetingTime(value) {
@@ -4325,7 +4483,8 @@ function AudienceRetargetingPrototype() {
   const [templateLibrary, setTemplateLibrary] = useState([]);
   const [audienceDraft, setAudienceDraft] = useState(() => retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]));
   const [templateDraft, setTemplateDraft] = useState(() => retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0]));
-  const [secondStageTemplateId, setSecondStageTemplateId] = useState(RETARGETING_TEMPLATES[1]?.id || RETARGETING_TEMPLATES[0].id);
+  const [selectedAudienceId, setSelectedAudienceId] = useState(AUDIENCE_PRESETS[0].id);
+  const [cycleFlows, setCycleFlows] = useState(() => defaultRetargetingCycleFlows());
   const [checkDelayDays, setCheckDelayDays] = useState(1);
   const [sendMode, setSendMode] = useState('scheduled');
   const [sendDelayDays, setSendDelayDays] = useState(0);
@@ -4337,6 +4496,7 @@ function AudienceRetargetingPrototype() {
   const [enabled, setEnabled] = useState(false);
   const [observeOnly, setObserveOnly] = useState(false);
   const [activityId, setActivityId] = useState(() => createRetargetingLibraryId('activity'));
+  const [activityName, setActivityName] = useState('互動下降喚醒活動');
   const [editingActivityId, setEditingActivityId] = useState('new');
   const [flowChecked, setFlowChecked] = useState(false);
   const [saving, setSaving] = useState('');
@@ -4350,8 +4510,19 @@ function AudienceRetargetingPrototype() {
     ...builtInTemplates,
     ...templateLibrary.filter((item) => item.active !== false),
   ];
-  const firstTemplate = activeTemplates.find((item) => item.id === templateDraft.id) || templateDraft;
-  const secondTemplate = activeTemplates.find((item) => item.id === secondStageTemplateId) || firstTemplate;
+  const audienceOptions = activeAudiences.some((item) => item.id === audienceDraft.id)
+    ? activeAudiences
+    : [audienceDraft, ...activeAudiences];
+  const templateOptions = activeTemplates.some((item) => item.id === templateDraft.id)
+    ? activeTemplates
+    : [templateDraft, ...activeTemplates];
+  const selectedAudience = activeAudiences.find((item) => item.id === selectedAudienceId) || audienceDraft;
+  const findTemplateById = (id, fallbackIndex = 0) => (
+    activeTemplates.find((item) => item.id === id)
+    || (templateDraft.id === id ? templateDraft : null)
+    || activeTemplates[fallbackIndex]
+    || retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0])
+  );
   const formLocked = !!dashboard?.config && !editingActivityId;
 
   const loadConfigToForm = useCallback((config, libraries = {}) => {
@@ -4389,12 +4560,19 @@ function AudienceRetargetingPrototype() {
       : libraryTemplate || retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0]);
 
     setActivityId(config.activityId || createRetargetingLibraryId('activity'));
+    setActivityName(config.activityName || config.ruleTitle || '自動再行銷活動');
+    setSelectedAudienceId(config.audienceId || audience.id || config.ruleId || 'dropoff');
+    const audienceRuleId = audience.ruleId || config.ruleId || 'dropoff';
     setAudienceDraft({
       ...audience,
-      audienceConditions: { ...retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]).audienceConditions, ...(config.audienceConditions || audience.audienceConditions) },
+      ruleId: audienceRuleId,
+      audienceConditions: {
+        ...retargetingAudienceFromPreset(AUDIENCE_PRESETS.find((preset) => preset.id === audienceRuleId) || AUDIENCE_PRESETS[0]).audienceConditions,
+        ...(config.audienceConditions || audience.audienceConditions),
+      },
     });
     setTemplateDraft({ ...template, buttons: createRetargetingDraft(template).buttons });
-    setSecondStageTemplateId(config.stageTemplates?.[1]?.templateId || templateOptions[1]?.id || template.id);
+    setCycleFlows(cycleFlowFromConfig(config));
     setCheckDelayDays(Number(config.checkDelayDays || 0));
     setSendMode(config.sendMode === 'instant' ? 'instant' : 'scheduled');
     setSendDelayDays(Number(config.sendDelayDays || 0));
@@ -4436,13 +4614,48 @@ function AudienceRetargetingPrototype() {
     setFlowChecked(false);
   };
 
+  const toggleAudienceCondition = (key, checked) => {
+    setAudienceDraft((draft) => {
+      const ruleId = draft.ruleId || draft.audienceConditions?.presetId || 'dropoff';
+      const defaults = defaultRetargetingEnabledConditions(ruleId);
+      return {
+        ...draft,
+        audienceConditions: {
+          ...(draft.audienceConditions || {}),
+          enabledConditions: {
+            ...defaults,
+            ...(draft.audienceConditions?.enabledConditions || {}),
+            [key]: checked,
+          },
+        },
+      };
+    });
+    setFlowChecked(false);
+  };
+
+  const setAudienceRuleId = (ruleId) => {
+    setAudienceDraft((draft) => ({
+      ...draft,
+      ruleId,
+      audienceConditions: {
+        ...(draft.audienceConditions || {}),
+        presetId: ruleId,
+        ruleTitle: draft.title || (AUDIENCE_PRESETS.find((preset) => preset.id === ruleId)?.title || '自訂受眾'),
+        enabledConditions: defaultRetargetingEnabledConditions(ruleId),
+      },
+    }));
+    setFlowChecked(false);
+  };
+
   const selectAudience = (id) => {
     const audience = activeAudiences.find((item) => item.id === id);
     if (!audience) return;
+    const ruleId = audience.ruleId || audience.audienceConditions?.presetId || 'dropoff';
     setAudienceDraft({
       ...audience,
+      ruleId,
       audienceConditions: {
-        ...retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]).audienceConditions,
+        ...retargetingAudienceFromPreset(AUDIENCE_PRESETS.find((preset) => preset.id === ruleId) || AUDIENCE_PRESETS[0]).audienceConditions,
         ...(audience.audienceConditions || {}),
       },
     });
@@ -4464,6 +4677,15 @@ function AudienceRetargetingPrototype() {
       if (field === 'actionType' && value === 'message') buttons[index].messageText = buttons[index].label || '';
       return { ...draft, buttons };
     });
+    setFlowChecked(false);
+  };
+
+  const updateCycleFlow = (cycle, updates) => {
+    setCycleFlows((flows) => flows.map((flow) => (
+      Number(flow.cycle) === Number(cycle)
+        ? { ...flow, ...updates, cycle }
+        : flow
+    )));
     setFlowChecked(false);
   };
 
@@ -4497,7 +4719,10 @@ function AudienceRetargetingPrototype() {
     };
     const items = [...audienceLibrary.filter((row) => row.id !== id), item];
     const saved = await saveLibrary('audience', items, '受眾已獨立保存');
-    if (saved) setAudienceDraft(saved.find((row) => row.id === id) || item);
+    if (saved) {
+      setAudienceDraft(saved.find((row) => row.id === id) || item);
+      setSelectedAudienceId(id);
+    }
   };
 
   const saveTemplate = async () => {
@@ -4509,6 +4734,7 @@ function AudienceRetargetingPrototype() {
       id,
       builtIn: undefined,
       active: true,
+      image_url: normalizeAdminPublicUrl(templateDraft.image_url || ''),
       buttons: (templateDraft.buttons || []).filter(isUsableRetargetingButton),
       createdAt: templateDraft.createdAt || now,
       updatedAt: now,
@@ -4550,38 +4776,62 @@ function AudienceRetargetingPrototype() {
     setFlowChecked(false);
   };
 
-  const buildConfig = () => ({
-    activityId,
-    audienceId: audienceDraft.id,
-    firstTemplateId: templateDraft.id,
-    enabled,
-    observeOnly,
-    ruleId: audienceDraft.ruleId || audienceDraft.audienceConditions?.presetId || 'custom',
-    ruleTitle: audienceDraft.title,
-    audienceRules: buildRetargetingAudienceRuleLabels(audienceDraft),
-    audienceConditions: {
-      ...(audienceDraft.audienceConditions || {}),
-      presetId: audienceDraft.ruleId || 'custom',
-      ruleTitle: audienceDraft.title,
-    },
-    checkDelayDays,
-    sendMode,
-    sendDelayDays,
-    sendAtTime,
-    observeDays,
-    engagementCriteria,
-    repeatStrategy,
-    thirdStageAction,
-    stageTemplates: [templateDraft, secondTemplate].map((template, index) => ({
-      stage: index + 1,
-      templateId: template.id,
-      title: template.title,
-      category: template.category,
-      message: template.body,
-      imageUrl: template.image_url || '',
-      buttons: (template.buttons || []).filter(isUsableRetargetingButton).map(normalizeRetargetingButton),
-    })),
-  });
+  const buildConfig = () => {
+    const stageFromTemplate = (templateId, cycle, stage, enabled = true) => {
+      const template = findTemplateById(templateId, stage - 1);
+      return {
+        cycle,
+        stage,
+        enabled,
+        templateId: template.id,
+        title: template.title,
+        category: template.category,
+        message: template.body,
+        imageUrl: normalizeAdminPublicUrl(template.image_url || ''),
+        buttons: (template.buttons || []).filter(isUsableRetargetingButton).map(normalizeRetargetingButton),
+      };
+    };
+    const normalizedCycleFlows = cycleFlows.map((flow) => ({
+      cycle: flow.cycle,
+      enabled: flow.cycle === 1 ? true : !!flow.enabled,
+      finalAction: flow.finalAction || 'cooldown',
+      stages: [
+        stageFromTemplate(flow.stage1TemplateId, flow.cycle, 1, flow.cycle === 1 ? true : !!flow.enabled),
+        stageFromTemplate(flow.stage2TemplateId, flow.cycle, 2, !!flow.stage2Enabled),
+        stageFromTemplate(flow.stage3TemplateId, flow.cycle, 3, !!flow.stage3Enabled),
+      ],
+    }));
+    const firstCycleStages = normalizedCycleFlows[0]?.stages || [];
+
+    return {
+      activityId,
+      activityName,
+      audienceId: selectedAudience.id,
+      firstTemplateId: firstCycleStages[0]?.templateId || '',
+      enabled,
+      observeOnly,
+      ruleId: selectedAudience.ruleId || selectedAudience.audienceConditions?.presetId || 'custom',
+      ruleTitle: selectedAudience.title,
+      audienceRules: buildRetargetingAudienceRuleLabels(selectedAudience),
+      audienceConditions: {
+        ...(selectedAudience.audienceConditions || {}),
+        presetId: selectedAudience.ruleId || 'custom',
+        ruleTitle: selectedAudience.title,
+      },
+      checkDelayDays,
+      sendMode,
+      sendDelayDays,
+      sendAtTime,
+      observeDays,
+      engagementCriteria,
+      repeatStrategy,
+      stage2Enabled: !!normalizedCycleFlows[0]?.stages?.[1]?.enabled,
+      stage3Enabled: !!normalizedCycleFlows[0]?.stages?.[2]?.enabled,
+      thirdStageAction: normalizedCycleFlows[0]?.finalAction || thirdStageAction,
+      stageTemplates: firstCycleStages,
+      cycleFlows: normalizedCycleFlows,
+    };
+  };
 
   const applyConfig = async () => {
     setSaving('config');
@@ -4614,6 +4864,30 @@ function AudienceRetargetingPrototype() {
     await loadDashboard();
   };
 
+  const startNewActivity = () => {
+    const firstAudience = retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]);
+    const firstTemplateDraft = retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0]);
+    setActivityId(createRetargetingLibraryId('activity'));
+    setActivityName('新再行銷活動');
+    setAudienceDraft({ ...firstAudience, id: createRetargetingLibraryId('audience'), builtIn: false });
+    setTemplateDraft({ ...firstTemplateDraft, buttons: createRetargetingDraft(firstTemplateDraft).buttons });
+    setSelectedAudienceId(firstAudience.id);
+    setCycleFlows(defaultRetargetingCycleFlows());
+    setCheckDelayDays(1);
+    setSendMode('scheduled');
+    setSendDelayDays(0);
+    setSendAtTime('14:00');
+    setObserveDays(3);
+    setEngagementCriteria('any_click_or_reply');
+    setRepeatStrategy('staged');
+    setThirdStageAction('cooldown');
+    setEnabled(false);
+    setObserveOnly(false);
+    setEditingActivityId('new');
+    setFlowChecked(false);
+    setNotice({ ok: '已建立新的再行銷活動草稿；保存前不會影響目前活動。' });
+  };
+
   const config = dashboard?.config;
   const activityLogKey = config?.activityId || config?.ruleId;
   const activityContext = dashboard?.testMode ? 'admin' : 'member';
@@ -4626,13 +4900,66 @@ function AudienceRetargetingPrototype() {
   const sentCount = logs.reduce((sum, log) => sum + Number(log.sent_count || 0), 0);
   const targetCount = logs.reduce((sum, log) => sum + Number(log.target_count || 0), 0);
   const clickCount = logs.reduce((sum, log) => sum + Number(log.click_count || 0), 0);
+  const failedCount = logs.filter((log) => log.status === 'failed').length;
+  const metricFlows = config?.cycleFlows?.length ? config.cycleFlows : cycleFlows;
+  const cycleStageMetrics = metricFlows.filter((flow) => flow.enabled !== false).flatMap((flow) => [1, 2, 3]
+    .filter((stage) => stage === 1 || flow.stages?.[stage - 1]?.enabled || flow[`stage${stage}Enabled`])
+    .map((stage) => {
+      const cycle = Number(flow.cycle || 1);
+      const stageLogs = logs.filter((log) => String(log.template_id || '').includes(`_c${cycle}_s${stage}`));
+      return {
+        cycle,
+        stage,
+        sent: stageLogs.reduce((sum, log) => sum + Number(log.sent_count || 0), 0),
+        failed: stageLogs.filter((log) => log.status === 'failed').length,
+        observed: stageLogs.filter((log) => log.status === 'observed').length,
+        clicks: stageLogs.reduce((sum, log) => sum + Number(log.click_count || 0), 0),
+      };
+    }));
+  const configuredCycleTemplates = cycleFlows.flatMap((flow) => {
+    if (flow.enabled === false) return [];
+    if (repeatStrategy !== 'staged') {
+      return flow.cycle === 1
+        ? [{ label: '第 1 次符合 / 第 1 階段', template: findTemplateById(flow.stage1TemplateId, 0), enabled: true }]
+        : [];
+    }
+    return [
+      { label: `第 ${flow.cycle} 次符合 / 第 1 階段`, template: findTemplateById(flow.stage1TemplateId, 0), enabled: true },
+      { label: `第 ${flow.cycle} 次符合 / 第 2 階段`, template: findTemplateById(flow.stage2TemplateId, 1), enabled: !!flow.stage2Enabled },
+      { label: `第 ${flow.cycle} 次符合 / 第 3 階段`, template: findTemplateById(flow.stage3TemplateId, 2), enabled: !!flow.stage3Enabled },
+    ].filter((item) => item.enabled);
+  });
+  const legacyStageMetrics = [1, 2, 3].map((stage) => {
+    const stageLogs = logs.filter((log) => String(log.template_id || '').includes(`_s${stage}`) && !String(log.template_id || '').includes('_c'));
+    return {
+      stage,
+      sent: stageLogs.reduce((sum, log) => sum + Number(log.sent_count || 0), 0),
+      failed: stageLogs.filter((log) => log.status === 'failed').length,
+      observed: stageLogs.filter((log) => log.status === 'observed').length,
+      clicks: stageLogs.reduce((sum, log) => sum + Number(log.click_count || 0), 0),
+    };
+  });
+  const displayStageMetrics = cycleStageMetrics.length
+    ? cycleStageMetrics
+    : legacyStageMetrics.map((metric) => ({ ...metric, cycle: 1 }));
   const state = dashboard?.testMode ? dashboard?.adminState : dashboard?.memberState;
+  const stateStageCounts = state?.stageCounts || {};
+  const cycleStageCounts = state?.cycleStageCounts || {};
+  const readinessWarnings = enabled
+    ? configuredCycleTemplates.flatMap((item) => getRetargetingTemplateWarnings(item.template, item.label))
+    : [];
+  const hasRequiredFirstTemplate = !!configuredCycleTemplates.find((item) => (
+    item.label === '第 1 次符合 / 第 1 階段'
+    && item.template?.body?.trim()
+  ));
   const activityStatus = !config
     ? '尚未保存'
     : !config.enabled
       ? '已停用'
       : config.observeOnly
         ? '觀察模式'
+        : (state?.failed > 0 || failedCount > 0)
+          ? '發送失敗，等待修正後重試'
         : state?.observing > 0
           ? '再行銷訊息已送出，觀察回應中'
         : state?.pending > 0
@@ -4640,6 +4967,11 @@ function AudienceRetargetingPrototype() {
           : sentCount > 0
             ? '已發送'
             : '規則已保存，尚未觸發發送';
+  const activityStatusColor = !config?.enabled
+    ? '#64748b'
+    : (state?.failed > 0 || failedCount > 0)
+      ? '#991b1b'
+      : '#166534';
 
   return (
     <div>
@@ -4676,14 +5008,14 @@ function AudienceRetargetingPrototype() {
             </div>
             <div style={styles.retargetingFooter}>
               <select value={audienceDraft.id} onChange={(e) => selectAudience(e.target.value)} style={styles.input}>
-                {activeAudiences.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                {audienceOptions.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
               </select>
               <button type="button" style={styles.btnSecondary} onClick={newAudience}>＋ 新增受眾</button>
             </div>
             <label style={styles.fieldLabel}>受眾名稱</label>
             <input value={audienceDraft.title || ''} onChange={(e) => setAudienceDraft((draft) => ({ ...draft, title: e.target.value }))} style={styles.input} />
             <label style={styles.fieldLabel}>主要判斷類型</label>
-            <select value={audienceDraft.ruleId || 'dropoff'} onChange={(e) => setAudienceDraft((draft) => ({ ...draft, ruleId: e.target.value }))} style={styles.input}>
+            <select value={audienceDraft.ruleId || 'dropoff'} onChange={(e) => setAudienceRuleId(e.target.value)} style={styles.input}>
               <option value="dropoff">互動下降</option>
               <option value="warm">近期有互動</option>
               <option value="apply_no_submit">點報名頁但未送單</option>
@@ -4692,20 +5024,35 @@ function AudienceRetargetingPrototype() {
               <option value="custom">自訂點擊條件</option>
             </select>
             <div style={styles.retargetingLayout}>
-              <RetargetingNumberField label="已收到至少幾篇排程文章" min={0} value={audienceDraft.audienceConditions?.receivedMin ?? 3} onChange={(v) => updateAudienceCondition('receivedMin', v)} />
-              <RetargetingNumberField label="至少點擊幾篇" min={0} value={audienceDraft.audienceConditions?.clickedMin ?? 2} onChange={(v) => updateAudienceCondition('clickedMin', v)} />
-              <RetargetingNumberField label="最近連續幾篇沒有點擊" min={1} value={audienceDraft.audienceConditions?.inactiveSteps ?? 2} onChange={(v) => updateAudienceCondition('inactiveSteps', v)} />
-              <RetargetingNumberField label="最近幾天有互動" min={1} value={audienceDraft.audienceConditions?.recentDays ?? 14} onChange={(v) => updateAudienceCondition('recentDays', v)} />
-              <RetargetingNumberField label="加入至少幾天" min={0} value={audienceDraft.audienceConditions?.joinedDays ?? 30} onChange={(v) => updateAudienceCondition('joinedDays', v)} />
-              <RetargetingNumberField label="點報名頁後等待幾天" min={0} value={audienceDraft.audienceConditions?.applyDelayDays ?? 3} onChange={(v) => updateAudienceCondition('applyDelayDays', v)} />
-              <RetargetingNumberField label="至少點報名頁幾次" min={1} value={audienceDraft.audienceConditions?.applyClicks ?? 1} onChange={(v) => updateAudienceCondition('applyClicks', v)} />
-              <RetargetingNumberField label="送單後等待付款幾天" min={0} value={audienceDraft.audienceConditions?.paymentDelayDays ?? 2} onChange={(v) => updateAudienceCondition('paymentDelayDays', v)} />
+              <RetargetingConditionNumberField label="已收到至少幾篇排程文章" conditionKey="receivedMin" min={0} value={audienceDraft.audienceConditions?.receivedMin ?? 3} enabled={getRetargetingConditionEnabled(audienceDraft, 'receivedMin')} onToggle={toggleAudienceCondition} onChange={updateAudienceCondition} />
+              <RetargetingConditionNumberField label="至少點擊幾篇" conditionKey="clickedMin" min={0} value={audienceDraft.audienceConditions?.clickedMin ?? 2} enabled={getRetargetingConditionEnabled(audienceDraft, 'clickedMin')} onToggle={toggleAudienceCondition} onChange={updateAudienceCondition} />
+              <RetargetingConditionNumberField label="最近連續幾篇沒有點擊" conditionKey="inactiveSteps" min={1} value={audienceDraft.audienceConditions?.inactiveSteps ?? 2} enabled={getRetargetingConditionEnabled(audienceDraft, 'inactiveSteps')} onToggle={toggleAudienceCondition} onChange={updateAudienceCondition} />
+              <RetargetingConditionNumberField label="最近幾天有互動" conditionKey="recentDays" min={1} value={audienceDraft.audienceConditions?.recentDays ?? 14} enabled={getRetargetingConditionEnabled(audienceDraft, 'recentDays')} onToggle={toggleAudienceCondition} onChange={updateAudienceCondition} />
+              <RetargetingConditionNumberField label="加入至少幾天" conditionKey="joinedDays" min={0} value={audienceDraft.audienceConditions?.joinedDays ?? 30} enabled={getRetargetingConditionEnabled(audienceDraft, 'joinedDays')} onToggle={toggleAudienceCondition} onChange={updateAudienceCondition} />
+              <RetargetingConditionNumberField label="點報名頁後等待幾天" conditionKey="applyDelayDays" min={0} value={audienceDraft.audienceConditions?.applyDelayDays ?? 3} enabled={getRetargetingConditionEnabled(audienceDraft, 'applyDelayDays')} onToggle={toggleAudienceCondition} onChange={updateAudienceCondition} />
+              <RetargetingConditionNumberField label="至少點報名頁幾次" conditionKey="applyClicks" min={1} value={audienceDraft.audienceConditions?.applyClicks ?? 1} enabled={getRetargetingConditionEnabled(audienceDraft, 'applyClicks')} onToggle={toggleAudienceCondition} onChange={updateAudienceCondition} />
+              <RetargetingConditionNumberField label="送單後等待付款幾天" conditionKey="paymentDelayDays" min={0} value={audienceDraft.audienceConditions?.paymentDelayDays ?? 2} enabled={getRetargetingConditionEnabled(audienceDraft, 'paymentDelayDays')} onToggle={toggleAudienceCondition} onChange={updateAudienceCondition} />
             </div>
-            <label style={styles.fieldLabel}>限定文章類型</label>
-            <select value={audienceDraft.audienceConditions?.customArticleType || 'any'} onChange={(e) => updateAudienceCondition('customArticleType', e.target.value)} style={styles.input}>
-              <option value="any">不限類型</option>
-              {DRIP_ARTICLE_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
-            </select>
+            <div style={styles.retargetingConditionBox}>
+              <label style={styles.retargetingConditionToggle}>
+                <input type="checkbox" checked={getRetargetingConditionEnabled(audienceDraft, 'customArticleType')} onChange={(e) => toggleAudienceCondition('customArticleType', e.target.checked)} />
+                <span>限定文章類型</span>
+              </label>
+              <select
+                disabled={!getRetargetingConditionEnabled(audienceDraft, 'customArticleType')}
+                value={audienceDraft.audienceConditions?.customArticleType || 'any'}
+                onChange={(e) => updateAudienceCondition('customArticleType', e.target.value)}
+                style={{ ...styles.input, marginBottom: 0 }}
+              >
+                <option value="any">不限類型</option>
+                {DRIP_ARTICLE_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+              </select>
+            </div>
+            <div style={styles.retargetingLayout}>
+              <RetargetingConditionSwitch label="排除已點報名頁" conditionKey="excludeApplyClickers" enabled={getRetargetingConditionEnabled(audienceDraft, 'excludeApplyClickers')} onToggle={toggleAudienceCondition} checked={audienceDraft.audienceConditions?.excludeApplyClickers !== false} onCheckedChange={updateAudienceCondition} />
+              <RetargetingConditionSwitch label="排除已送單" conditionKey="customExcludeSubmitted" enabled={getRetargetingConditionEnabled(audienceDraft, 'customExcludeSubmitted')} onToggle={toggleAudienceCondition} checked={audienceDraft.audienceConditions?.customExcludeSubmitted !== false} onCheckedChange={updateAudienceCondition} />
+              <RetargetingConditionSwitch label="排除已付款" conditionKey="customExcludePaid" enabled={getRetargetingConditionEnabled(audienceDraft, 'customExcludePaid')} onToggle={toggleAudienceCondition} checked={audienceDraft.audienceConditions?.customExcludePaid !== false} onCheckedChange={updateAudienceCondition} />
+            </div>
             <div style={styles.retargetingRuleBox}>
               <div style={styles.retargetingRuleTitle}>目前實際判斷條件</div>
               {buildRetargetingAudienceRuleLabels(audienceDraft).map((rule) => (
@@ -4730,13 +5077,13 @@ function AudienceRetargetingPrototype() {
             <div style={styles.retargetingPanelHead}>
               <span style={styles.retargetingStep}>2</span>
               <div>
-                <h3 style={styles.analyticsH3}>模板資料庫與第一次發送</h3>
-                <p style={styles.retargetingMuted}>模板獨立保存；本區同時選擇第一次符合條件要發的模板。</p>
+                <h3 style={styles.analyticsH3}>模板資料庫</h3>
+                <p style={styles.retargetingMuted}>模板獨立保存；活動流程會從這裡選用要發送的模板。</p>
               </div>
             </div>
             <div style={styles.retargetingFooter}>
               <select value={templateDraft.id} onChange={(e) => selectTemplate(e.target.value)} style={styles.input}>
-                {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                {templateOptions.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
               </select>
               <button type="button" style={styles.btnSecondary} onClick={newTemplate}>＋ 新增模板</button>
             </div>
@@ -4782,9 +5129,25 @@ function AudienceRetargetingPrototype() {
           <div style={styles.retargetingPanelHead}>
             <span style={styles.retargetingStep}>3</span>
             <div>
-              <h3 style={styles.analyticsH3}>檢查、發送與後續流程</h3>
-              <p style={styles.retargetingMuted}>依照實際發生順序設定；本區只做流程檢查，不會啟用發送。</p>
+              <h3 style={styles.analyticsH3}>新增 / 編輯再行銷活動</h3>
+              <p style={styles.retargetingMuted}>先命名活動，再選這次活動要套用的受眾與每一輪要發送的模板。</p>
             </div>
+          </div>
+          <div style={styles.retargetingActivityActions}>
+            <button type="button" style={styles.btnSecondary} onClick={startNewActivity}>＋ 新增再行銷活動</button>
+            {formLocked && <span style={styles.retargetingMuted}>目前活動為唯讀；新增或載入編輯後才會開放修改。</span>}
+          </div>
+          <label style={styles.fieldLabel}>活動名稱</label>
+          <input value={activityName || ''} onChange={(e) => { setActivityName(e.target.value); setFlowChecked(false); }} style={styles.input} />
+          <label style={styles.fieldLabel}>這次活動要使用的受眾</label>
+          <select value={selectedAudienceId} onChange={(e) => { setSelectedAudienceId(e.target.value); setFlowChecked(false); }} style={styles.input}>
+            {activeAudiences.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+          </select>
+          <div style={styles.retargetingRuleBox}>
+            <div style={styles.retargetingRuleTitle}>此活動實際受眾條件</div>
+            {buildRetargetingAudienceRuleLabels(selectedAudience).map((rule) => (
+              <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
+            ))}
           </div>
           <div style={styles.retargetingTimeline}>
             <div style={styles.retargetingTimelineItem}>
@@ -4827,25 +5190,82 @@ function AudienceRetargetingPrototype() {
             <div style={styles.retargetingTimelineItem}>
               <span style={styles.retargetingTimelineStep}>4</span>
               <div style={styles.retargetingTimelineBody}>
-                <strong>再次符合時，決定第二次與第三次處理</strong>
+                <strong>每一次符合受眾後，要發哪一輪、哪一階段模板</strong>
                 <select value={repeatStrategy} onChange={(e) => { setRepeatStrategy(e.target.value); setFlowChecked(false); }} style={styles.input}>
-                  <option value="staged">階段式模板</option>
-                  <option value="once">只發一次</option>
+                  <option value="staged">每輪可追發 3 階段</option>
+                  <option value="once">只發第 1 次符合的第 1 階段</option>
                   <option value="cooldown">發一次後進入冷卻</option>
                 </select>
                 {repeatStrategy === 'staged' && (
-                  <>
-                    <label style={styles.fieldLabel}>第 2 次符合時發送</label>
-                    <select value={secondStageTemplateId} onChange={(e) => { setSecondStageTemplateId(e.target.value); setFlowChecked(false); }} style={styles.input}>
-                      {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
-                    </select>
-                    <label style={styles.fieldLabel}>第 3 次符合時</label>
-                    <select value={thirdStageAction} onChange={(e) => { setThirdStageAction(e.target.value); setFlowChecked(false); }} style={styles.input}>
-                      <option value="cooldown">進入冷卻</option>
-                      <option value="manual">人工查看</option>
-                      <option value="stop">停止追蹤</option>
-                    </select>
-                  </>
+                  <div style={styles.retargetingCycleGrid}>
+                    {cycleFlows.map((flow) => (
+                      <div key={flow.cycle} style={styles.retargetingCycleBox}>
+                        <label style={styles.retargetingSwitchRow}>
+                          <input
+                            type="checkbox"
+                            checked={flow.cycle === 1 || flow.enabled}
+                            disabled={flow.cycle === 1}
+                            onChange={(e) => updateCycleFlow(flow.cycle, { enabled: e.target.checked })}
+                          />
+                          <span>
+                            <strong>第 {flow.cycle} 次符合</strong>
+                            <small>
+                              {flow.cycle === 1
+                                ? '第一次符合受眾條件時一定會檢查這一輪。'
+                                : '上一輪有互動後，未來又再次符合受眾條件時才會進入這一輪。'}
+                            </small>
+                          </span>
+                        </label>
+                        {(flow.cycle === 1 || flow.enabled) && (
+                          <>
+                            <label style={styles.fieldLabel}>第 1 階段模板</label>
+                            <select value={flow.stage1TemplateId} onChange={(e) => updateCycleFlow(flow.cycle, { stage1TemplateId: e.target.value })} style={styles.input}>
+                              {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                            </select>
+                            <label style={styles.retargetingSwitchRow}>
+                              <input
+                                type="checkbox"
+                                checked={!!flow.stage2Enabled}
+                                onChange={(e) => updateCycleFlow(flow.cycle, { stage2Enabled: e.target.checked, stage3Enabled: e.target.checked ? flow.stage3Enabled : false })}
+                              />
+                              <span><strong>第 2 階段追發</strong><small>第 1 階段送出後，觀察期內沒有有效互動才會發。</small></span>
+                            </label>
+                            {flow.stage2Enabled && (
+                              <>
+                                <label style={styles.fieldLabel}>第 2 階段模板</label>
+                                <select value={flow.stage2TemplateId} onChange={(e) => updateCycleFlow(flow.cycle, { stage2TemplateId: e.target.value })} style={styles.input}>
+                                  {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                                </select>
+                              </>
+                            )}
+                            <label style={styles.retargetingSwitchRow}>
+                              <input
+                                type="checkbox"
+                                disabled={!flow.stage2Enabled}
+                                checked={!!flow.stage2Enabled && !!flow.stage3Enabled}
+                                onChange={(e) => updateCycleFlow(flow.cycle, { stage3Enabled: e.target.checked })}
+                              />
+                              <span><strong>第 3 階段追發</strong><small>第 2 階段後仍沒有有效互動才會發。</small></span>
+                            </label>
+                            {flow.stage3Enabled && (
+                              <>
+                                <label style={styles.fieldLabel}>第 3 階段模板</label>
+                                <select value={flow.stage3TemplateId} onChange={(e) => updateCycleFlow(flow.cycle, { stage3TemplateId: e.target.value })} style={styles.input}>
+                                  {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                                </select>
+                              </>
+                            )}
+                            <label style={styles.fieldLabel}>本輪沒有下一階段可追發時</label>
+                            <select value={flow.finalAction || 'cooldown'} onChange={(e) => updateCycleFlow(flow.cycle, { finalAction: e.target.value })} style={styles.input}>
+                              <option value="cooldown">進入冷卻</option>
+                              <option value="manual">人工查看</option>
+                              <option value="stop">停止追蹤</option>
+                            </select>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
@@ -4867,6 +5287,12 @@ function AudienceRetargetingPrototype() {
             目前執行對象：{dashboard?.testMode ? `管理者測試（共 ${dashboard?.managerCount || 0} 位）` : '一般會員正式流程'}。
             {dashboard?.testMode ? '排程測試模式啟用時，再行銷會跟著只對管理者自動檢查。' : '取消排程測試模式後，下一次 cron 會改為一般會員正式流程。'}
           </div>
+          {readinessWarnings.length > 0 && (
+            <div style={{ ...styles.retargetingPrototypeNotice, color: '#991b1b', borderColor: '#fecaca', background: '#fef2f2' }}>
+              正式會員啟用前需修正：{readinessWarnings.slice(0, 4).join('；')}
+              {readinessWarnings.length > 4 ? `，另有 ${readinessWarnings.length - 4} 項` : ''}
+            </div>
+          )}
           <label style={styles.retargetingSwitchRow}>
             <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
             <span><strong>啟用自動再行銷</strong><small>關閉時只保存設定，不會檢查或發送。</small></span>
@@ -4875,7 +5301,7 @@ function AudienceRetargetingPrototype() {
             <input type="checkbox" checked={observeOnly} onChange={(e) => setObserveOnly(e.target.checked)} />
             <span><strong>觀察模式</strong><small>符合條件時只留下紀錄，不實際發送。</small></span>
           </label>
-          <button type="button" style={styles.btnPrimary} disabled={saving === 'config' || !flowChecked || !templateDraft.body?.trim()} onClick={applyConfig}>
+          <button type="button" style={styles.btnPrimary} disabled={saving === 'config' || !flowChecked || !hasRequiredFirstTemplate} onClick={applyConfig}>
             {saving === 'config'
               ? '保存中...'
               : !enabled
@@ -4902,10 +5328,10 @@ function AudienceRetargetingPrototype() {
           <article style={styles.retargetingActivityCard}>
             <div style={styles.retargetingActivityTop}>
               <div>
-                <strong style={styles.retargetingActivityName}>{config.ruleTitle || '自動再行銷活動'}</strong>
+                <strong style={styles.retargetingActivityName}>{config.activityName || config.ruleTitle || '自動再行銷活動'}</strong>
                 <span style={styles.retargetingMuted}>最後保存：{formatRetargetingTime(dashboard?.configUpdatedAt)}</span>
               </div>
-              <span style={{ ...styles.retargetingStatusPill, color: '#166534', borderColor: '#166534' }}>{activityStatus}</span>
+              <span style={{ ...styles.retargetingStatusPill, color: activityStatusColor, borderColor: activityStatusColor }}>{activityStatus}</span>
             </div>
             <div style={styles.retargetingActivityMeta}>
               <span>{dashboard?.testMode ? '管理者測試' : '一般會員正式流程'}</span>
@@ -4918,8 +5344,32 @@ function AudienceRetargetingPrototype() {
               <span>觀察回應中 {state?.observing || 0} 人</span>
               <span>實際發送 {sentCount} 人</span>
               <span>點擊 {clickCount} 次</span>
+              <span>失敗 {failedCount || state?.failed || 0} 筆</span>
               <span>真實紀錄 {logs.length} 筆</span>
               <span>目標累計 {targetCount} 人次</span>
+            </div>
+            {(state?.lastError || state?.lastAttemptAt) && (
+              <div style={{ ...styles.retargetingPrototypeNotice, color: '#991b1b', borderColor: '#fecaca', background: '#fef2f2' }}>
+                最近嘗試：{formatRetargetingTime(state?.lastAttemptAt)}；錯誤：{state?.lastError || '尚無'}
+              </div>
+            )}
+            {state?.lastSkipReason && (
+              <div style={styles.retargetingPrototypeNotice}>
+                最近未發送原因：{state.lastSkipReason}；時間：{formatRetargetingTime(state.lastSkipAt)}
+              </div>
+            )}
+            <div style={styles.retargetingMetricGrid}>
+              {displayStageMetrics.map((metric) => {
+                const stateMetric = cycleStageCounts?.[String(metric.cycle)]?.[String(metric.stage)] || stateStageCounts[metric.stage] || {};
+                return (
+                  <div key={`${metric.cycle}-${metric.stage}`} style={styles.retargetingMetricBox}>
+                    <strong>第 {metric.cycle} 次符合 / 第 {metric.stage} 階段</strong>
+                    <span>待發 {stateMetric.pending || 0}｜已發 {metric.sent || stateMetric.sent || 0}</span>
+                    <span>觀察 {stateMetric.observing || 0}｜點擊 {metric.clicks || 0}</span>
+                    <span>失敗 {metric.failed || stateMetric.failed || 0}｜觀察紀錄 {metric.observed || 0}</span>
+                  </div>
+                );
+              })}
             </div>
             <div style={styles.retargetingRuleBox}>
               {(config.audienceRules || []).map((rule) => <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>)}
@@ -4938,7 +5388,7 @@ function AudienceRetargetingPrototype() {
               <button type="button" style={styles.btnSecondary} onClick={() => { loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary }); setEditingActivityId(config.activityId || 'current'); setFlowChecked(false); setNotice({ ok: '正在編輯既有活動；修改後請重新完成流程檢查，再儲存更新。' }); }}>
                 載入編輯
               </button>
-              <button type="button" style={styles.btnSecondary} onClick={() => { loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary }); setActivityId(createRetargetingLibraryId('activity')); setEditingActivityId('new'); setEnabled(false); setFlowChecked(false); setNotice({ ok: '已複製成新活動草稿；正式保存時會取代目前唯一啟用活動。' }); }}>
+              <button type="button" style={styles.btnSecondary} onClick={() => { loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary }); setActivityId(createRetargetingLibraryId('activity')); setActivityName(`${config.activityName || config.ruleTitle || '自動再行銷活動'} 副本`); setEditingActivityId('new'); setEnabled(false); setFlowChecked(false); setNotice({ ok: '已複製成新活動草稿；正式保存時會取代目前唯一啟用活動。' }); }}>
                 複製成新活動
               </button>
               <button type="button" style={styles.btnSecondary} disabled={!config.enabled || saving === 'disable'} onClick={disableActivity}>
@@ -5555,6 +6005,23 @@ const styles = {
     accentColor: '#1f7a55',
     margin: '4px 0 12px',
   },
+  retargetingConditionBox: {
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    padding: 10,
+    background: '#f8fafc',
+    display: 'grid',
+    gap: 8,
+    minWidth: 0,
+  },
+  retargetingConditionToggle: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    color: '#334155',
+    fontSize: 13,
+    fontWeight: 700,
+  },
   retargetingRuleBox: {
     marginTop: 14,
     display: 'flex',
@@ -5667,6 +6134,18 @@ const styles = {
     background: '#fff',
     display: 'grid',
     gap: 10,
+    minWidth: 0,
+  },
+  retargetingCycleGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
+    gap: 12,
+  },
+  retargetingCycleBox: {
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    padding: 12,
+    background: '#f8fafc',
     minWidth: 0,
   },
   retargetingAutomationPreview: {
