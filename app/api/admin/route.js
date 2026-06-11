@@ -51,6 +51,31 @@ async function fetchAllUsersForStats() {
   return rows;
 }
 
+async function fetchAllAdminRows(buildQuery, label, maxRows = ADMIN_STATS_MAX_ROWS) {
+  const rows = [];
+
+  for (let offset = 0; ; offset += ADMIN_STATS_PAGE_SIZE) {
+    const { data, error } = await buildQuery()
+      .range(offset, offset + ADMIN_STATS_PAGE_SIZE - 1);
+
+    if (error) {
+      console.error(`[Admin] ${label} paged fetch failed:`, error);
+      throw error;
+    }
+
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < ADMIN_STATS_PAGE_SIZE) break;
+
+    if (rows.length >= maxRows) {
+      console.warn(`[Admin] ${label} stopped at safety limit ${maxRows}`);
+      break;
+    }
+  }
+
+  return rows;
+}
+
 // ============================================================
 // GET — 讀取資料
 // ============================================================
@@ -1064,10 +1089,19 @@ async function handleGetRetargetingDashboard() {
     return NextResponse.json({ error: logsError.message }, { status: 500 });
   }
 
-  const { data: clicks } = await supabase
-    .from('official_line_clicks')
-    .select('link_id')
-    .like('link_id', 'retargeting_auto_%');
+  let clicks = [];
+  try {
+    clicks = await fetchAllAdminRows(
+      () => supabase
+        .from('official_line_clicks')
+        .select('link_id, clicked_at')
+        .like('link_id', 'retargeting_auto_%')
+        .order('clicked_at', { ascending: true }),
+      'retargeting click stats'
+    );
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
   const clickIds = (clicks || []).map((row) => row.link_id);
   const realLogs = (logs || []).map((log) => ({
     ...log,

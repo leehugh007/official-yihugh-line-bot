@@ -770,8 +770,11 @@ async function processRetargeting() {
       const appRecord = appStatusByUser.get(user.line_user_id);
       if (config.ruleId === PENDING_PAYMENT_RULE) return appRecord?.status === 'pending';
       if (config.ruleId === 'custom') {
-        if (audienceConditions.customExcludePaid && appRecord?.status === 'paid') return false;
-        if (audienceConditions.customExcludeSubmitted && appRecord?.status) return false;
+        const enabled = audienceConditions.enabledConditions || {};
+        const excludePaid = enabled.customExcludePaid && audienceConditions.customExcludePaid;
+        const excludeSubmitted = enabled.customExcludeSubmitted && audienceConditions.customExcludeSubmitted;
+        if (excludePaid && appRecord?.status === 'paid') return false;
+        if (excludeSubmitted && appRecord?.status) return false;
         return true;
       }
       return !appRecord?.status;
