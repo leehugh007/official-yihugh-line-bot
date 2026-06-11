@@ -960,15 +960,34 @@ function safeJsonParse(value, fallback) {
 function summarizeRetargetingState(state = {}, activityId = null) {
   const rows = Object.values(state || {}).filter((row) => !activityId || row?.activityId === activityId);
   const stageCounts = { 1: { pending: 0, sent: 0, observing: 0, failed: 0 }, 2: { pending: 0, sent: 0, observing: 0, failed: 0 }, 3: { pending: 0, sent: 0, observing: 0, failed: 0 } };
+  const cycleStageCounts = {};
   const now = new Date();
+  const ensureCycleStage = (cycle, stage) => {
+    const cycleKey = String(Number(cycle) || 1);
+    const stageKey = String(Number(stage) || 1);
+    if (!cycleStageCounts[cycleKey]) cycleStageCounts[cycleKey] = {};
+    if (!cycleStageCounts[cycleKey][stageKey]) {
+      cycleStageCounts[cycleKey][stageKey] = { pending: 0, sent: 0, observing: 0, failed: 0 };
+    }
+    return cycleStageCounts[cycleKey][stageKey];
+  };
   for (const row of rows) {
     const pendingStage = Number(row?.pending?.stage || 0);
+    const pendingCycle = Number(row?.pending?.cycle || 1);
     if (stageCounts[pendingStage]) stageCounts[pendingStage].pending += 1;
+    if (pendingStage) ensureCycleStage(pendingCycle, pendingStage).pending += 1;
     const lastStage = Number(row?.lastStage || 0);
+    const lastCycle = Number(row?.lastCycle || row?.currentCycle || 1);
     if (stageCounts[lastStage]) {
       if (row?.lastSentAt) stageCounts[lastStage].sent += 1;
       if (row?.observingUntil && new Date(row.observingUntil) > now) stageCounts[lastStage].observing += 1;
       if (row?.lastError) stageCounts[lastStage].failed += 1;
+    }
+    if (lastStage) {
+      const nested = ensureCycleStage(lastCycle, lastStage);
+      if (row?.lastSentAt) nested.sent += 1;
+      if (row?.observingUntil && new Date(row.observingUntil) > now) nested.observing += 1;
+      if (row?.lastError) nested.failed += 1;
     }
   }
   return {
@@ -992,7 +1011,17 @@ function summarizeRetargetingState(state = {}, activityId = null) {
       .filter(Boolean)
       .sort()
       .at(-1) || null,
+    lastSkipAt: rows
+      .map((row) => row?.lastSkipAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null,
+    lastSkipReason: rows
+      .filter((row) => row?.lastSkipReason)
+      .sort((a, b) => String(a.lastSkipAt || a.updatedAt || '').localeCompare(String(b.lastSkipAt || b.updatedAt || '')))
+      .at(-1)?.lastSkipReason || null,
     stageCounts,
+    cycleStageCounts,
     nextScheduledAt: rows
       .flatMap((row) => [row?.pending?.scheduledAt, row?.observingUntil])
       .filter(Boolean)
@@ -1276,7 +1305,55 @@ function sanitizeRetargetingStageTemplate(template = {}, stage = 1) {
   };
 }
 
+function sanitizeRetargetingCycleFlow(flow = {}, cycle = 1, legacyTemplates = []) {
+  const stages = Array.isArray(flow.stages) ? flow.stages : [];
+  return {
+    cycle,
+    enabled: cycle === 1 ? flow.enabled !== false : !!flow.enabled,
+    finalAction: ['cooldown', 'manual', 'stop'].includes(flow.finalAction) ? flow.finalAction : 'cooldown',
+    stages: [1, 2, 3].map((stageNumber) => {
+      const stage = stages.find((item) => Number(item?.stage) === stageNumber) || legacyTemplates[stageNumber - 1] || {};
+      const sanitized = sanitizeRetargetingStageTemplate(stage, stageNumber);
+      return {
+        ...sanitized,
+        cycle,
+        enabled: stageNumber === 1
+          ? (cycle === 1 ? flow.enabled !== false : !!flow.enabled)
+          : !!stage.enabled,
+      };
+    }),
+  };
+}
+
+function buildRetargetingCycleFlows(config = {}, legacyTemplates = []) {
+  const rawFlows = Array.isArray(config.cycleFlows) ? config.cycleFlows.slice(0, 3) : [];
+  if (rawFlows.length > 0) {
+    return [1, 2, 3].map((cycle) => sanitizeRetargetingCycleFlow(rawFlows[cycle - 1] || { cycle, enabled: cycle === 1 }, cycle));
+  }
+  return [sanitizeRetargetingCycleFlow({
+    cycle: 1,
+    enabled: true,
+    finalAction: config.thirdStageAction || 'cooldown',
+    stages: legacyTemplates.map((template, index) => ({
+      ...template,
+      enabled: index === 0
+        ? true
+        : index === 1
+          ? config.stage2Enabled !== false
+          : config.stage2Enabled !== false && !!config.stage3Enabled,
+    })),
+  }, 1, legacyTemplates)];
+}
+
 function getActiveRetargetingStageTemplates(config = {}) {
+  if (Array.isArray(config.cycleFlows) && config.cycleFlows.length > 0) {
+    if (config.repeatStrategy !== 'staged') {
+      return (config.cycleFlows[0]?.stages || []).filter((stage) => Number(stage.stage) === 1 && stage.enabled !== false);
+    }
+    return config.cycleFlows
+      .filter((flow) => flow.enabled !== false)
+      .flatMap((flow) => (flow.stages || []).filter((stage) => stage.enabled !== false && stage.message));
+  }
   const templates = Array.isArray(config.stageTemplates) ? config.stageTemplates : [];
   if (config.repeatStrategy !== 'staged') return templates.slice(0, 1);
   const active = templates.slice(0, 1);
@@ -1361,6 +1438,7 @@ async function handleSaveRetargetingAdminConfig({ config }) {
   const audienceConditions = sanitizeRetargetingAudienceConditions(config.audienceConditions, config);
   const rawStageTemplates = Array.isArray(config.stageTemplates) ? config.stageTemplates.slice(0, 3) : [];
   const stageTemplates = rawStageTemplates.map((template, index) => sanitizeRetargetingStageTemplate(template, index + 1));
+  const cycleFlows = buildRetargetingCycleFlows(config, stageTemplates);
   const cleanConfig = {
     activityId: cleanConfigText(config.activityId || `retargeting_${Date.now()}`),
     activityName: cleanConfigText(config.activityName || config.ruleTitle || '自動再行銷活動'),
@@ -1383,23 +1461,24 @@ async function handleSaveRetargetingAdminConfig({ config }) {
     observeDays: Math.max(1, Number(config.observeDays || 1)),
     engagementCriteria: String(config.engagementCriteria || 'any_click_or_reply'),
     repeatStrategy: String(config.repeatStrategy || 'staged'),
-    stage2Enabled: config.stage2Enabled !== false,
-    stage3Enabled: config.stage2Enabled !== false && !!config.stage3Enabled,
+    stage2Enabled: cycleFlows[0]?.stages?.[1]?.enabled === true,
+    stage3Enabled: cycleFlows[0]?.stages?.[2]?.enabled === true,
     thirdStageAction: String(config.thirdStageAction || 'cooldown'),
-    stageTemplates,
+    stageTemplates: cycleFlows[0]?.stages || stageTemplates,
+    cycleFlows,
     updatedAt: new Date().toISOString(),
   };
 
-  if (!cleanConfig.stageTemplates[0]?.message) {
-    return NextResponse.json({ error: '第 1 階段模板缺少訊息文字' }, { status: 400 });
+  const enabledTemplates = getActiveRetargetingStageTemplates(cleanConfig);
+  if (!enabledTemplates.some((template) => Number(template.cycle || 1) === 1 && Number(template.stage || 1) === 1 && template.message)) {
+    return NextResponse.json({ error: '第 1 次符合的第 1 階段模板缺少訊息文字' }, { status: 400 });
   }
-  if (cleanConfig.repeatStrategy === 'staged' && cleanConfig.stage2Enabled && !cleanConfig.stageTemplates[1]?.message) {
-    return NextResponse.json({ error: '階段式流程必須選擇第 2 次符合時要發送的模板' }, { status: 400 });
+  for (const template of enabledTemplates) {
+    if (!template?.message?.trim()) {
+      return NextResponse.json({ error: `第 ${template.cycle || 1} 次符合 / 第 ${template.stage || '?'} 階段模板缺少訊息文字` }, { status: 400 });
+    }
   }
-  if (cleanConfig.repeatStrategy === 'staged' && cleanConfig.stage3Enabled && !cleanConfig.stageTemplates[2]?.message) {
-    return NextResponse.json({ error: '已啟用第 3 階段時，必須選擇第 3 階段模板' }, { status: 400 });
-  }
-  const templateError = validateRetargetingTemplates(getActiveRetargetingStageTemplates(cleanConfig));
+  const templateError = validateRetargetingTemplates(enabledTemplates);
   if (templateError) {
     return NextResponse.json({ error: templateError }, { status: 400 });
   }
@@ -1501,39 +1580,42 @@ async function handleSaveRetargetingLibrary({ libraryType, items }) {
 
 function validateRetargetingTemplates(stageTemplates) {
   for (const template of stageTemplates || []) {
+    const label = template.cycle
+      ? `第 ${template.cycle} 次符合 / 第 ${template.stage || '?'} 階段`
+      : `第 ${template.stage || '?'} 階段`;
     if (!template?.message) continue;
     if (template.message.includes('待填入')) {
-      return `第 ${template.stage || '?'} 階段模板仍含待填入文字`;
+      return `${label}模板仍含待填入文字`;
     }
     if (template.imageUrl && !isPublicHttpsUrl(template.imageUrl)) {
-      return `第 ${template.stage || '?'} 階段模板圖片必須是公開 HTTPS 網址`;
+      return `${label}模板圖片必須是公開 HTTPS 網址`;
     }
     for (const button of template.buttons || []) {
       if (!button?.label && !button?.url && !button?.replyText && !button?.messageText) continue;
       const isMessageButton = button.actionType === 'message' || (!button.url && (button.replyText || button.messageText));
       if (!button?.label) {
-        return `第 ${template.stage || '?'} 階段模板有按鈕缺少文字`;
+        return `${label}模板有按鈕缺少文字`;
       }
       if (isMessageButton) {
         if (!button.replyText) {
-          return `第 ${template.stage || '?'} 階段模板的文字回覆按鈕缺少 BOT 回覆內容`;
+          return `${label}模板的文字回覆按鈕缺少 BOT 回覆內容`;
         }
         continue;
       }
       if (!button?.url) {
-        return `第 ${template.stage || '?'} 階段模板有連結按鈕缺少網址`;
+        return `${label}模板有連結按鈕缺少網址`;
       }
       let parsed;
       try {
         parsed = new URL(button.url);
       } catch {
-        return `第 ${template.stage || '?'} 階段模板按鈕網址格式不正確`;
+        return `${label}模板按鈕網址格式不正確`;
       }
       if (!['http:', 'https:'].includes(parsed.protocol)) {
-        return `第 ${template.stage || '?'} 階段模板按鈕網址必須是 http/https`;
+        return `${label}模板按鈕網址必須是 http/https`;
       }
       if (parsed.hostname === 'example.com' || parsed.hostname.endsWith('.example.com')) {
-        return `第 ${template.stage || '?'} 階段模板仍使用 example.com 測試網址`;
+        return `${label}模板仍使用 example.com 測試網址`;
       }
     }
   }

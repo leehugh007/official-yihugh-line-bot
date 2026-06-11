@@ -164,17 +164,84 @@ function getRetargetingActivityKey(config = {}) {
   return config.activityId || config.ruleId || 'rule';
 }
 
+function getRetargetingStepKey(cycle = 1, stage = 1) {
+  return `c${Number(cycle) || 1}_s${Number(stage) || 1}`;
+}
+
+function normalizeRetargetingStep(step) {
+  if (typeof step === 'number') return { cycle: 1, stage: step, flowType: step === 1 ? 'initial' : 'no_response' };
+  return {
+    cycle: Math.max(1, Number(step?.cycle || 1)),
+    stage: Math.max(1, Number(step?.stage || 1)),
+    flowType: step?.flowType || (Number(step?.cycle || 1) > 1 ? 'requalification' : Number(step?.stage || 1) > 1 ? 'no_response' : 'initial'),
+  };
+}
+
 function textHasTestMarker(value) {
   return /測試|test/i.test(String(value || ''));
 }
 
-function getActiveRetargetingStageTemplates(config = {}) {
+function normalizeRetargetingCycleFlows(config = {}) {
+  const rawFlows = Array.isArray(config.cycleFlows) ? config.cycleFlows.slice(0, 3) : [];
+  if (rawFlows.length > 0) {
+    return rawFlows.map((flow, index) => {
+      const cycle = Math.max(1, Number(flow?.cycle || index + 1));
+      const stages = Array.isArray(flow?.stages) ? flow.stages : [];
+      return {
+        cycle,
+        enabled: cycle === 1 ? flow?.enabled !== false : !!flow?.enabled,
+        finalAction: flow?.finalAction || config.thirdStageAction || 'cooldown',
+        stages: [1, 2, 3].map((stageNumber) => {
+          const stage = stages.find((item) => Number(item?.stage) === stageNumber) || {};
+          return {
+            ...stage,
+            cycle,
+            stage: stageNumber,
+            enabled: stageNumber === 1 ? (cycle === 1 ? flow?.enabled !== false : !!flow?.enabled) : !!stage.enabled,
+          };
+        }),
+      };
+    });
+  }
+
   const templates = Array.isArray(config.stageTemplates) ? config.stageTemplates : [];
-  if (config.repeatStrategy !== 'staged') return templates.slice(0, 1);
-  const active = templates.slice(0, 1);
-  if (config.stage2Enabled !== false && templates[1]) active.push(templates[1]);
-  if (config.stage2Enabled !== false && config.stage3Enabled && templates[2]) active.push(templates[2]);
-  return active;
+  return [{
+    cycle: 1,
+    enabled: true,
+    finalAction: config.thirdStageAction || 'cooldown',
+    stages: [1, 2, 3].map((stageNumber) => ({
+      ...(templates[stageNumber - 1] || {}),
+      cycle: 1,
+      stage: stageNumber,
+      enabled: stageNumber === 1
+        ? !!templates[0]
+        : stageNumber === 2
+          ? config.stage2Enabled !== false && !!templates[1]
+          : config.stage2Enabled !== false && !!config.stage3Enabled && !!templates[2],
+    })),
+  }];
+}
+
+function getRetargetingCycleFlow(config = {}, cycle = 1) {
+  return normalizeRetargetingCycleFlows(config).find((flow) => Number(flow.cycle) === Number(cycle));
+}
+
+function getRetargetingStageTemplate(config = {}, cycle = 1, stage = 1) {
+  const flow = getRetargetingCycleFlow(config, cycle);
+  const template = flow?.stages?.find((item) => Number(item.stage) === Number(stage));
+  if (template?.enabled !== false && template?.message) return template;
+  if (Number(cycle) !== 1) return null;
+  return config.stageTemplates?.[Number(stage) - 1] || null;
+}
+
+function getActiveRetargetingStageTemplates(config = {}) {
+  if (config.repeatStrategy !== 'staged') {
+    const first = getRetargetingStageTemplate(config, 1, 1);
+    return first ? [first] : [];
+  }
+  return normalizeRetargetingCycleFlows(config)
+    .filter((flow) => flow.enabled)
+    .flatMap((flow) => flow.stages.filter((stage) => stage.enabled !== false && stage.message));
 }
 
 function validateRetargetingFormalConfig(config = {}) {
@@ -215,19 +282,22 @@ function validateRetargetingFormalConfig(config = {}) {
   return null;
 }
 
-async function recordRetargetingObservation(userId, config, stage, windowKey, context) {
-  const template = config.stageTemplates?.[stage - 1] || config.stageTemplates?.[0];
+async function recordRetargetingObservation(userId, config, step, windowKey, context) {
+  const { cycle, stage } = normalizeRetargetingStep(step);
+  const template = getRetargetingStageTemplate(config, cycle, stage) || getRetargetingStageTemplate(config, 1, 1);
   if (!template?.message) return false;
 
   const activityKey = getRetargetingActivityKey(config);
-  const linkId = `retargeting_auto_${activityKey}_s${stage}_${Date.now()}`;
+  const stepKey = getRetargetingStepKey(cycle, stage);
+  const linkId = `retargeting_auto_${activityKey}_${stepKey}_${Date.now()}`;
+  const normalizedImageUrl = normalizePublicUrl(template.imageUrl);
   const { error } = await supabase.from('official_push_logs').insert({
-    template_id: `retargeting_auto_${activityKey}_s${stage}`,
-    label: `自動再行銷觀察：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
+    template_id: `retargeting_auto_${activityKey}_${stepKey}`,
+    label: `自動再行銷觀察：第 ${cycle} 次符合 / 第 ${stage} 階段：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
     message: template.message,
     link_id: linkId,
     buttons: template.buttons || [],
-    image_url: template.imageUrl || null,
+    image_url: normalizedImageUrl || null,
     segments: [context, 'retargeting_auto', 'observe_only'],
     mode: 'observe_only',
     target_count: 1,
@@ -244,20 +314,22 @@ async function recordRetargetingObservation(userId, config, stage, windowKey, co
   return true;
 }
 
-async function sendRetargetingMessage(userId, config, stage, windowKey, context) {
-  const template = config.stageTemplates?.[stage - 1] || config.stageTemplates?.[0];
+async function sendRetargetingMessage(userId, config, step, windowKey, context) {
+  const { cycle, stage } = normalizeRetargetingStep(step);
+  const template = getRetargetingStageTemplate(config, cycle, stage) || getRetargetingStageTemplate(config, 1, 1);
   if (!template?.message) return { ok: false, error: 'template message missing' };
 
   const activityKey = getRetargetingActivityKey(config);
-  const linkId = `retargeting_auto_${activityKey}_s${stage}_${Date.now()}`;
+  const stepKey = getRetargetingStepKey(cycle, stage);
+  const linkId = `retargeting_auto_${activityKey}_${stepKey}_${Date.now()}`;
   const lineMsg = buildFlexFromTemplate(template, linkId, userId);
   const pushResult = await pushMessageWithResult(userId, lineMsg);
   const normalizedImageUrl = normalizePublicUrl(template.imageUrl);
   if (!pushResult.ok) {
     const errorText = (pushResult.errorText || `LINE push failed (${pushResult.status})`).slice(0, 700);
     await supabase.from('official_push_logs').insert({
-      template_id: `retargeting_auto_${activityKey}_s${stage}`,
-      label: `自動再行銷發送失敗：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
+      template_id: `retargeting_auto_${activityKey}_${stepKey}`,
+      label: `自動再行銷發送失敗：第 ${cycle} 次符合 / 第 ${stage} 階段：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
       message: `${template.message}\n\n[系統錯誤] ${errorText}`,
       link_id: linkId,
       buttons: template.buttons || [],
@@ -274,8 +346,8 @@ async function sendRetargetingMessage(userId, config, stage, windowKey, context)
   }
 
   const { error } = await supabase.from('official_push_logs').insert({
-    template_id: `retargeting_auto_${activityKey}_s${stage}`,
-    label: `自動再行銷${context === 'admin' ? '測試' : '正式'}：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
+    template_id: `retargeting_auto_${activityKey}_${stepKey}`,
+    label: `自動再行銷${context === 'admin' ? '測試' : '正式'}：第 ${cycle} 次符合 / 第 ${stage} 階段：${template.title || config.ruleTitle || '再行銷'}（${windowKey}）`,
     message: template.message,
     link_id: linkId,
     buttons: template.buttons || [],
@@ -316,38 +388,73 @@ function hasRetargetingEngagement(user, clicks, appRecord, sinceIso, criteria = 
   return replied || clicked;
 }
 
-function getNextRetargetingStage(config, userState) {
+function getNextRetargetingStep(config, userState = {}, windowKey) {
   const sentCount = userState?.sentCount || 0;
-  if (config.repeatStrategy === 'once' && sentCount >= 1) {
+  const cycleCount = Number(userState?.cycleCount || 0);
+  if (userState?.stopped) {
+    return { action: 'stop', reason: 'user_stopped' };
+  }
+  if (config.repeatStrategy === 'once' && (sentCount >= 1 || cycleCount >= 1)) {
     return { action: 'skip', reason: 'already_sent_once' };
   }
-  if (config.repeatStrategy === 'cooldown' && sentCount >= 1) {
+  if (config.repeatStrategy === 'cooldown' && (sentCount >= 1 || cycleCount >= 1)) {
     return { action: 'cooldown', reason: 'repeat_cooldown' };
   }
   if (config.repeatStrategy === 'staged') {
-    if (sentCount === 0) return { action: 'send', stage: 1 };
-    if (sentCount === 1) {
-      return config.stage2Enabled === false
-        ? { action: config.thirdStageAction || 'cooldown', reason: 'stage2_disabled' }
-        : { action: 'send', stage: 2 };
+    const sameWindow = userState.currentWindowKey === windowKey;
+    const cycle = sameWindow
+      ? Math.max(1, Number(userState.currentCycle || userState.cycleCount || 1))
+      : Math.max(1, Math.min(3, userState.lastAction === 'engaged' ? cycleCount + 1 : 1));
+    const flow = getRetargetingCycleFlow(config, cycle);
+    if (!flow?.enabled) {
+      return { action: config.thirdStageAction || 'cooldown', reason: 'cycle_disabled', cycle };
     }
-    if (sentCount === 2) {
-      return config.stage3Enabled
-        ? { action: 'send', stage: 3 }
-        : { action: config.thirdStageAction || 'cooldown', reason: 'stage3_disabled' };
+    const nextStage = sameWindow
+      ? Math.max(1, Number(userState.stageInCycle || userState.lastStage || 0) + 1)
+      : 1;
+    const template = getRetargetingStageTemplate(config, cycle, nextStage);
+    if (template?.message) {
+      return {
+        action: 'send',
+        cycle,
+        stage: nextStage,
+        flowType: cycle > 1 ? 'requalification' : nextStage > 1 ? 'no_response' : 'initial',
+      };
     }
-    return { action: config.thirdStageAction || 'cooldown', reason: 'third_stage' };
+    return { action: flow.finalAction || config.thirdStageAction || 'cooldown', reason: 'no_more_stage', cycle };
   }
-  return sentCount === 0 ? { action: 'send', stage: 1 } : { action: 'skip', reason: 'already_sent' };
+  return sentCount === 0
+    ? { action: 'send', cycle: 1, stage: 1, flowType: 'initial' }
+    : { action: 'skip', reason: 'already_sent' };
 }
 
 function isCompletedRetargetingWindow(userState = {}, windowKey) {
   if (!windowKey) return false;
+  if (userState.stopped) return true;
+  if (Array.isArray(userState.completedWindowKeys) && userState.completedWindowKeys.includes(windowKey)) return true;
   if (userState.completedWindowKey === windowKey) return true;
   if (userState.lastAction && ['engaged', 'cooldown', 'manual', 'stop', 'skip'].includes(userState.lastAction)) {
     return userState.lastWindowKey === windowKey;
   }
   return false;
+}
+
+function appendCompletedRetargetingWindow(userState = {}, windowKey) {
+  if (!windowKey) return userState.completedWindowKeys || [];
+  const keys = Array.isArray(userState.completedWindowKeys) ? userState.completedWindowKeys : [];
+  return [...new Set([...keys, windowKey])].slice(-12);
+}
+
+function markRetargetingSkip(state, userId, userState, config, windowKey, reason, extra = {}) {
+  state[userId] = {
+    ...userState,
+    activityId: config.activityId || userState.activityId,
+    lastWindowKey: windowKey || userState.lastWindowKey,
+    lastSkipReason: reason,
+    lastSkipAt: new Date().toISOString(),
+    ...extra,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function configNumber(value, fallback, min = 0) {
@@ -753,16 +860,19 @@ async function processRetargeting() {
 
     const recentLogs = audience.recentLogs || [];
     const latestSentAt = recentLogs[recentLogs.length - 1]?.sent_at;
-    if (latestSentAt && new Date(latestSentAt) > new Date(daysAgoIso(config.checkDelayDays || 0))) {
-      skipped++;
-      continue;
-    }
-
     const storedState = state[userId] || {};
     const userState = config.activityId && storedState.activityId !== config.activityId
       ? {}
       : storedState;
     const windowKey = audience.windowKey || recentLogs.map((log) => log.step_number).join('-') || 'audience-match';
+    if (latestSentAt && new Date(latestSentAt) > new Date(daysAgoIso(config.checkDelayDays || 0))) {
+      markRetargetingSkip(state, userId, userState, config, windowKey, 'waiting_check_delay', {
+        nextCheckAfter: daysAfterIso(latestSentAt, config.checkDelayDays || 0),
+      });
+      skipped++;
+      continue;
+    }
+
     const pendingForWindow = userState.pending?.windowKey === windowKey ? userState.pending : null;
     const engagedSinceLastSent = !!(
       userState.lastSentAt
@@ -777,6 +887,7 @@ async function processRetargeting() {
     );
 
     if (isCompletedRetargetingWindow(userState, windowKey)) {
+      markRetargetingSkip(state, userId, userState, config, windowKey, 'window_completed');
       skipped++;
       continue;
     }
@@ -787,6 +898,8 @@ async function processRetargeting() {
         activityId: config.activityId || userState.activityId,
         lastWindowKey: windowKey,
         completedWindowKey: windowKey,
+        completedWindowKeys: appendCompletedRetargetingWindow(userState, windowKey),
+        currentWindowKey: null,
         lastEngagementHandledForSentAt: userState.lastSentAt,
         observingUntil: null,
         pending: null,
@@ -798,6 +911,9 @@ async function processRetargeting() {
     }
 
     if (pendingForWindow && new Date(pendingForWindow.scheduledAt) > now) {
+      markRetargetingSkip(state, userId, userState, config, windowKey, 'pending_scheduled_send', {
+        nextScheduledAt: pendingForWindow.scheduledAt,
+      });
       pending++;
       continue;
     }
@@ -810,6 +926,8 @@ async function processRetargeting() {
         ...userState,
         activityId: config.activityId || userState.activityId,
         observingUntil: daysAfterIso(userState.lastSentAt, config.observeDays || 1),
+        lastSkipReason: 'observing_after_retargeting',
+        lastSkipAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       pending++;
@@ -817,15 +935,25 @@ async function processRetargeting() {
     }
 
     const next = pendingForWindow
-      ? { action: 'send', stage: pendingForWindow.stage }
-      : getNextRetargetingStage(config, userState);
+      ? {
+          action: 'send',
+          cycle: pendingForWindow.cycle || 1,
+          stage: pendingForWindow.stage || 1,
+          flowType: pendingForWindow.flowType,
+        }
+      : getNextRetargetingStep(config, userState, windowKey);
     if (next.action !== 'send') {
       state[userId] = {
         ...userState,
         activityId: config.activityId || userState.activityId,
         lastWindowKey: windowKey,
         completedWindowKey: windowKey,
+        completedWindowKeys: appendCompletedRetargetingWindow(userState, windowKey),
+        currentWindowKey: null,
+        stopped: next.action === 'stop' ? true : !!userState.stopped,
         lastAction: next.action,
+        lastSkipReason: next.reason || next.action,
+        lastSkipAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       skipped++;
@@ -834,15 +962,17 @@ async function processRetargeting() {
 
     if (config.observeOnly) {
       if (userState.observedWindowKey === windowKey) {
+        markRetargetingSkip(state, userId, userState, config, windowKey, 'already_observed_window');
         skipped++;
         continue;
       }
-      const ok = await recordRetargetingObservation(userId, config, next.stage, windowKey, context);
+      const ok = await recordRetargetingObservation(userId, config, next, windowKey, context);
       if (ok) {
         state[userId] = {
           ...userState,
           activityId: config.activityId || userState.activityId,
           observedWindowKey: windowKey,
+          observedCycle: next.cycle,
           observedStage: next.stage,
           observedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -860,7 +990,16 @@ async function processRetargeting() {
         state[userId] = {
           ...userState,
           activityId: config.activityId || userState.activityId,
-          pending: { stage: next.stage, windowKey, scheduledAt },
+          pending: {
+            cycle: next.cycle || 1,
+            stage: next.stage || 1,
+            flowType: next.flowType,
+            windowKey,
+            scheduledAt,
+          },
+          lastSkipReason: 'scheduled_for_later',
+          lastSkipAt: new Date().toISOString(),
+          nextScheduledAt: scheduledAt,
           updatedAt: new Date().toISOString(),
         };
         pending++;
@@ -868,13 +1007,19 @@ async function processRetargeting() {
       }
     }
 
-    const sendResult = await sendRetargetingMessage(userId, config, next.stage, windowKey, context);
+    const sendResult = await sendRetargetingMessage(userId, config, next, windowKey, context);
     if (sendResult.ok) {
       state[userId] = {
         ...userState,
         activityId: config.activityId || userState.activityId,
         sentCount: (userState.sentCount || 0) + 1,
+        cycleCount: Math.max(Number(userState.cycleCount || 0), Number(next.cycle || 1)),
+        currentCycle: Number(next.cycle || 1),
+        currentWindowKey: windowKey,
+        stageInCycle: Number(next.stage || 1),
+        lastCycle: Number(next.cycle || 1),
         lastStage: next.stage,
+        lastFlowType: next.flowType,
         lastSentAt: new Date().toISOString(),
         lastEngagementHandledForSentAt: null,
         observingUntil: daysAfterIso(new Date().toISOString(), config.observeDays || 1),
@@ -889,7 +1034,13 @@ async function processRetargeting() {
       state[userId] = {
         ...userState,
         activityId: config.activityId || userState.activityId,
-        pending: userState.pending || { stage: next.stage, windowKey, scheduledAt: new Date().toISOString() },
+        pending: userState.pending || {
+          cycle: next.cycle || 1,
+          stage: next.stage || 1,
+          flowType: next.flowType,
+          windowKey,
+          scheduledAt: new Date().toISOString(),
+        },
         lastAttemptAt: new Date().toISOString(),
         lastError: sendResult.error || 'send failed',
         attemptCount: (userState.attemptCount || 0) + 1,

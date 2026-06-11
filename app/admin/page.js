@@ -4278,6 +4278,55 @@ function retargetingTemplateFromBuiltIn(template) {
   };
 }
 
+function defaultRetargetingCycleFlows() {
+  const first = RETARGETING_TEMPLATES[0]?.id || '';
+  const second = RETARGETING_TEMPLATES[1]?.id || first;
+  const third = RETARGETING_TEMPLATES[2]?.id || second;
+  return [1, 2, 3].map((cycle) => ({
+    cycle,
+    enabled: cycle === 1,
+    stage1TemplateId: cycle === 1 ? first : second,
+    stage2Enabled: false,
+    stage2TemplateId: cycle === 1 ? second : first,
+    stage3Enabled: false,
+    stage3TemplateId: third,
+    finalAction: 'cooldown',
+  }));
+}
+
+function cycleFlowFromConfig(config = {}) {
+  const rawFlows = Array.isArray(config.cycleFlows) ? config.cycleFlows : [];
+  if (rawFlows.length > 0) {
+    const legacy = defaultRetargetingCycleFlows();
+    return [1, 2, 3].map((cycle) => {
+      const flow = rawFlows.find((item) => Number(item?.cycle) === cycle) || {};
+      const stages = Array.isArray(flow.stages) ? flow.stages : [];
+      const stage = (stageNumber) => stages.find((item) => Number(item?.stage) === stageNumber) || {};
+      return {
+        ...legacy[cycle - 1],
+        cycle,
+        enabled: cycle === 1 ? flow.enabled !== false : !!flow.enabled,
+        stage1TemplateId: stage(1).templateId || legacy[cycle - 1].stage1TemplateId,
+        stage2Enabled: !!stage(2).enabled,
+        stage2TemplateId: stage(2).templateId || legacy[cycle - 1].stage2TemplateId,
+        stage3Enabled: !!stage(3).enabled,
+        stage3TemplateId: stage(3).templateId || legacy[cycle - 1].stage3TemplateId,
+        finalAction: flow.finalAction || legacy[cycle - 1].finalAction,
+      };
+    });
+  }
+  const legacy = defaultRetargetingCycleFlows();
+  return legacy.map((flow, index) => ({
+    ...flow,
+    stage1TemplateId: config.stageTemplates?.[index === 0 ? 0 : 1]?.templateId || flow.stage1TemplateId,
+    stage2Enabled: index === 0 ? config.stage2Enabled !== false && !!config.stageTemplates?.[1]?.templateId : false,
+    stage2TemplateId: config.stageTemplates?.[1]?.templateId || flow.stage2TemplateId,
+    stage3Enabled: index === 0 ? !!config.stage3Enabled && !!config.stageTemplates?.[2]?.templateId : false,
+    stage3TemplateId: config.stageTemplates?.[2]?.templateId || flow.stage3TemplateId,
+    finalAction: config.thirdStageAction || flow.finalAction,
+  }));
+}
+
 function buildRetargetingAudienceRuleLabels(audience = {}) {
   const conditions = audience.audienceConditions || {};
   const ruleId = audience.ruleId || conditions.presetId || 'custom';
@@ -4434,10 +4483,8 @@ function AudienceRetargetingPrototype() {
   const [templateLibrary, setTemplateLibrary] = useState([]);
   const [audienceDraft, setAudienceDraft] = useState(() => retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]));
   const [templateDraft, setTemplateDraft] = useState(() => retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0]));
-  const [secondStageTemplateId, setSecondStageTemplateId] = useState(RETARGETING_TEMPLATES[1]?.id || RETARGETING_TEMPLATES[0].id);
-  const [thirdStageTemplateId, setThirdStageTemplateId] = useState(RETARGETING_TEMPLATES[2]?.id || RETARGETING_TEMPLATES[0].id);
-  const [stage2Enabled, setStage2Enabled] = useState(true);
-  const [stage3Enabled, setStage3Enabled] = useState(false);
+  const [selectedAudienceId, setSelectedAudienceId] = useState(AUDIENCE_PRESETS[0].id);
+  const [cycleFlows, setCycleFlows] = useState(() => defaultRetargetingCycleFlows());
   const [checkDelayDays, setCheckDelayDays] = useState(1);
   const [sendMode, setSendMode] = useState('scheduled');
   const [sendDelayDays, setSendDelayDays] = useState(0);
@@ -4469,9 +4516,13 @@ function AudienceRetargetingPrototype() {
   const templateOptions = activeTemplates.some((item) => item.id === templateDraft.id)
     ? activeTemplates
     : [templateDraft, ...activeTemplates];
-  const firstTemplate = activeTemplates.find((item) => item.id === templateDraft.id) || templateDraft;
-  const secondTemplate = activeTemplates.find((item) => item.id === secondStageTemplateId) || firstTemplate;
-  const thirdTemplate = activeTemplates.find((item) => item.id === thirdStageTemplateId) || secondTemplate;
+  const selectedAudience = activeAudiences.find((item) => item.id === selectedAudienceId) || audienceDraft;
+  const findTemplateById = (id, fallbackIndex = 0) => (
+    activeTemplates.find((item) => item.id === id)
+    || (templateDraft.id === id ? templateDraft : null)
+    || activeTemplates[fallbackIndex]
+    || retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0])
+  );
   const formLocked = !!dashboard?.config && !editingActivityId;
 
   const loadConfigToForm = useCallback((config, libraries = {}) => {
@@ -4510,6 +4561,7 @@ function AudienceRetargetingPrototype() {
 
     setActivityId(config.activityId || createRetargetingLibraryId('activity'));
     setActivityName(config.activityName || config.ruleTitle || '自動再行銷活動');
+    setSelectedAudienceId(config.audienceId || audience.id || config.ruleId || 'dropoff');
     const audienceRuleId = audience.ruleId || config.ruleId || 'dropoff';
     setAudienceDraft({
       ...audience,
@@ -4520,10 +4572,7 @@ function AudienceRetargetingPrototype() {
       },
     });
     setTemplateDraft({ ...template, buttons: createRetargetingDraft(template).buttons });
-    setSecondStageTemplateId(config.stageTemplates?.[1]?.templateId || templateOptions[1]?.id || template.id);
-    setThirdStageTemplateId(config.stageTemplates?.[2]?.templateId || templateOptions[2]?.id || template.id);
-    setStage2Enabled(config.stage2Enabled !== false);
-    setStage3Enabled(!!config.stage3Enabled);
+    setCycleFlows(cycleFlowFromConfig(config));
     setCheckDelayDays(Number(config.checkDelayDays || 0));
     setSendMode(config.sendMode === 'instant' ? 'instant' : 'scheduled');
     setSendDelayDays(Number(config.sendDelayDays || 0));
@@ -4631,6 +4680,15 @@ function AudienceRetargetingPrototype() {
     setFlowChecked(false);
   };
 
+  const updateCycleFlow = (cycle, updates) => {
+    setCycleFlows((flows) => flows.map((flow) => (
+      Number(flow.cycle) === Number(cycle)
+        ? { ...flow, ...updates, cycle }
+        : flow
+    )));
+    setFlowChecked(false);
+  };
+
   const saveLibrary = async (libraryType, items, successText) => {
     setSaving(libraryType);
     setNotice(null);
@@ -4661,7 +4719,10 @@ function AudienceRetargetingPrototype() {
     };
     const items = [...audienceLibrary.filter((row) => row.id !== id), item];
     const saved = await saveLibrary('audience', items, '受眾已獨立保存');
-    if (saved) setAudienceDraft(saved.find((row) => row.id === id) || item);
+    if (saved) {
+      setAudienceDraft(saved.find((row) => row.id === id) || item);
+      setSelectedAudienceId(id);
+    }
   };
 
   const saveTemplate = async () => {
@@ -4716,24 +4777,46 @@ function AudienceRetargetingPrototype() {
   };
 
   const buildConfig = () => {
-    const activeStageTemplates = [templateDraft];
-    if (repeatStrategy === 'staged' && (stage2Enabled || stage3Enabled)) activeStageTemplates.push(secondTemplate);
-    if (repeatStrategy === 'staged' && stage3Enabled) activeStageTemplates.push(thirdTemplate);
+    const stageFromTemplate = (templateId, cycle, stage, enabled = true) => {
+      const template = findTemplateById(templateId, stage - 1);
+      return {
+        cycle,
+        stage,
+        enabled,
+        templateId: template.id,
+        title: template.title,
+        category: template.category,
+        message: template.body,
+        imageUrl: normalizeAdminPublicUrl(template.image_url || ''),
+        buttons: (template.buttons || []).filter(isUsableRetargetingButton).map(normalizeRetargetingButton),
+      };
+    };
+    const normalizedCycleFlows = cycleFlows.map((flow) => ({
+      cycle: flow.cycle,
+      enabled: flow.cycle === 1 ? true : !!flow.enabled,
+      finalAction: flow.finalAction || 'cooldown',
+      stages: [
+        stageFromTemplate(flow.stage1TemplateId, flow.cycle, 1, flow.cycle === 1 ? true : !!flow.enabled),
+        stageFromTemplate(flow.stage2TemplateId, flow.cycle, 2, !!flow.stage2Enabled),
+        stageFromTemplate(flow.stage3TemplateId, flow.cycle, 3, !!flow.stage3Enabled),
+      ],
+    }));
+    const firstCycleStages = normalizedCycleFlows[0]?.stages || [];
 
     return {
       activityId,
       activityName,
-      audienceId: audienceDraft.id,
-      firstTemplateId: templateDraft.id,
+      audienceId: selectedAudience.id,
+      firstTemplateId: firstCycleStages[0]?.templateId || '',
       enabled,
       observeOnly,
-      ruleId: audienceDraft.ruleId || audienceDraft.audienceConditions?.presetId || 'custom',
-      ruleTitle: audienceDraft.title,
-      audienceRules: buildRetargetingAudienceRuleLabels(audienceDraft),
+      ruleId: selectedAudience.ruleId || selectedAudience.audienceConditions?.presetId || 'custom',
+      ruleTitle: selectedAudience.title,
+      audienceRules: buildRetargetingAudienceRuleLabels(selectedAudience),
       audienceConditions: {
-        ...(audienceDraft.audienceConditions || {}),
-        presetId: audienceDraft.ruleId || 'custom',
-        ruleTitle: audienceDraft.title,
+        ...(selectedAudience.audienceConditions || {}),
+        presetId: selectedAudience.ruleId || 'custom',
+        ruleTitle: selectedAudience.title,
       },
       checkDelayDays,
       sendMode,
@@ -4742,18 +4825,11 @@ function AudienceRetargetingPrototype() {
       observeDays,
       engagementCriteria,
       repeatStrategy,
-      stage2Enabled,
-      stage3Enabled,
-      thirdStageAction,
-      stageTemplates: activeStageTemplates.map((template, index) => ({
-        stage: index + 1,
-        templateId: template.id,
-        title: template.title,
-        category: template.category,
-        message: template.body,
-        imageUrl: normalizeAdminPublicUrl(template.image_url || ''),
-        buttons: (template.buttons || []).filter(isUsableRetargetingButton).map(normalizeRetargetingButton),
-      })),
+      stage2Enabled: !!normalizedCycleFlows[0]?.stages?.[1]?.enabled,
+      stage3Enabled: !!normalizedCycleFlows[0]?.stages?.[2]?.enabled,
+      thirdStageAction: normalizedCycleFlows[0]?.finalAction || thirdStageAction,
+      stageTemplates: firstCycleStages,
+      cycleFlows: normalizedCycleFlows,
     };
   };
 
@@ -4795,10 +4871,8 @@ function AudienceRetargetingPrototype() {
     setActivityName('新再行銷活動');
     setAudienceDraft({ ...firstAudience, id: createRetargetingLibraryId('audience'), builtIn: false });
     setTemplateDraft({ ...firstTemplateDraft, buttons: createRetargetingDraft(firstTemplateDraft).buttons });
-    setSecondStageTemplateId(RETARGETING_TEMPLATES[1]?.id || RETARGETING_TEMPLATES[0].id);
-    setThirdStageTemplateId(RETARGETING_TEMPLATES[2]?.id || RETARGETING_TEMPLATES[0].id);
-    setStage2Enabled(true);
-    setStage3Enabled(false);
+    setSelectedAudienceId(firstAudience.id);
+    setCycleFlows(defaultRetargetingCycleFlows());
     setCheckDelayDays(1);
     setSendMode('scheduled');
     setSendDelayDays(0);
@@ -4827,8 +4901,36 @@ function AudienceRetargetingPrototype() {
   const targetCount = logs.reduce((sum, log) => sum + Number(log.target_count || 0), 0);
   const clickCount = logs.reduce((sum, log) => sum + Number(log.click_count || 0), 0);
   const failedCount = logs.filter((log) => log.status === 'failed').length;
-  const stageMetrics = [1, 2, 3].map((stage) => {
-    const stageLogs = logs.filter((log) => String(log.template_id || '').includes(`_s${stage}`));
+  const metricFlows = config?.cycleFlows?.length ? config.cycleFlows : cycleFlows;
+  const cycleStageMetrics = metricFlows.filter((flow) => flow.enabled !== false).flatMap((flow) => [1, 2, 3]
+    .filter((stage) => stage === 1 || flow.stages?.[stage - 1]?.enabled || flow[`stage${stage}Enabled`])
+    .map((stage) => {
+      const cycle = Number(flow.cycle || 1);
+      const stageLogs = logs.filter((log) => String(log.template_id || '').includes(`_c${cycle}_s${stage}`));
+      return {
+        cycle,
+        stage,
+        sent: stageLogs.reduce((sum, log) => sum + Number(log.sent_count || 0), 0),
+        failed: stageLogs.filter((log) => log.status === 'failed').length,
+        observed: stageLogs.filter((log) => log.status === 'observed').length,
+        clicks: stageLogs.reduce((sum, log) => sum + Number(log.click_count || 0), 0),
+      };
+    }));
+  const configuredCycleTemplates = cycleFlows.flatMap((flow) => {
+    if (flow.enabled === false) return [];
+    if (repeatStrategy !== 'staged') {
+      return flow.cycle === 1
+        ? [{ label: '第 1 次符合 / 第 1 階段', template: findTemplateById(flow.stage1TemplateId, 0), enabled: true }]
+        : [];
+    }
+    return [
+      { label: `第 ${flow.cycle} 次符合 / 第 1 階段`, template: findTemplateById(flow.stage1TemplateId, 0), enabled: true },
+      { label: `第 ${flow.cycle} 次符合 / 第 2 階段`, template: findTemplateById(flow.stage2TemplateId, 1), enabled: !!flow.stage2Enabled },
+      { label: `第 ${flow.cycle} 次符合 / 第 3 階段`, template: findTemplateById(flow.stage3TemplateId, 2), enabled: !!flow.stage3Enabled },
+    ].filter((item) => item.enabled);
+  });
+  const legacyStageMetrics = [1, 2, 3].map((stage) => {
+    const stageLogs = logs.filter((log) => String(log.template_id || '').includes(`_s${stage}`) && !String(log.template_id || '').includes('_c'));
     return {
       stage,
       sent: stageLogs.reduce((sum, log) => sum + Number(log.sent_count || 0), 0),
@@ -4837,15 +4939,19 @@ function AudienceRetargetingPrototype() {
       clicks: stageLogs.reduce((sum, log) => sum + Number(log.click_count || 0), 0),
     };
   });
+  const displayStageMetrics = cycleStageMetrics.length
+    ? cycleStageMetrics
+    : legacyStageMetrics.map((metric) => ({ ...metric, cycle: 1 }));
   const state = dashboard?.testMode ? dashboard?.adminState : dashboard?.memberState;
   const stateStageCounts = state?.stageCounts || {};
+  const cycleStageCounts = state?.cycleStageCounts || {};
   const readinessWarnings = enabled
-    ? [
-        ...getRetargetingTemplateWarnings(templateDraft, '第 1 階段'),
-        ...(repeatStrategy === 'staged' && stage2Enabled ? getRetargetingTemplateWarnings(secondTemplate, '第 2 階段') : []),
-        ...(repeatStrategy === 'staged' && stage3Enabled ? getRetargetingTemplateWarnings(thirdTemplate, '第 3 階段') : []),
-      ]
+    ? configuredCycleTemplates.flatMap((item) => getRetargetingTemplateWarnings(item.template, item.label))
     : [];
+  const hasRequiredFirstTemplate = !!configuredCycleTemplates.find((item) => (
+    item.label === '第 1 次符合 / 第 1 階段'
+    && item.template?.body?.trim()
+  ));
   const activityStatus = !config
     ? '尚未保存'
     : !config.enabled
@@ -4889,23 +4995,8 @@ function AudienceRetargetingPrototype() {
           {notice.error || notice.ok}
         </div>
       )}
-      <div style={styles.retargetingActivityActions}>
-        <button type="button" style={styles.btnSecondary} onClick={startNewActivity}>＋ 新增再行銷活動</button>
-        {formLocked && <span style={styles.retargetingMuted}>目前活動為唯讀；新增或載入編輯後才會開放修改。</span>}
-      </div>
 
       <fieldset disabled={formLocked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
-        <section style={{ ...styles.retargetingPanel, marginBottom: 16 }}>
-          <div style={styles.retargetingPanelHead}>
-            <span style={styles.retargetingStep}>0</span>
-            <div>
-              <h3 style={styles.analyticsH3}>再行銷活動</h3>
-              <p style={styles.retargetingMuted}>活動名稱只用來辨識這一組受眾、模板與後續流程。</p>
-            </div>
-          </div>
-          <label style={styles.fieldLabel}>活動名稱</label>
-          <input value={activityName || ''} onChange={(e) => { setActivityName(e.target.value); setFlowChecked(false); }} style={styles.input} />
-        </section>
         <div style={styles.retargetingLayout}>
           <section style={styles.retargetingPanel}>
             <div style={styles.retargetingPanelHead}>
@@ -4986,8 +5077,8 @@ function AudienceRetargetingPrototype() {
             <div style={styles.retargetingPanelHead}>
               <span style={styles.retargetingStep}>2</span>
               <div>
-                <h3 style={styles.analyticsH3}>模板資料庫與第一次發送</h3>
-                <p style={styles.retargetingMuted}>模板獨立保存；本區同時選擇第一次符合條件要發的模板。</p>
+                <h3 style={styles.analyticsH3}>模板資料庫</h3>
+                <p style={styles.retargetingMuted}>模板獨立保存；活動流程會從這裡選用要發送的模板。</p>
               </div>
             </div>
             <div style={styles.retargetingFooter}>
@@ -5038,9 +5129,25 @@ function AudienceRetargetingPrototype() {
           <div style={styles.retargetingPanelHead}>
             <span style={styles.retargetingStep}>3</span>
             <div>
-              <h3 style={styles.analyticsH3}>檢查、發送與後續流程</h3>
-              <p style={styles.retargetingMuted}>依照實際發生順序設定；本區只做流程檢查，不會啟用發送。</p>
+              <h3 style={styles.analyticsH3}>新增 / 編輯再行銷活動</h3>
+              <p style={styles.retargetingMuted}>先命名活動，再選這次活動要套用的受眾與每一輪要發送的模板。</p>
             </div>
+          </div>
+          <div style={styles.retargetingActivityActions}>
+            <button type="button" style={styles.btnSecondary} onClick={startNewActivity}>＋ 新增再行銷活動</button>
+            {formLocked && <span style={styles.retargetingMuted}>目前活動為唯讀；新增或載入編輯後才會開放修改。</span>}
+          </div>
+          <label style={styles.fieldLabel}>活動名稱</label>
+          <input value={activityName || ''} onChange={(e) => { setActivityName(e.target.value); setFlowChecked(false); }} style={styles.input} />
+          <label style={styles.fieldLabel}>這次活動要使用的受眾</label>
+          <select value={selectedAudienceId} onChange={(e) => { setSelectedAudienceId(e.target.value); setFlowChecked(false); }} style={styles.input}>
+            {activeAudiences.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+          </select>
+          <div style={styles.retargetingRuleBox}>
+            <div style={styles.retargetingRuleTitle}>此活動實際受眾條件</div>
+            {buildRetargetingAudienceRuleLabels(selectedAudience).map((rule) => (
+              <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
+            ))}
           </div>
           <div style={styles.retargetingTimeline}>
             <div style={styles.retargetingTimelineItem}>
@@ -5083,45 +5190,82 @@ function AudienceRetargetingPrototype() {
             <div style={styles.retargetingTimelineItem}>
               <span style={styles.retargetingTimelineStep}>4</span>
               <div style={styles.retargetingTimelineBody}>
-                <strong>再次符合時，決定第二次與第三次處理</strong>
+                <strong>每一次符合受眾後，要發哪一輪、哪一階段模板</strong>
                 <select value={repeatStrategy} onChange={(e) => { setRepeatStrategy(e.target.value); setFlowChecked(false); }} style={styles.input}>
-                  <option value="staged">階段式模板</option>
-                  <option value="once">只發一次</option>
+                  <option value="staged">每輪可追發 3 階段</option>
+                  <option value="once">只發第 1 次符合的第 1 階段</option>
                   <option value="cooldown">發一次後進入冷卻</option>
                 </select>
                 {repeatStrategy === 'staged' && (
-                  <>
-                    <label style={styles.retargetingSwitchRow}>
-                      <input type="checkbox" checked={stage2Enabled} onChange={(e) => { setStage2Enabled(e.target.checked); if (!e.target.checked) setStage3Enabled(false); setFlowChecked(false); }} />
-                      <span><strong>第 2 階段追發</strong><small>第 1 階段送出後，觀察期內沒有有效互動時追發；或下一次再次符合互動下降時使用。</small></span>
-                    </label>
-                    {stage2Enabled && (
-                      <>
-                        <label style={styles.fieldLabel}>第 2 階段模板</label>
-                        <select value={secondStageTemplateId} onChange={(e) => { setSecondStageTemplateId(e.target.value); setFlowChecked(false); }} style={styles.input}>
-                          {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
-                        </select>
-                      </>
-                    )}
-                    <label style={styles.retargetingSwitchRow}>
-                      <input type="checkbox" disabled={!stage2Enabled} checked={stage2Enabled && stage3Enabled} onChange={(e) => { setStage3Enabled(e.target.checked); setFlowChecked(false); }} />
-                      <span><strong>第 3 階段追發</strong><small>第 2 階段後仍沒有有效互動時才會使用。</small></span>
-                    </label>
-                    {stage3Enabled && (
-                      <>
-                        <label style={styles.fieldLabel}>第 3 階段模板</label>
-                        <select value={thirdStageTemplateId} onChange={(e) => { setThirdStageTemplateId(e.target.value); setFlowChecked(false); }} style={styles.input}>
-                          {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
-                        </select>
-                      </>
-                    )}
-                    <label style={styles.fieldLabel}>沒有下一階段可追發時</label>
-                    <select value={thirdStageAction} onChange={(e) => { setThirdStageAction(e.target.value); setFlowChecked(false); }} style={styles.input}>
-                      <option value="cooldown">進入冷卻</option>
-                      <option value="manual">人工查看</option>
-                      <option value="stop">停止追蹤</option>
-                    </select>
-                  </>
+                  <div style={styles.retargetingCycleGrid}>
+                    {cycleFlows.map((flow) => (
+                      <div key={flow.cycle} style={styles.retargetingCycleBox}>
+                        <label style={styles.retargetingSwitchRow}>
+                          <input
+                            type="checkbox"
+                            checked={flow.cycle === 1 || flow.enabled}
+                            disabled={flow.cycle === 1}
+                            onChange={(e) => updateCycleFlow(flow.cycle, { enabled: e.target.checked })}
+                          />
+                          <span>
+                            <strong>第 {flow.cycle} 次符合</strong>
+                            <small>
+                              {flow.cycle === 1
+                                ? '第一次符合受眾條件時一定會檢查這一輪。'
+                                : '上一輪有互動後，未來又再次符合受眾條件時才會進入這一輪。'}
+                            </small>
+                          </span>
+                        </label>
+                        {(flow.cycle === 1 || flow.enabled) && (
+                          <>
+                            <label style={styles.fieldLabel}>第 1 階段模板</label>
+                            <select value={flow.stage1TemplateId} onChange={(e) => updateCycleFlow(flow.cycle, { stage1TemplateId: e.target.value })} style={styles.input}>
+                              {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                            </select>
+                            <label style={styles.retargetingSwitchRow}>
+                              <input
+                                type="checkbox"
+                                checked={!!flow.stage2Enabled}
+                                onChange={(e) => updateCycleFlow(flow.cycle, { stage2Enabled: e.target.checked, stage3Enabled: e.target.checked ? flow.stage3Enabled : false })}
+                              />
+                              <span><strong>第 2 階段追發</strong><small>第 1 階段送出後，觀察期內沒有有效互動才會發。</small></span>
+                            </label>
+                            {flow.stage2Enabled && (
+                              <>
+                                <label style={styles.fieldLabel}>第 2 階段模板</label>
+                                <select value={flow.stage2TemplateId} onChange={(e) => updateCycleFlow(flow.cycle, { stage2TemplateId: e.target.value })} style={styles.input}>
+                                  {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                                </select>
+                              </>
+                            )}
+                            <label style={styles.retargetingSwitchRow}>
+                              <input
+                                type="checkbox"
+                                disabled={!flow.stage2Enabled}
+                                checked={!!flow.stage2Enabled && !!flow.stage3Enabled}
+                                onChange={(e) => updateCycleFlow(flow.cycle, { stage3Enabled: e.target.checked })}
+                              />
+                              <span><strong>第 3 階段追發</strong><small>第 2 階段後仍沒有有效互動才會發。</small></span>
+                            </label>
+                            {flow.stage3Enabled && (
+                              <>
+                                <label style={styles.fieldLabel}>第 3 階段模板</label>
+                                <select value={flow.stage3TemplateId} onChange={(e) => updateCycleFlow(flow.cycle, { stage3TemplateId: e.target.value })} style={styles.input}>
+                                  {activeTemplates.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                                </select>
+                              </>
+                            )}
+                            <label style={styles.fieldLabel}>本輪沒有下一階段可追發時</label>
+                            <select value={flow.finalAction || 'cooldown'} onChange={(e) => updateCycleFlow(flow.cycle, { finalAction: e.target.value })} style={styles.input}>
+                              <option value="cooldown">進入冷卻</option>
+                              <option value="manual">人工查看</option>
+                              <option value="stop">停止追蹤</option>
+                            </select>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
@@ -5157,7 +5301,7 @@ function AudienceRetargetingPrototype() {
             <input type="checkbox" checked={observeOnly} onChange={(e) => setObserveOnly(e.target.checked)} />
             <span><strong>觀察模式</strong><small>符合條件時只留下紀錄，不實際發送。</small></span>
           </label>
-          <button type="button" style={styles.btnPrimary} disabled={saving === 'config' || !flowChecked || !templateDraft.body?.trim()} onClick={applyConfig}>
+          <button type="button" style={styles.btnPrimary} disabled={saving === 'config' || !flowChecked || !hasRequiredFirstTemplate} onClick={applyConfig}>
             {saving === 'config'
               ? '保存中...'
               : !enabled
@@ -5209,12 +5353,17 @@ function AudienceRetargetingPrototype() {
                 最近嘗試：{formatRetargetingTime(state?.lastAttemptAt)}；錯誤：{state?.lastError || '尚無'}
               </div>
             )}
+            {state?.lastSkipReason && (
+              <div style={styles.retargetingPrototypeNotice}>
+                最近未發送原因：{state.lastSkipReason}；時間：{formatRetargetingTime(state.lastSkipAt)}
+              </div>
+            )}
             <div style={styles.retargetingMetricGrid}>
-              {stageMetrics.map((metric) => {
-                const stateMetric = stateStageCounts[metric.stage] || {};
+              {displayStageMetrics.map((metric) => {
+                const stateMetric = cycleStageCounts?.[String(metric.cycle)]?.[String(metric.stage)] || stateStageCounts[metric.stage] || {};
                 return (
-                  <div key={metric.stage} style={styles.retargetingMetricBox}>
-                    <strong>第 {metric.stage} 階段</strong>
+                  <div key={`${metric.cycle}-${metric.stage}`} style={styles.retargetingMetricBox}>
+                    <strong>第 {metric.cycle} 次符合 / 第 {metric.stage} 階段</strong>
                     <span>待發 {stateMetric.pending || 0}｜已發 {metric.sent || stateMetric.sent || 0}</span>
                     <span>觀察 {stateMetric.observing || 0}｜點擊 {metric.clicks || 0}</span>
                     <span>失敗 {metric.failed || stateMetric.failed || 0}｜觀察紀錄 {metric.observed || 0}</span>
@@ -5985,6 +6134,18 @@ const styles = {
     background: '#fff',
     display: 'grid',
     gap: 10,
+    minWidth: 0,
+  },
+  retargetingCycleGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
+    gap: 12,
+  },
+  retargetingCycleBox: {
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    padding: 12,
+    background: '#f8fafc',
     minWidth: 0,
   },
   retargetingAutomationPreview: {
