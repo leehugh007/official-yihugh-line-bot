@@ -4528,9 +4528,14 @@ function AudienceRetargetingPrototype() {
   const templateOptions = activeTemplates.some((item) => item.id === templateDraft.id)
     ? activeTemplates
     : [templateDraft, ...activeTemplates];
-  const selectedAudience = activeAudiences.find((item) => item.id === selectedAudienceId) || audienceDraft;
+  const selectedAudience = (
+    activityAudienceSnapshot?.id === selectedAudienceId
+      ? activityAudienceSnapshot
+      : activeAudiences.find((item) => item.id === selectedAudienceId)
+  ) || audienceDraft;
   const findTemplateById = (id, fallbackIndex = 0) => (
-    activeTemplates.find((item) => item.id === id)
+    activityTemplateSnapshots.find((item) => item?.active !== false && item.id === id)
+    || activeTemplates.find((item) => item.id === id)
     || (templateDraft.id === id ? templateDraft : null)
     || activeTemplates[fallbackIndex]
     || retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0])
@@ -4559,9 +4564,8 @@ function AudienceRetargetingPrototype() {
     const embeddedTemplates = [];
     const addEmbeddedTemplate = (stage) => {
       if (!stage?.templateId) return;
-      const existsInLibrary = templateOptions.some((item) => item.id === stage.templateId);
       const existsInSnapshot = embeddedTemplates.some((item) => item.id === stage.templateId);
-      if (existsInLibrary || existsInSnapshot) return;
+      if (existsInSnapshot) return;
       embeddedTemplates.push({
         id: stage.templateId,
         title: stage.title || '已套用模板',
