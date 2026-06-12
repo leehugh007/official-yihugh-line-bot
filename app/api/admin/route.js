@@ -1168,10 +1168,18 @@ async function handleUploadImage({ fileName, fileBase64, contentType }) {
   const ext = contentType.split('/')[1] === 'jpeg' ? 'jpg' : contentType.split('/')[1];
   const storagePath = `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '')}.${ext}`;
 
-  const { error } = await supabase.storage
-    .from('push-images')
-    .upload(storagePath, buffer, { contentType, upsert: false });
+  let uploadResult;
+  try {
+    uploadResult = await supabase.storage
+      .from('push-images')
+      .upload(storagePath, buffer, { contentType, upsert: false });
+  } catch (err) {
+    return NextResponse.json({
+      error: `圖片上傳服務連線失敗：${err?.message || 'fetch failed'}`,
+    }, { status: 500 });
+  }
 
+  const { error } = uploadResult;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -1588,18 +1596,6 @@ async function handleSaveRetargetingLibrary({ libraryType, items }) {
       updatedAt: now,
     };
   });
-
-  if (libraryType === 'template') {
-    const templateError = validateRetargetingTemplates(cleanItems.map((item, index) => ({
-      stage: index + 1,
-      message: item.body,
-      imageUrl: item.image_url,
-      buttons: item.buttons,
-    })));
-    if (templateError) {
-      return NextResponse.json({ error: templateError }, { status: 400 });
-    }
-  }
 
   const key = libraryType === 'audience'
     ? 'retargeting_audience_library'

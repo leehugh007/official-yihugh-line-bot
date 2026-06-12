@@ -48,7 +48,7 @@ function ImageUpload({ imageUrl, onChange }) {
       // 轉 Base64
       const base64 = await new Promise((resolve) => {
         const reader = new FileReader();
-        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onload = () => resolve(String(reader.result).split(',')[1]);
         reader.readAsDataURL(file);
       });
 
@@ -64,9 +64,10 @@ function ImageUpload({ imageUrl, onChange }) {
       } else {
         setError(res.error || '上傳失敗');
       }
-    } catch {
-      setError('上傳失敗');
+    } catch (err) {
+      setError(`上傳失敗：${err?.message || '請稍後再試'}`);
     }
+    e.target.value = '';
     setUploading(false);
   };
 
@@ -363,15 +364,6 @@ export default function AdminPage() {
 
   // 自動登入（如果 sessionStorage 有密碼）
   useEffect(() => {
-    if (
-      window.location.hostname === 'localhost' &&
-      window.location.search.includes('audiences_preview=1')
-    ) {
-      setAuthed(true);
-      setTab('audiences');
-      return;
-    }
-
     const saved = localStorage.getItem('admin_secret');
     if (saved) {
       setPassword(saved);
@@ -4200,12 +4192,16 @@ function isUsableRetargetingButton(button = {}) {
   return !!button.url?.trim();
 }
 
+function hasRetargetingButtonDraftContent(button = {}) {
+  return !!String(button.label || button.url || button.replyText || button.messageText || '').trim();
+}
+
 function createRetargetingDraft(template) {
   const buttons = [...(template.buttons || [])];
   while (buttons.length < 3) buttons.push({ label: '', url: '' });
   return {
-    image_url: template.image_url || '',
-    body: template.body || '',
+    image_url: template.image_url || template.imageUrl || '',
+    body: template.body || template.message || '',
     buttons: buttons.slice(0, 3).map(normalizeRetargetingButton),
   };
 }
@@ -4498,17 +4494,33 @@ function AudienceRetargetingPrototype() {
   const [activityId, setActivityId] = useState(() => createRetargetingLibraryId('activity'));
   const [activityName, setActivityName] = useState('互動下降喚醒活動');
   const [editingActivityId, setEditingActivityId] = useState('new');
+  const [activityAudienceSnapshot, setActivityAudienceSnapshot] = useState(null);
+  const [activityTemplateSnapshots, setActivityTemplateSnapshots] = useState([]);
+  const [audienceEditorOpen, setAudienceEditorOpen] = useState(false);
+  const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [flowChecked, setFlowChecked] = useState(false);
   const [saving, setSaving] = useState('');
   const [notice, setNotice] = useState(null);
 
-  const activeAudiences = [
+  const baseActiveAudiences = [
     ...builtInAudiences,
     ...audienceLibrary.filter((item) => item.active !== false),
   ];
-  const activeTemplates = [
+  const activeAudiences = activityAudienceSnapshot
+    && activityAudienceSnapshot.active !== false
+    && !baseActiveAudiences.some((item) => item.id === activityAudienceSnapshot.id)
+    ? [...baseActiveAudiences, activityAudienceSnapshot]
+    : baseActiveAudiences;
+  const baseActiveTemplates = [
     ...builtInTemplates,
     ...templateLibrary.filter((item) => item.active !== false),
+  ];
+  const activeTemplates = [
+    ...baseActiveTemplates,
+    ...activityTemplateSnapshots.filter((snapshot) => (
+      snapshot?.active !== false
+      && !baseActiveTemplates.some((item) => item.id === snapshot.id)
+    )),
   ];
   const audienceOptions = activeAudiences.some((item) => item.id === audienceDraft.id)
     ? activeAudiences
@@ -4523,7 +4535,7 @@ function AudienceRetargetingPrototype() {
     || activeTemplates[fallbackIndex]
     || retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0])
   );
-  const formLocked = !!dashboard?.config && !editingActivityId;
+  const activityLocked = !!dashboard?.config && !editingActivityId;
 
   const loadConfigToForm = useCallback((config, libraries = {}) => {
     if (!config) return;
@@ -4544,26 +4556,30 @@ function AudienceRetargetingPrototype() {
         audienceConditions: config.audienceConditions || {},
         active: true,
       };
-    const stageOne = config.stageTemplates?.[0];
-    const libraryTemplate = templateOptions.find((item) => item.id === config.firstTemplateId || item.id === stageOne?.templateId);
-    const template = stageOne
-      ? {
-          ...(libraryTemplate || {}),
-          id: stageOne.templateId || config.firstTemplateId || createRetargetingLibraryId('template'),
-          title: stageOne.title || libraryTemplate?.title || '已套用模板',
-          category: stageOne.category || libraryTemplate?.category || '自動再行銷',
-          image_url: stageOne.imageUrl || '',
-          body: stageOne.message || '',
-          buttons: (stageOne.buttons || []).map(normalizeRetargetingButton),
-          active: true,
-        }
-      : libraryTemplate || retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0]);
+    const embeddedTemplates = [];
+    const addEmbeddedTemplate = (stage) => {
+      if (!stage?.templateId) return;
+      const existsInLibrary = templateOptions.some((item) => item.id === stage.templateId);
+      const existsInSnapshot = embeddedTemplates.some((item) => item.id === stage.templateId);
+      if (existsInLibrary || existsInSnapshot) return;
+      embeddedTemplates.push({
+        id: stage.templateId,
+        title: stage.title || '已套用模板',
+        category: stage.category || '自動再行銷',
+        image_url: stage.imageUrl || '',
+        body: stage.message || stage.body || '',
+        buttons: (stage.buttons || []).map(normalizeRetargetingButton),
+        active: true,
+      });
+    };
+    (config.stageTemplates || []).forEach(addEmbeddedTemplate);
+    (config.cycleFlows || []).forEach((flow) => (flow.stages || []).forEach(addEmbeddedTemplate));
 
     setActivityId(config.activityId || createRetargetingLibraryId('activity'));
     setActivityName(config.activityName || config.ruleTitle || '自動再行銷活動');
     setSelectedAudienceId(config.audienceId || audience.id || config.ruleId || 'dropoff');
     const audienceRuleId = audience.ruleId || config.ruleId || 'dropoff';
-    setAudienceDraft({
+    setActivityAudienceSnapshot({
       ...audience,
       ruleId: audienceRuleId,
       audienceConditions: {
@@ -4571,7 +4587,7 @@ function AudienceRetargetingPrototype() {
         ...(config.audienceConditions || audience.audienceConditions),
       },
     });
-    setTemplateDraft({ ...template, buttons: createRetargetingDraft(template).buttons });
+    setActivityTemplateSnapshots(embeddedTemplates);
     setCycleFlows(cycleFlowFromConfig(config));
     setCheckDelayDays(Number(config.checkDelayDays || 0));
     setSendMode(config.sendMode === 'instant' ? 'instant' : 'scheduled');
@@ -4659,13 +4675,21 @@ function AudienceRetargetingPrototype() {
         ...(audience.audienceConditions || {}),
       },
     });
+    setAudienceEditorOpen(false);
     setFlowChecked(false);
   };
 
   const selectTemplate = (id) => {
     const template = activeTemplates.find((item) => item.id === id);
     if (!template) return;
-    setTemplateDraft({ ...template, buttons: createRetargetingDraft(template).buttons });
+    const draft = createRetargetingDraft(template);
+    setTemplateDraft({
+      ...template,
+      image_url: draft.image_url,
+      body: draft.body,
+      buttons: draft.buttons,
+    });
+    setTemplateEditorOpen(false);
     setFlowChecked(false);
   };
 
@@ -4704,6 +4728,31 @@ function AudienceRetargetingPrototype() {
     return result.items || [];
   };
 
+  const applyAudienceDraft = (audience) => {
+    if (!audience) return;
+    const ruleId = audience.ruleId || audience.audienceConditions?.presetId || 'dropoff';
+    setAudienceDraft({
+      ...audience,
+      ruleId,
+      audienceConditions: {
+        ...retargetingAudienceFromPreset(AUDIENCE_PRESETS.find((preset) => preset.id === ruleId) || AUDIENCE_PRESETS[0]).audienceConditions,
+        ...(audience.audienceConditions || {}),
+      },
+    });
+    setSelectedAudienceId(audience.id);
+  };
+
+  const applyTemplateDraft = (template) => {
+    if (!template) return;
+    const draft = createRetargetingDraft(template);
+    setTemplateDraft({
+      ...template,
+      image_url: draft.image_url,
+      body: draft.body,
+      buttons: draft.buttons,
+    });
+  };
+
   const saveAudience = async () => {
     const now = new Date().toISOString();
     const isBuiltIn = !!audienceDraft.builtIn;
@@ -4722,6 +4771,7 @@ function AudienceRetargetingPrototype() {
     if (saved) {
       setAudienceDraft(saved.find((row) => row.id === id) || item);
       setSelectedAudienceId(id);
+      setAudienceEditorOpen(false);
     }
   };
 
@@ -4729,19 +4779,24 @@ function AudienceRetargetingPrototype() {
     const now = new Date().toISOString();
     const isBuiltIn = !!templateDraft.builtIn;
     const id = isBuiltIn ? createRetargetingLibraryId('template') : templateDraft.id;
+    const draft = createRetargetingDraft(templateDraft);
     const item = {
       ...templateDraft,
       id,
       builtIn: undefined,
       active: true,
-      image_url: normalizeAdminPublicUrl(templateDraft.image_url || ''),
-      buttons: (templateDraft.buttons || []).filter(isUsableRetargetingButton),
+      image_url: normalizeAdminPublicUrl(draft.image_url || ''),
+      body: draft.body,
+      buttons: draft.buttons.filter(hasRetargetingButtonDraftContent),
       createdAt: templateDraft.createdAt || now,
       updatedAt: now,
     };
     const items = [...templateLibrary.filter((row) => row.id !== id), item];
     const saved = await saveLibrary('template', items, '模板已獨立保存，切換後內容不會消失');
-    if (saved) setTemplateDraft(saved.find((row) => row.id === id) || item);
+    if (saved) {
+      setTemplateDraft(saved.find((row) => row.id === id) || item);
+      setTemplateEditorOpen(false);
+    }
   };
 
   const disableOrDeleteLibraryItem = async (libraryType, id, remove = false) => {
@@ -4749,7 +4804,18 @@ function AudienceRetargetingPrototype() {
     const items = remove
       ? source.filter((item) => item.id !== id)
       : source.map((item) => item.id === id ? { ...item, active: false } : item);
-    await saveLibrary(libraryType, items, remove ? '已刪除' : '已停用');
+    const saved = await saveLibrary(libraryType, items, remove ? '已刪除' : '已停用');
+    if (!saved) return;
+    if (libraryType === 'audience') {
+      const fallback = [...builtInAudiences, ...saved].find((item) => item.active !== false);
+      applyAudienceDraft(fallback);
+      setAudienceEditorOpen(false);
+    }
+    if (libraryType === 'template') {
+      const fallback = [...builtInTemplates, ...saved].find((item) => item.active !== false);
+      applyTemplateDraft(fallback);
+      setTemplateEditorOpen(false);
+    }
   };
 
   const newAudience = () => {
@@ -4760,6 +4826,7 @@ function AudienceRetargetingPrototype() {
       ruleId: 'dropoff',
       builtIn: false,
     });
+    setAudienceEditorOpen(true);
     setFlowChecked(false);
   };
 
@@ -4773,6 +4840,7 @@ function AudienceRetargetingPrototype() {
       buttons: createRetargetingDraft({ buttons: [] }).buttons,
       active: true,
     });
+    setTemplateEditorOpen(true);
     setFlowChecked(false);
   };
 
@@ -4865,12 +4933,11 @@ function AudienceRetargetingPrototype() {
   };
 
   const startNewActivity = () => {
-    const firstAudience = retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]);
-    const firstTemplateDraft = retargetingTemplateFromBuiltIn(RETARGETING_TEMPLATES[0]);
+    const firstAudience = activeAudiences[0] || retargetingAudienceFromPreset(AUDIENCE_PRESETS[0]);
     setActivityId(createRetargetingLibraryId('activity'));
     setActivityName('新再行銷活動');
-    setAudienceDraft({ ...firstAudience, id: createRetargetingLibraryId('audience'), builtIn: false });
-    setTemplateDraft({ ...firstTemplateDraft, buttons: createRetargetingDraft(firstTemplateDraft).buttons });
+    setActivityAudienceSnapshot(null);
+    setActivityTemplateSnapshots([]);
     setSelectedAudienceId(firstAudience.id);
     setCycleFlows(defaultRetargetingCycleFlows());
     setCheckDelayDays(1);
@@ -4945,6 +5012,23 @@ function AudienceRetargetingPrototype() {
   const state = dashboard?.testMode ? dashboard?.adminState : dashboard?.memberState;
   const stateStageCounts = state?.stageCounts || {};
   const cycleStageCounts = state?.cycleStageCounts || {};
+  const realActivityRecordItems = [
+    { label: '已處理', value: `${state?.users || 0} 人` },
+    { label: '待發', value: `${state?.pending || 0} 人` },
+    { label: '觀察回應中', value: `${state?.observing || 0} 人` },
+    { label: '實際發送', value: `${sentCount} 人` },
+    { label: '失敗', value: `${failedCount || state?.failed || 0} 筆` },
+    { label: '真實紀錄', value: `${logs.length} 筆` },
+    { label: '目標累計', value: `${targetCount} 人次` },
+  ];
+  const realOutcomeItems = [
+    { label: '點擊', value: `${clickCount} 次` },
+    { label: '回覆', value: '待接回覆統計' },
+    { label: '進報名頁', value: '待接活動歸因' },
+    { label: '送單', value: '待接活動歸因' },
+    { label: '付款', value: '待接活動歸因' },
+    { label: '停止追蹤', value: '待接狀態統計' },
+  ];
   const readinessWarnings = enabled
     ? configuredCycleTemplates.flatMap((item) => getRetargetingTemplateWarnings(item.template, item.label))
     : [];
@@ -4980,9 +5064,9 @@ function AudienceRetargetingPrototype() {
         受眾、模板與流程分開保存；目前同一時間只啟用一組自動再行銷活動，避免同一會員收到重疊訊息。
       </p>
 
-      {formLocked && (
+      {activityLocked && (
         <div style={styles.retargetingPrototypeNotice}>
-          目前顯示已保存設定，預設為唯讀。請到第 5 區按「載入編輯」後再修改。
+          目前第 3-4 區顯示已保存活動，活動流程預設為唯讀；第 1-2 區的受眾與模板資料庫仍可直接新增、修改或刪除。
         </div>
       )}
       {notice && (
@@ -4996,7 +5080,7 @@ function AudienceRetargetingPrototype() {
         </div>
       )}
 
-      <fieldset disabled={formLocked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      <div>
         <div style={styles.retargetingLayout}>
           <section style={styles.retargetingPanel}>
             <div style={styles.retargetingPanelHead}>
@@ -5012,6 +5096,23 @@ function AudienceRetargetingPrototype() {
               </select>
               <button type="button" style={styles.btnSecondary} onClick={newAudience}>＋ 新增受眾</button>
             </div>
+            {!audienceEditorOpen && (
+              <div style={styles.retargetingRuleBox}>
+                <div style={styles.retargetingRuleTitle}>
+                  {audienceDraft.title || '未命名受眾'}{audienceDraft.builtIn ? '（內建，可另存）' : ''}
+                </div>
+                {buildRetargetingAudienceRuleLabels(audienceDraft).map((rule) => (
+                  <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>
+                ))}
+                <div style={{ ...styles.retargetingActivityActions, marginTop: 12 }}>
+                  <button type="button" style={styles.btnSecondary} onClick={() => setAudienceEditorOpen(true)}>
+                    {audienceDraft.builtIn ? '編輯並另存受眾' : '編輯受眾'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {audienceEditorOpen && (
+              <>
             <label style={styles.fieldLabel}>受眾名稱</label>
             <input value={audienceDraft.title || ''} onChange={(e) => setAudienceDraft((draft) => ({ ...draft, title: e.target.value }))} style={styles.input} />
             <label style={styles.fieldLabel}>主要判斷類型</label>
@@ -5061,16 +5162,25 @@ function AudienceRetargetingPrototype() {
             </div>
             <div style={styles.retargetingActivityActions}>
               <button type="button" style={styles.btnPrimary} disabled={saving === 'audience'} onClick={saveAudience}>
-                {saving === 'audience' ? '儲存中...' : '儲存此受眾'}
+                {saving === 'audience'
+                  ? '儲存中...'
+                  : audienceDraft.builtIn
+                    ? '另存為自訂受眾'
+                    : '儲存受眾修改'}
               </button>
               {!audienceDraft.builtIn && (
                 <>
-                  <button type="button" style={styles.btnSecondary} onClick={() => setAudienceDraft((draft) => ({ ...draft, id: createRetargetingLibraryId('audience'), title: `${draft.title} 副本`, builtIn: false }))}>複製</button>
+                  <button type="button" style={styles.btnSecondary} onClick={() => {
+                    setAudienceDraft((draft) => ({ ...draft, id: createRetargetingLibraryId('audience'), title: `${draft.title} 副本`, builtIn: false }));
+                    setAudienceEditorOpen(true);
+                  }}>複製</button>
                   <button type="button" style={styles.btnSecondary} onClick={() => disableOrDeleteLibraryItem('audience', audienceDraft.id)}>停用</button>
                   <button type="button" style={styles.btnSecondary} onClick={() => disableOrDeleteLibraryItem('audience', audienceDraft.id, true)}>刪除</button>
                 </>
               )}
             </div>
+              </>
+            )}
           </section>
 
           <section style={styles.retargetingPanel}>
@@ -5087,6 +5197,34 @@ function AudienceRetargetingPrototype() {
               </select>
               <button type="button" style={styles.btnSecondary} onClick={newTemplate}>＋ 新增模板</button>
             </div>
+            {!templateEditorOpen && (
+              <div style={styles.retargetingRuleBox}>
+                <div style={styles.retargetingRuleTitle}>
+                  {templateDraft.title || '未命名模板'}{templateDraft.builtIn ? '（內建，可另存）' : ''}
+                </div>
+                <div style={styles.retargetingMuted}>分類：{templateDraft.category || '未分類'}</div>
+                <div style={{ ...styles.retargetingMuted, marginTop: 6 }}>
+                  {(templateDraft.body || '尚未設定訊息文字').slice(0, 90)}
+                  {(templateDraft.body || '').length > 90 ? '...' : ''}
+                </div>
+                {createRetargetingDraft(templateDraft).buttons.filter(hasRetargetingButtonDraftContent).length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    {createRetargetingDraft(templateDraft).buttons.filter(hasRetargetingButtonDraftContent).map((button, index) => (
+                      <span key={`${button.label || button.url || button.replyText}-${index}`} style={styles.retargetingRuleChip}>
+                        {button.label || `按鈕 ${index + 1}`}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div style={{ ...styles.retargetingActivityActions, marginTop: 12 }}>
+                  <button type="button" style={styles.btnSecondary} onClick={() => setTemplateEditorOpen(true)}>
+                    {templateDraft.builtIn ? '編輯並另存模板' : '編輯模板'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {templateEditorOpen && (
+              <>
             <label style={styles.fieldLabel}>模板名稱</label>
             <input value={templateDraft.title || ''} onChange={(e) => setTemplateDraft((draft) => ({ ...draft, title: e.target.value }))} style={styles.input} />
             <label style={styles.fieldLabel}>分類</label>
@@ -5111,17 +5249,26 @@ function AudienceRetargetingPrototype() {
             ))}
             <div style={styles.retargetingActivityActions}>
               <button type="button" style={styles.btnPrimary} disabled={saving === 'template' || !templateDraft.body?.trim()} onClick={saveTemplate}>
-                {saving === 'template' ? '儲存中...' : '儲存此模板'}
+                {saving === 'template'
+                  ? '儲存中...'
+                  : templateDraft.builtIn
+                    ? '另存為自訂模板'
+                    : '儲存模板修改'}
               </button>
               {!templateDraft.builtIn && (
                 <>
-                  <button type="button" style={styles.btnSecondary} onClick={() => setTemplateDraft((draft) => ({ ...draft, id: createRetargetingLibraryId('template'), title: `${draft.title} 副本`, builtIn: false }))}>複製</button>
+                  <button type="button" style={styles.btnSecondary} onClick={() => {
+                    setTemplateDraft((draft) => ({ ...draft, id: createRetargetingLibraryId('template'), title: `${draft.title} 副本`, builtIn: false }));
+                    setTemplateEditorOpen(true);
+                  }}>複製</button>
                   <button type="button" style={styles.btnSecondary} onClick={() => disableOrDeleteLibraryItem('template', templateDraft.id)}>停用</button>
                   <button type="button" style={styles.btnSecondary} onClick={() => disableOrDeleteLibraryItem('template', templateDraft.id, true)}>刪除</button>
                 </>
               )}
             </div>
             <FlexPreview message={templateDraft.body} buttons={templateDraft.buttons} imageUrl={templateDraft.image_url || undefined} />
+              </>
+            )}
           </section>
         </div>
 
@@ -5135,8 +5282,9 @@ function AudienceRetargetingPrototype() {
           </div>
           <div style={styles.retargetingActivityActions}>
             <button type="button" style={styles.btnSecondary} onClick={startNewActivity}>＋ 新增再行銷活動</button>
-            {formLocked && <span style={styles.retargetingMuted}>目前活動為唯讀；新增或載入編輯後才會開放修改。</span>}
+            {activityLocked && <span style={styles.retargetingMuted}>目前活動流程為唯讀；按「新增再行銷活動」可建立新活動草稿，或從第 5 區載入既有活動編輯。</span>}
           </div>
+          <fieldset disabled={activityLocked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
           <label style={styles.fieldLabel}>活動名稱</label>
           <input value={activityName || ''} onChange={(e) => { setActivityName(e.target.value); setFlowChecked(false); }} style={styles.input} />
           <label style={styles.fieldLabel}>這次活動要使用的受眾</label>
@@ -5273,6 +5421,7 @@ function AudienceRetargetingPrototype() {
           <button type="button" style={styles.btnSecondary} onClick={() => { setFlowChecked(true); setNotice({ ok: '流程檢查完成；尚未啟用，請到第 4 區正式保存。' }); }}>
             完成流程檢查
           </button>
+          </fieldset>
         </section>
 
         <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
@@ -5283,6 +5432,7 @@ function AudienceRetargetingPrototype() {
               <p style={styles.retargetingMuted}>這裡才會保存並套用第 1-3 區設定。</p>
             </div>
           </div>
+          <fieldset disabled={activityLocked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
           <div style={styles.retargetingPrototypeNotice}>
             目前執行對象：{dashboard?.testMode ? `管理者測試（共 ${dashboard?.managerCount || 0} 位）` : '一般會員正式流程'}。
             {dashboard?.testMode ? '排程測試模式啟用時，再行銷會跟著只對管理者自動檢查。' : '取消排程測試模式後，下一次 cron 會改為一般會員正式流程。'}
@@ -5311,8 +5461,9 @@ function AudienceRetargetingPrototype() {
                   : '正式保存並啟用自動再行銷'}
           </button>
           {!flowChecked && <p style={styles.retargetingMuted}>請先在第 3 區按「完成流程檢查」。</p>}
+          </fieldset>
         </section>
-      </fieldset>
+      </div>
 
       <section style={{ ...styles.retargetingPanel, marginTop: 16 }}>
         <div style={styles.retargetingPanelHead}>
@@ -5338,15 +5489,11 @@ function AudienceRetargetingPrototype() {
               <span>{config.sendMode === 'instant' ? '符合後立即發送' : `符合後 ${config.sendDelayDays || 0} 天 ${config.sendAtTime || '14:00'} 發送`}</span>
               <span>下一筆待發：{formatRetargetingTime(state?.nextScheduledAt)}</span>
             </div>
+            <div style={styles.retargetingRuleTitle}>活動紀錄</div>
             <div style={styles.retargetingActivityNumbers}>
-              <span>已處理 {state?.users || 0} 人</span>
-              <span>待發 {state?.pending || 0} 人</span>
-              <span>觀察回應中 {state?.observing || 0} 人</span>
-              <span>實際發送 {sentCount} 人</span>
-              <span>點擊 {clickCount} 次</span>
-              <span>失敗 {failedCount || state?.failed || 0} 筆</span>
-              <span>真實紀錄 {logs.length} 筆</span>
-              <span>目標累計 {targetCount} 人次</span>
+              {realActivityRecordItems.map((item) => (
+                <span key={item.label}>{item.label} {item.value}</span>
+              ))}
             </div>
             {(state?.lastError || state?.lastAttemptAt) && (
               <div style={{ ...styles.retargetingPrototypeNotice, color: '#991b1b', borderColor: '#fecaca', background: '#fef2f2' }}>
@@ -5358,6 +5505,7 @@ function AudienceRetargetingPrototype() {
                 最近未發送原因：{state.lastSkipReason}；時間：{formatRetargetingTime(state.lastSkipAt)}
               </div>
             )}
+            <div style={styles.retargetingRuleTitle}>各階段紀錄</div>
             <div style={styles.retargetingMetricGrid}>
               {displayStageMetrics.map((metric) => {
                 const stateMetric = cycleStageCounts?.[String(metric.cycle)]?.[String(metric.stage)] || stateStageCounts[metric.stage] || {};
@@ -5370,6 +5518,15 @@ function AudienceRetargetingPrototype() {
                   </div>
                 );
               })}
+            </div>
+            <div style={styles.retargetingRuleTitle}>成效分析</div>
+            <div style={styles.retargetingMetricGrid}>
+              {realOutcomeItems.map((item) => (
+                <div key={item.label} style={styles.retargetingMetricBox}>
+                  <strong>{item.label}</strong>
+                  <span>{item.value}</span>
+                </div>
+              ))}
             </div>
             <div style={styles.retargetingRuleBox}>
               {(config.audienceRules || []).map((rule) => <span key={rule} style={styles.retargetingRuleChip}>{rule}</span>)}
@@ -5385,10 +5542,23 @@ function AudienceRetargetingPrototype() {
               </div>
             </details>
             <div style={styles.retargetingActivityActions}>
-              <button type="button" style={styles.btnSecondary} onClick={() => { loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary }); setEditingActivityId(config.activityId || 'current'); setFlowChecked(false); setNotice({ ok: '正在編輯既有活動；修改後請重新完成流程檢查，再儲存更新。' }); }}>
+              <button type="button" style={styles.btnSecondary} onClick={() => {
+                loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary });
+                setEditingActivityId(config.activityId || 'current');
+                setFlowChecked(false);
+                setNotice({ ok: '正在編輯既有活動；修改後請重新完成流程檢查，再儲存更新。' });
+              }}>
                 載入編輯
               </button>
-              <button type="button" style={styles.btnSecondary} onClick={() => { loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary }); setActivityId(createRetargetingLibraryId('activity')); setActivityName(`${config.activityName || config.ruleTitle || '自動再行銷活動'} 副本`); setEditingActivityId('new'); setEnabled(false); setFlowChecked(false); setNotice({ ok: '已複製成新活動草稿；正式保存時會取代目前唯一啟用活動。' }); }}>
+              <button type="button" style={styles.btnSecondary} onClick={() => {
+                loadConfigToForm(config, { audiences: audienceLibrary, templates: templateLibrary });
+                setActivityId(createRetargetingLibraryId('activity'));
+                setActivityName(`${config.activityName || config.ruleTitle || '自動再行銷活動'} 副本`);
+                setEditingActivityId('new');
+                setEnabled(false);
+                setFlowChecked(false);
+                setNotice({ ok: '已複製成新活動草稿；正式保存時會取代目前唯一啟用活動。' });
+              }}>
                 複製成新活動
               </button>
               <button type="button" style={styles.btnSecondary} disabled={!config.enabled || saving === 'disable'} onClick={disableActivity}>
