@@ -1494,13 +1494,15 @@ async function handleDeleteLog(data) {
 // ============================================================
 async function handleToggleDripTestMode({ enabled }) {
   if (!enabled) {
-    const { data: configSetting } = await supabase
+    const { data: settings, error: settingsError } = await supabase
       .from('official_settings')
-      .select('value')
-      .eq('key', 'retargeting_admin_auto_config')
-      .maybeSingle();
-    const config = safeJsonParse(configSetting?.value, null);
-    const readinessError = validateRetargetingFormalReadiness(config);
+      .select('key,value')
+      .in('key', ['retargeting_admin_auto_config', 'retargeting_activity_library']);
+    if (settingsError) return NextResponse.json({ error: settingsError.message }, { status: 500 });
+    const map = Object.fromEntries((settings || []).map((row) => [row.key, row.value]));
+    const config = safeJsonParse(map.retargeting_admin_auto_config, null);
+    const activityLibrary = safeJsonParse(map.retargeting_activity_library, []);
+    const readinessError = validateRetargetingFormalReadinessForActivities(config, activityLibrary);
     if (readinessError) {
       return NextResponse.json({
         error: `正式會員啟用前請先修正再行銷設定：${readinessError}`,
@@ -1729,6 +1731,21 @@ function validateRetargetingFormalReadiness(config = {}) {
       }
     }
   }
+  return null;
+}
+
+function validateRetargetingFormalReadinessForActivities(config = null, activityLibrary = []) {
+  const activities = normalizeRetargetingActivityLibrary(activityLibrary, config)
+    .filter((activity) => activity.enabled !== false && activity.active !== false && !activity.deletedAt);
+
+  for (const activity of activities) {
+    const readinessError = validateRetargetingFormalReadiness(activity);
+    if (readinessError) {
+      const label = activity.activityName || activity.ruleTitle || activity.activityId || '未命名活動';
+      return `${label}：${readinessError}`;
+    }
+  }
+
   return null;
 }
 

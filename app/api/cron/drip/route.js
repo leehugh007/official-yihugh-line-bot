@@ -20,6 +20,7 @@ import { sendScheduledPush } from '../../../../lib/push.js';
 import { normalizePublicUrl, isPublicHttpsUrl } from '../../../../lib/config.js';
 import {
   getRetargetingStageObserveDays,
+  getRetargetingStageTemplate,
   shouldScheduleRetargetingStep,
 } from '../../../../lib/retargeting-stage-timing.js';
 
@@ -285,14 +286,6 @@ function normalizeRetargetingCycleFlows(config = {}) {
 
 function getRetargetingCycleFlow(config = {}, cycle = 1) {
   return normalizeRetargetingCycleFlows(config).find((flow) => Number(flow.cycle) === Number(cycle));
-}
-
-function getRetargetingStageTemplate(config = {}, cycle = 1, stage = 1) {
-  const flow = getRetargetingCycleFlow(config, cycle);
-  const template = flow?.stages?.find((item) => Number(item.stage) === Number(stage));
-  if (template?.enabled !== false && template?.message) return template;
-  if (Number(cycle) !== 1) return null;
-  return config.stageTemplates?.[Number(stage) - 1] || null;
 }
 
 function getActiveRetargetingStageTemplates(config = {}) {
