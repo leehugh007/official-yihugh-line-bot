@@ -169,6 +169,10 @@ export async function POST(request) {
       return handleSaveRetargetingAdminConfig(data);
     case 'save_retargeting_library':
       return handleSaveRetargetingLibrary(data);
+    case 'disable_retargeting_activity':
+      return handleDisableRetargetingActivity(data);
+    case 'delete_retargeting_activity':
+      return handleDeleteRetargetingActivity(data);
     case 'add_drip_step':
       return handleAddDripStep(data);
     case 'delete_drip_step':
@@ -1045,14 +1049,207 @@ function summarizeRetargetingState(state = {}, activityId = null) {
       .filter((row) => row?.lastSkipReason)
       .sort((a, b) => String(a.lastSkipAt || a.updatedAt || '').localeCompare(String(b.lastSkipAt || b.updatedAt || '')))
       .at(-1)?.lastSkipReason || null,
+    nextCheckAfter: rows
+      .map((row) => row?.nextCheckAfter)
+      .filter(Boolean)
+      .filter((value) => new Date(value) > now)
+      .sort()
+      .at(0) || null,
+    lastWindowKey: rows
+      .filter((row) => row?.lastWindowKey || row?.windowKey)
+      .sort((a, b) => String(a.updatedAt || a.lastSkipAt || '').localeCompare(String(b.updatedAt || b.lastSkipAt || '')))
+      .map((row) => row.lastWindowKey || row.windowKey)
+      .at(-1) || null,
     stageCounts,
     cycleStageCounts,
     nextScheduledAt: rows
-      .flatMap((row) => [row?.pending?.scheduledAt, row?.observingUntil])
+      .map((row) => row?.pending?.scheduledAt)
       .filter(Boolean)
+      .filter((value) => new Date(value) > now)
+      .sort()
+      .at(0) || null,
+    observingUntil: rows
+      .map((row) => row?.observingUntil)
+      .filter(Boolean)
+      .filter((value) => new Date(value) > now)
       .sort()
       .at(0) || null,
   };
+}
+
+function summarizeRetargetingStatesByActivity(state = {}, activities = []) {
+  const activityIds = new Set(
+    (activities || [])
+      .map((activity) => activity?.activityId || activity?.id)
+      .filter(Boolean)
+  );
+  for (const row of Object.values(state || {})) {
+    if (row?.activityId) activityIds.add(row.activityId);
+  }
+  return Object.fromEntries(
+    [...activityIds].map((activityId) => [activityId, summarizeRetargetingState(state, activityId)])
+  );
+}
+
+function getRetargetingActivityIdFromTemplateId(templateId = '') {
+  const match = String(templateId || '').match(/^retargeting_auto_(.+?)_c\d+_s\d+(?:_|$)/);
+  return match ? match[1] : null;
+}
+
+function getRetargetingUserIdFromLog(log = {}) {
+  const segment = (log.segments || []).find((item) => String(item || '').startsWith('user:'));
+  return segment ? String(segment).slice(5) : null;
+}
+
+function normalizeRetargetingActivityLibrary(items = [], config = null) {
+  const rows = Array.isArray(items) ? items.filter(Boolean) : [];
+  const map = new Map();
+  for (const item of rows) {
+    const id = item.activityId || item.id;
+    if (!id) continue;
+    map.set(id, {
+      ...item,
+      activityId: id,
+      id,
+      enabled: !!item.enabled,
+      priority: Math.max(1, Number(item.priority || map.size + 1)),
+      updatedAt: item.updatedAt || item.updated_at || null,
+    });
+  }
+  if (config?.activityId && !config.deletedAt) {
+    map.set(config.activityId, {
+      ...(map.get(config.activityId) || {}),
+      ...config,
+      id: config.activityId,
+      activityId: config.activityId,
+      priority: Math.max(1, Number(config.priority || 1)),
+      isCurrentConfig: true,
+    });
+  }
+  return [...map.values()].sort((a, b) => (
+    Number(a.priority || 999) - Number(b.priority || 999)
+    || String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))
+  ));
+}
+
+function createRetargetingOutcomeSummary(logs = [], clicks = [], users = [], applications = []) {
+  const byActivity = {};
+  const ensure = (activityId) => {
+    if (!byActivity[activityId]) {
+      byActivity[activityId] = {
+        logs: 0,
+        targetCount: 0,
+        sentCount: 0,
+        failedCount: 0,
+        observedCount: 0,
+        clickCount: 0,
+        clickedUsers: 0,
+        repliedUsers: 0,
+        applyClickUsers: 0,
+        submittedUsers: 0,
+        paidUsers: 0,
+        blockedUsers: 0,
+        trackedUsers: 0,
+        firstLogAt: null,
+        lastLogAt: null,
+      };
+    }
+    return byActivity[activityId];
+  };
+
+  const clickCountsByLink = {};
+  const clickedUsersByActivity = {};
+  const linkPrefixesByActivity = {};
+  for (const click of clicks || []) {
+    const linkId = String(click.link_id || '');
+    clickCountsByLink[linkId] = (clickCountsByLink[linkId] || 0) + 1;
+  }
+
+  const userIdsByActivity = {};
+  for (const log of logs || []) {
+    const activityId = getRetargetingActivityIdFromTemplateId(log.template_id);
+    if (!activityId) continue;
+    const summary = ensure(activityId);
+    summary.logs += 1;
+    summary.targetCount += Number(log.target_count || 0);
+    summary.sentCount += Number(log.sent_count || 0);
+    if (log.status === 'failed') summary.failedCount += 1;
+    if (log.status === 'observed') summary.observedCount += 1;
+    summary.clickCount += log.link_id
+      ? Object.entries(clickCountsByLink)
+        .filter(([linkId]) => String(linkId || '').startsWith(log.link_id))
+        .reduce((sum, [, count]) => sum + count, 0)
+      : 0;
+    if (log.link_id) {
+      if (!linkPrefixesByActivity[activityId]) linkPrefixesByActivity[activityId] = new Set();
+      linkPrefixesByActivity[activityId].add(log.link_id);
+    }
+    const userId = getRetargetingUserIdFromLog(log);
+    if (userId) {
+      if (!userIdsByActivity[activityId]) userIdsByActivity[activityId] = new Set();
+      userIdsByActivity[activityId].add(userId);
+    }
+    const createdAt = log.completed_at || log.created_at;
+    if (createdAt && (!summary.firstLogAt || createdAt < summary.firstLogAt)) summary.firstLogAt = createdAt;
+    if (createdAt && (!summary.lastLogAt || createdAt > summary.lastLogAt)) summary.lastLogAt = createdAt;
+  }
+
+  for (const click of clicks || []) {
+    const activityId = getRetargetingActivityIdFromTemplateId(click.link_id);
+    if (!activityId || !click.line_user_id) continue;
+    const linkPrefixes = [...(linkPrefixesByActivity[activityId] || [])];
+    if (linkPrefixes.length > 0 && !linkPrefixes.some((prefix) => String(click.link_id || '').startsWith(prefix))) continue;
+    if (!clickedUsersByActivity[activityId]) clickedUsersByActivity[activityId] = new Set();
+    clickedUsersByActivity[activityId].add(click.line_user_id);
+  }
+
+  const userMap = new Map((users || []).map((user) => [user.line_user_id, user]));
+  const appsByUser = new Map();
+  for (const app of applications || []) {
+    if (!app.line_user_id) continue;
+    const existing = appsByUser.get(app.line_user_id);
+    if (existing?.status === 'paid') continue;
+    appsByUser.set(app.line_user_id, app);
+  }
+
+  for (const [activityId, userIds] of Object.entries(userIdsByActivity)) {
+    const summary = ensure(activityId);
+    const startedAt = summary.firstLogAt ? new Date(summary.firstLogAt) : null;
+    const afterActivityStart = (iso) => {
+      if (!iso) return false;
+      if (!startedAt || Number.isNaN(startedAt.getTime())) return true;
+      return new Date(iso) >= startedAt;
+    };
+    summary.trackedUsers = userIds.size;
+    summary.clickedUsers = clickedUsersByActivity[activityId]?.size || 0;
+    for (const userId of userIds) {
+      const user = userMap.get(userId);
+      const app = appsByUser.get(userId);
+      if (
+        afterActivityStart(user?.last_user_reply_at)
+        || afterActivityStart(user?.last_interaction_at)
+      ) summary.repliedUsers += 1;
+      if (afterActivityStart(user?.q5_clicked_at)) summary.applyClickUsers += 1;
+      if (app?.status && afterActivityStart(app.submitted_at)) summary.submittedUsers += 1;
+      if (app?.status === 'paid' && afterActivityStart(app.paid_at || app.submitted_at)) summary.paidUsers += 1;
+      if (user?.is_blocked && (!user.blocked_at || afterActivityStart(user.blocked_at))) summary.blockedUsers += 1;
+    }
+  }
+
+  return byActivity;
+}
+
+async function fetchRetargetingRowsByUsers(userIds = [], buildQuery) {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  const rows = [];
+  const chunkSize = 300;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const { data, error } = await buildQuery(chunk);
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  return rows;
 }
 
 async function handleGetRetargetingDashboard() {
@@ -1063,6 +1260,7 @@ async function handleGetRetargetingDashboard() {
     'retargeting_auto_state',
     'retargeting_audience_library',
     'retargeting_template_library',
+    'retargeting_activity_library',
   ];
   const { data: settings, error: settingsError } = await supabase
     .from('official_settings')
@@ -1074,19 +1272,23 @@ async function handleGetRetargetingDashboard() {
   }
 
   const map = Object.fromEntries((settings || []).map((row) => [row.key, row]));
-  const config = safeJsonParse(map.retargeting_admin_auto_config?.value, null);
+  const parsedConfig = safeJsonParse(map.retargeting_admin_auto_config?.value, null);
+  const config = parsedConfig?.deletedAt ? null : parsedConfig;
   const adminState = safeJsonParse(map.retargeting_admin_auto_state?.value, {});
   const memberState = safeJsonParse(map.retargeting_auto_state?.value, {});
 
-  const { data: logs, error: logsError } = await supabase
-    .from('official_push_logs')
-    .select('*')
-    .like('template_id', 'retargeting_auto_%')
-    .order('created_at', { ascending: false })
-    .limit(100);
-
-  if (logsError) {
-    return NextResponse.json({ error: logsError.message }, { status: 500 });
+  let logs = [];
+  try {
+    logs = await fetchAllAdminRows(
+      () => supabase
+        .from('official_push_logs')
+        .select('*')
+        .like('template_id', 'retargeting_auto_%')
+        .order('created_at', { ascending: false }),
+      'retargeting push logs'
+    );
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
   let clicks = [];
@@ -1094,7 +1296,7 @@ async function handleGetRetargetingDashboard() {
     clicks = await fetchAllAdminRows(
       () => supabase
         .from('official_line_clicks')
-        .select('link_id, clicked_at')
+        .select('line_user_id, link_id, clicked_at')
         .like('link_id', 'retargeting_auto_%')
         .order('clicked_at', { ascending: true }),
       'retargeting click stats'
@@ -1110,6 +1312,41 @@ async function handleGetRetargetingDashboard() {
       : 0,
   }));
 
+  const trackedUserIds = [...new Set((realLogs || []).map(getRetargetingUserIdFromLog).filter(Boolean))];
+  let trackedUsers = [];
+  let trackedApplications = [];
+  try {
+    if (trackedUserIds.length > 0) {
+      trackedUsers = await fetchRetargetingRowsByUsers(
+        trackedUserIds,
+        (ids) => supabase
+          .from('official_line_users')
+          .select('line_user_id, last_user_reply_at, last_interaction_at, q5_clicked_at, q5_click_count, is_blocked, blocked_at')
+          .in('line_user_id', ids)
+      );
+      trackedApplications = await fetchRetargetingRowsByUsers(
+        trackedUserIds,
+        (ids) => supabase
+          .from('official_program_applications')
+          .select('line_user_id, status, submitted_at, paid_at')
+          .in('line_user_id', ids)
+          .order('submitted_at', { ascending: false })
+      );
+    }
+  } catch (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const activityLibrary = normalizeRetargetingActivityLibrary(
+    safeJsonParse(map.retargeting_activity_library?.value, []),
+    config
+  );
+  const outcomeContext = map.drip_test_mode?.value === 'true' ? 'admin' : 'member';
+  const outcomeLogs = (realLogs || []).filter((log) => (
+    Array.isArray(log.segments) && log.segments.includes(outcomeContext)
+  ));
+  const activityOutcomes = createRetargetingOutcomeSummary(outcomeLogs, clicks, trackedUsers, trackedApplications);
+
   const { count: managerCount } = await supabase
     .from('official_line_users')
     .select('*', { count: 'exact', head: true })
@@ -1123,8 +1360,12 @@ async function handleGetRetargetingDashboard() {
     configUpdatedAt: map.retargeting_admin_auto_config?.updated_at || null,
     adminState: summarizeRetargetingState(adminState, config?.activityId),
     memberState: summarizeRetargetingState(memberState, config?.activityId),
+    adminActivityStates: summarizeRetargetingStatesByActivity(adminState, activityLibrary),
+    memberActivityStates: summarizeRetargetingStatesByActivity(memberState, activityLibrary),
     audienceLibrary: safeJsonParse(map.retargeting_audience_library?.value, []),
     templateLibrary: safeJsonParse(map.retargeting_template_library?.value, []),
+    activityLibrary,
+    activityOutcomes,
     logs: realLogs,
     managerCount: managerCount || 0,
   });
@@ -1253,13 +1494,15 @@ async function handleDeleteLog(data) {
 // ============================================================
 async function handleToggleDripTestMode({ enabled }) {
   if (!enabled) {
-    const { data: configSetting } = await supabase
+    const { data: settings, error: settingsError } = await supabase
       .from('official_settings')
-      .select('value')
-      .eq('key', 'retargeting_admin_auto_config')
-      .maybeSingle();
-    const config = safeJsonParse(configSetting?.value, null);
-    const readinessError = validateRetargetingFormalReadiness(config);
+      .select('key,value')
+      .in('key', ['retargeting_admin_auto_config', 'retargeting_activity_library']);
+    if (settingsError) return NextResponse.json({ error: settingsError.message }, { status: 500 });
+    const map = Object.fromEntries((settings || []).map((row) => [row.key, row.value]));
+    const config = safeJsonParse(map.retargeting_admin_auto_config, null);
+    const activityLibrary = safeJsonParse(map.retargeting_activity_library, []);
+    const readinessError = validateRetargetingFormalReadinessForActivities(config, activityLibrary);
     if (readinessError) {
       return NextResponse.json({
         error: `正式會員啟用前請先修正再行銷設定：${readinessError}`,
@@ -1341,13 +1584,16 @@ function sanitizeRetargetingStageTemplate(template = {}, stage = 1) {
     category: cleanConfigText(template.category || '自動再行銷'),
     message: String(template.message || template.body || '').slice(0, 10000),
     imageUrl: normalizePublicUrl(template.imageUrl || template.image_url || ''),
+    observeDays: template.observeDays == null
+      ? null
+      : clampConfigNumber(template.observeDays, 1, 1, 365),
     buttons: Array.isArray(template.buttons)
       ? template.buttons.slice(0, 3).map(sanitizeRetargetingButton)
       : [],
   };
 }
 
-function sanitizeRetargetingCycleFlow(flow = {}, cycle = 1, legacyTemplates = []) {
+function sanitizeRetargetingCycleFlow(flow = {}, cycle = 1, legacyTemplates = [], fallbackObserveDays = 1) {
   const stages = Array.isArray(flow.stages) ? flow.stages : [];
   return {
     cycle,
@@ -1359,6 +1605,12 @@ function sanitizeRetargetingCycleFlow(flow = {}, cycle = 1, legacyTemplates = []
       return {
         ...sanitized,
         cycle,
+        observeDays: clampConfigNumber(
+          stage.observeDays ?? sanitized.observeDays ?? flow.observeDays,
+          fallbackObserveDays,
+          1,
+          365
+        ),
         enabled: stageNumber === 1
           ? (cycle === 1 ? flow.enabled !== false : !!flow.enabled)
           : !!stage.enabled,
@@ -1369,8 +1621,14 @@ function sanitizeRetargetingCycleFlow(flow = {}, cycle = 1, legacyTemplates = []
 
 function buildRetargetingCycleFlows(config = {}, legacyTemplates = []) {
   const rawFlows = Array.isArray(config.cycleFlows) ? config.cycleFlows.slice(0, 3) : [];
+  const fallbackObserveDays = clampConfigNumber(config.observeDays, 1, 1, 365);
   if (rawFlows.length > 0) {
-    return [1, 2, 3].map((cycle) => sanitizeRetargetingCycleFlow(rawFlows[cycle - 1] || { cycle, enabled: cycle === 1 }, cycle));
+    return [1, 2, 3].map((cycle) => sanitizeRetargetingCycleFlow(
+      rawFlows[cycle - 1] || { cycle, enabled: cycle === 1 },
+      cycle,
+      [],
+      fallbackObserveDays
+    ));
   }
   return [sanitizeRetargetingCycleFlow({
     cycle: 1,
@@ -1384,7 +1642,7 @@ function buildRetargetingCycleFlows(config = {}, legacyTemplates = []) {
           ? config.stage2Enabled !== false
           : config.stage2Enabled !== false && !!config.stage3Enabled,
     })),
-  }, 1, legacyTemplates)];
+  }, 1, legacyTemplates, fallbackObserveDays)];
 }
 
 function getActiveRetargetingStageTemplates(config = {}) {
@@ -1404,8 +1662,46 @@ function getActiveRetargetingStageTemplates(config = {}) {
   return active;
 }
 
+function validateRetargetingAudienceReadiness(config = {}) {
+  const conditions = config.audienceConditions && typeof config.audienceConditions === 'object'
+    ? config.audienceConditions
+    : {};
+  const ruleId = conditions.presetId || config.ruleId || 'dropoff';
+  const defaults = defaultRetargetingEnabledConditions(ruleId);
+  const enabled = { ...defaults, ...(conditions.enabledConditions || {}) };
+  const enabledKeys = Object.entries(enabled).filter(([, value]) => value).map(([key]) => key);
+  if (enabledKeys.length === 0) return '受眾沒有啟用任何判斷條件';
+  if (enabled.receivedMin && Number(conditions.receivedMin || config.receivedMin || 0) < 1) {
+    return '受眾的「已收到至少幾篇」必須大於 0';
+  }
+  if (enabled.inactiveSteps && Number(conditions.inactiveSteps || config.missedSteps || 0) < 1) {
+    return '受眾的「最近連續幾篇沒有點擊」必須大於 0';
+  }
+  if (enabled.clickedMin && ruleId !== 'cold' && Number(conditions.clickedMin || 0) < 1) {
+    return '受眾的「至少點擊幾篇」必須大於 0';
+  }
+  if (enabled.recentDays && Number(conditions.recentDays || 0) < 1) {
+    return '受眾的「最近幾天有互動」必須大於 0';
+  }
+  if (enabled.joinedDays && Number(conditions.joinedDays || 0) < 0) {
+    return '受眾的「加入至少幾天」不能小於 0';
+  }
+  if (enabled.applyDelayDays && Number(conditions.applyDelayDays || 0) < 0) {
+    return '受眾的「點報名頁後等待幾天」不能小於 0';
+  }
+  if (enabled.paymentDelayDays && Number(conditions.paymentDelayDays || 0) < 0) {
+    return '受眾的「送單後等待付款幾天」不能小於 0';
+  }
+  if (enabled.customArticleType && !conditions.customArticleType) {
+    return '受眾有啟用文章類型，但沒有選擇文章類型';
+  }
+  return null;
+}
+
 function validateRetargetingFormalReadiness(config = {}) {
   if (!config?.enabled) return null;
+  const audienceError = validateRetargetingAudienceReadiness(config);
+  if (audienceError) return audienceError;
   for (const template of getActiveRetargetingStageTemplates(config)) {
     if (!template?.message?.trim()) return `第 ${template.stage || '?'} 階段模板缺少訊息文字`;
     if (template.imageUrl && !isPublicHttpsUrl(template.imageUrl)) {
@@ -1438,6 +1734,21 @@ function validateRetargetingFormalReadiness(config = {}) {
   return null;
 }
 
+function validateRetargetingFormalReadinessForActivities(config = null, activityLibrary = []) {
+  const activities = normalizeRetargetingActivityLibrary(activityLibrary, config)
+    .filter((activity) => activity.enabled !== false && activity.active !== false && !activity.deletedAt);
+
+  for (const activity of activities) {
+    const readinessError = validateRetargetingFormalReadiness(activity);
+    if (readinessError) {
+      const label = activity.activityName || activity.ruleTitle || activity.activityId || '未命名活動';
+      return `${label}：${readinessError}`;
+    }
+  }
+
+  return null;
+}
+
 function sanitizeRetargetingAudienceConditions(raw = {}, fallbackConfig = {}) {
   const conditions = raw && typeof raw === 'object' ? raw : {};
   const presetId = cleanConfigText(conditions.presetId || fallbackConfig.ruleId || 'dropoff');
@@ -1451,7 +1762,7 @@ function sanitizeRetargetingAudienceConditions(raw = {}, fallbackConfig = {}) {
     enabledConditions: Object.fromEntries(
       Object.keys(defaults).map((key) => [key, incomingEnabled[key] ?? defaults[key]])
     ),
-    clickedMin: clampConfigNumber(conditions.clickedMin, 2, 0),
+    clickedMin: clampConfigNumber(conditions.clickedMin ?? conditions.customMinimumClicks, 2, 0),
     inactiveSteps: clampConfigNumber(conditions.inactiveSteps || fallbackConfig.missedSteps, 2, 1),
     recentDays: clampConfigNumber(conditions.recentDays, 14, 1),
     applyDelayDays: clampConfigNumber(conditions.applyDelayDays, 3, 0),
@@ -1466,10 +1777,51 @@ function sanitizeRetargetingAudienceConditions(raw = {}, fallbackConfig = {}) {
     customArticleType: conditions.customArticleType === 'any' || DRIP_ARTICLE_TYPES.has(conditions.customArticleType)
       ? conditions.customArticleType
       : 'any',
-    customMinimumClicks: clampConfigNumber(conditions.customMinimumClicks ?? conditions.clickedMin, 1, 1),
+    customMinimumClicks: clampConfigNumber(conditions.clickedMin ?? conditions.customMinimumClicks, 1, 1),
     customExcludeSubmitted: conditions.customExcludeSubmitted !== false,
     customExcludePaid: conditions.customExcludePaid !== false,
   };
+}
+
+async function saveRetargetingActivityLibrary(config) {
+  const { data: currentSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'retargeting_activity_library')
+    .maybeSingle();
+  const existing = safeJsonParse(currentSetting?.value, []);
+  const now = new Date().toISOString();
+  const activity = {
+    ...config,
+    id: config.activityId,
+    activityId: config.activityId,
+    active: config.enabled,
+    priority: Math.max(1, Number(config.priority || 1)),
+    updatedAt: now,
+  };
+  const merged = [
+    activity,
+    ...(Array.isArray(existing) ? existing : [])
+      .filter((item) => (item.activityId || item.id) !== config.activityId)
+      .map((item) => ({
+        ...item,
+        id: item.activityId || item.id,
+        activityId: item.activityId || item.id,
+        priority: Math.max(1, Number(item.priority || 999)),
+        enabled: !!item.enabled,
+        active: item.active !== false,
+      })),
+  ].slice(0, 50);
+
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({
+      key: 'retargeting_activity_library',
+      value: JSON.stringify(merged),
+      updated_at: now,
+    });
+  if (error) throw error;
+  return merged;
 }
 
 async function handleSaveRetargetingAdminConfig({ config }) {
@@ -1486,6 +1838,7 @@ async function handleSaveRetargetingAdminConfig({ config }) {
     activityName: cleanConfigText(config.activityName || config.ruleTitle || '自動再行銷活動'),
     audienceId: cleanConfigText(config.audienceId || config.ruleId || 'dropoff'),
     firstTemplateId: cleanConfigText(config.firstTemplateId || config.stageTemplates?.[0]?.templateId || ''),
+    priority: Math.max(1, Number(config.priority || 1)),
     enabled: !!config.enabled,
     observeOnly: !!config.observeOnly,
     ruleId: String(config.ruleId || 'dropoff'),
@@ -1500,7 +1853,12 @@ async function handleSaveRetargetingAdminConfig({ config }) {
     sendMode: config.sendMode === 'instant' ? 'instant' : 'scheduled',
     sendDelayDays: Math.max(0, Number(config.sendDelayDays || 0)),
     sendAtTime: String(config.sendAtTime || '14:00'),
-    observeDays: Math.max(1, Number(config.observeDays || 1)),
+    observeDays: clampConfigNumber(
+      cycleFlows[0]?.stages?.[0]?.observeDays,
+      config.observeDays || 1,
+      1,
+      365
+    ),
     engagementCriteria: String(config.engagementCriteria || 'any_click_or_reply'),
     repeatStrategy: String(config.repeatStrategy || 'staged'),
     stage2Enabled: cycleFlows[0]?.stages?.[1]?.enabled === true,
@@ -1545,7 +1903,103 @@ async function handleSaveRetargetingAdminConfig({ config }) {
     });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true, config: cleanConfig });
+  try {
+    const activityLibrary = await saveRetargetingActivityLibrary(cleanConfig);
+    return NextResponse.json({ ok: true, config: cleanConfig, activityLibrary });
+  } catch (activityError) {
+    return NextResponse.json({ error: activityError.message }, { status: 500 });
+  }
+}
+
+async function handleDisableRetargetingActivity({ activityId }) {
+  if (!activityId) {
+    return NextResponse.json({ error: '缺少 activityId' }, { status: 400 });
+  }
+  const now = new Date().toISOString();
+  const { data: activitySetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'retargeting_activity_library')
+    .maybeSingle();
+  const library = safeJsonParse(activitySetting?.value, []);
+  const updatedLibrary = (Array.isArray(library) ? library : []).map((item) => {
+    const id = item.activityId || item.id;
+    if (id !== activityId) return item;
+    return { ...item, id, activityId: id, enabled: false, active: false, updatedAt: now };
+  });
+
+  const { data: configSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'retargeting_admin_auto_config')
+    .maybeSingle();
+  const currentConfig = safeJsonParse(configSetting?.value, null);
+  let config = currentConfig;
+  if (currentConfig?.activityId === activityId) {
+    config = { ...currentConfig, enabled: false, updatedAt: now };
+    const { error: configError } = await supabase
+      .from('official_settings')
+      .upsert({
+        key: 'retargeting_admin_auto_config',
+        value: JSON.stringify(config),
+        updated_at: now,
+      });
+    if (configError) return NextResponse.json({ error: configError.message }, { status: 500 });
+  }
+
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({
+      key: 'retargeting_activity_library',
+      value: JSON.stringify(updatedLibrary),
+      updated_at: now,
+    });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, config, activityLibrary: updatedLibrary });
+}
+
+async function handleDeleteRetargetingActivity({ activityId }) {
+  if (!activityId) {
+    return NextResponse.json({ error: '缺少 activityId' }, { status: 400 });
+  }
+  const now = new Date().toISOString();
+  const { data: activitySetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'retargeting_activity_library')
+    .maybeSingle();
+  const library = safeJsonParse(activitySetting?.value, []);
+  const updatedLibrary = (Array.isArray(library) ? library : [])
+    .filter((item) => (item.activityId || item.id) !== activityId);
+
+  const { data: configSetting } = await supabase
+    .from('official_settings')
+    .select('value')
+    .eq('key', 'retargeting_admin_auto_config')
+    .maybeSingle();
+  const currentConfig = safeJsonParse(configSetting?.value, null);
+  let config = currentConfig;
+  if (currentConfig?.activityId === activityId) {
+    config = { ...currentConfig, enabled: false, deletedAt: now, updatedAt: now };
+    const { error: configError } = await supabase
+      .from('official_settings')
+      .upsert({
+        key: 'retargeting_admin_auto_config',
+        value: JSON.stringify(config),
+        updated_at: now,
+      });
+    if (configError) return NextResponse.json({ error: configError.message }, { status: 500 });
+  }
+
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({
+      key: 'retargeting_activity_library',
+      value: JSON.stringify(updatedLibrary),
+      updated_at: now,
+    });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, config, activityLibrary: updatedLibrary });
 }
 
 function sanitizeRetargetingLibraryId(value, prefix) {
@@ -1663,7 +2117,7 @@ async function handleResetAdminDrip() {
 
   const userIds = (admins || []).map((u) => u.line_user_id).filter(Boolean);
   if (userIds.length === 0) {
-    return NextResponse.json({ ok: true, reset: 0, deletedLogs: 0, deletedClicks: 0 });
+    return NextResponse.json({ ok: true, reset: 0, deletedLogs: 0, deletedClicks: 0, deletedRetargetingLogs: 0 });
   }
 
   const now = new Date().toISOString();
@@ -1695,6 +2149,15 @@ async function handleResetAdminDrip() {
 
   if (clickErr) return NextResponse.json({ error: clickErr.message }, { status: 500 });
 
+  const { data: deletedRetargetingLogs, error: retargetingLogErr } = await supabase
+    .from('official_push_logs')
+    .delete()
+    .like('template_id', 'retargeting_auto_%')
+    .contains('segments', ['admin'])
+    .select('id');
+
+  if (retargetingLogErr) return NextResponse.json({ error: retargetingLogErr.message }, { status: 500 });
+
   await supabase
     .from('official_settings')
     .upsert({
@@ -1708,6 +2171,7 @@ async function handleResetAdminDrip() {
     reset: userIds.length,
     deletedLogs: deletedLogs?.length || 0,
     deletedClicks: deletedClicks?.length || 0,
+    deletedRetargetingLogs: deletedRetargetingLogs?.length || 0,
   });
 }
 

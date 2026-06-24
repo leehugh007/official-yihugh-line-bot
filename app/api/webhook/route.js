@@ -51,6 +51,12 @@ import { notifyCrossToolUsage } from '../../../lib/cross-tool-signal.js';
 import { generateFinalFeedback, verifyHandoffIntent } from '../../../lib/ai-classifier.js';
 import { getWelcomeMessages } from '../../../lib/config.js';
 import supabase from '../../../lib/supabase.js';
+import {
+  RETARGETING_ACTIVITY_LIBRARY_KEY,
+  RETARGETING_PRIMARY_CONFIG_KEY,
+  findRetargetingButtonReply,
+  parseRetargetingSettings,
+} from '../../../lib/retargeting-button-replies.js';
 // Phase 4.2 Q5 wire
 import { classifyQ5Intent } from '../../../lib/q5-classifier.js';
 import { pushQ5SoftInvite } from '../../../lib/q5-message.js';
@@ -102,35 +108,50 @@ const TEST_ALLOWLIST = [
   'U3edf3d2114ee03ad81cff1fd35c04600', // 婉馨
 ];
 
-function safeJsonParse(value, fallback) {
-  try {
-    return value ? JSON.parse(value) : fallback;
-  } catch {
-    return fallback;
-  }
-}
+async function matchRetargetingButtonReply(text, userId) {
+  const normalizedText = String(text || '').trim();
+  if (!normalizedText) return null;
 
-async function matchRetargetingButtonReply(text) {
-  const { data } = await supabase
-    .from('official_settings')
-    .select('value')
-    .eq('key', 'retargeting_admin_auto_config')
-    .single();
-  const config = safeJsonParse(data?.value, null);
-  const normalizedText = text.trim();
+  const [
+    settingsResult,
+    userLogsResult,
+    generalLogsResult,
+  ] = await Promise.all([
+    supabase
+      .from('official_settings')
+      .select('key,value')
+      .in('key', [RETARGETING_ACTIVITY_LIBRARY_KEY, RETARGETING_PRIMARY_CONFIG_KEY]),
+    supabase
+      .from('official_push_logs')
+      .select('template_id,buttons,created_at,completed_at')
+      .contains('segments', [`user:${userId}`])
+      .eq('status', 'completed')
+      .order('created_at', { ascending: false })
+      .limit(20),
+    supabase
+      .from('official_push_logs')
+      .select('template_id,buttons,created_at,completed_at')
+      .eq('status', 'completed')
+      .gt('sent_count', 0)
+      .order('completed_at', { ascending: false })
+      .limit(40),
+  ]);
 
-  for (const template of config?.stageTemplates || []) {
-    for (const button of template.buttons || []) {
-      const isMessageButton = button.actionType === 'message' || (!button.url && (button.replyText || button.messageText));
-      if (!isMessageButton || !button.replyText) continue;
-      const triggerText = String(button.messageText || button.label || '').trim();
-      if (triggerText && normalizedText === triggerText) {
-        return button.replyText;
-      }
-    }
-  }
+  if (settingsResult.error) console.warn('[Webhook] retargeting settings read failed:', settingsResult.error.message);
+  if (userLogsResult.error) console.warn('[Webhook] retargeting user logs read failed:', userLogsResult.error.message);
+  if (generalLogsResult.error) console.warn('[Webhook] push logs read failed:', generalLogsResult.error.message);
 
-  return null;
+  const { activities, primaryConfig } = parseRetargetingSettings(settingsResult.data || []);
+  const userLogs = userLogsResult.data || [];
+  const generalLogs = (generalLogsResult.data || [])
+    .filter((log) => !String(log.template_id || '').startsWith('retargeting_auto_'));
+
+  return findRetargetingButtonReply(normalizedText, {
+    userLogs,
+    generalLogs,
+    activities,
+    primaryConfig,
+  });
 }
 
 async function handleEvent(event) {
@@ -149,7 +170,7 @@ async function handleEvent(event) {
       if (claimed) return; // 代碼有效，已回覆
     }
 
-    const retargetingButtonReply = await matchRetargetingButtonReply(text);
+    const retargetingButtonReply = await matchRetargetingButtonReply(text, userId);
     if (retargetingButtonReply) {
       await recordInteraction(userId);
       await replyMessage(event.replyToken, [textMessage(retargetingButtonReply)]);
