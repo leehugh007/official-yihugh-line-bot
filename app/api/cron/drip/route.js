@@ -782,6 +782,20 @@ async function fetchRetargetingStepTypeMap() {
   };
 }
 
+async function persistRetargetingState(stateKey, state) {
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({
+      key: stateKey,
+      value: JSON.stringify(state),
+      updated_at: new Date().toISOString(),
+    });
+  if (error) {
+    console.error('[Retargeting] state upsert failed:', error);
+    throw error;
+  }
+}
+
 async function processRetargeting() {
   const { data: testModeSetting } = await supabase
     .from('official_settings')
@@ -1235,22 +1249,10 @@ async function processRetargeting() {
     });
 
     // 每跑完一個活動就先寫回狀態：中途 timeout 才不會讓已發送的紀錄消失導致下一輪重發
-    await supabase
-      .from('official_settings')
-      .upsert({
-        key: stateKey,
-        value: JSON.stringify(state),
-        updated_at: new Date().toISOString(),
-      });
+    await persistRetargetingState(stateKey, state);
   }
 
-  await supabase
-    .from('official_settings')
-    .upsert({
-      key: stateKey,
-      value: JSON.stringify(state),
-      updated_at: new Date().toISOString(),
-    });
+  await persistRetargetingState(stateKey, state);
 
   return {
     processed,
