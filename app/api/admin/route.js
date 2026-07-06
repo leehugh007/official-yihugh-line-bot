@@ -1132,7 +1132,7 @@ function normalizeRetargetingActivityLibrary(items = [], config = null) {
   ));
 }
 
-function createRetargetingOutcomeSummary(logs = [], clicks = [], users = [], applications = []) {
+function createRetargetingOutcomeSummary(logs = [], clicks = [], users = [], applications = [], dripClicks = []) {
   const byActivity = {};
   const ensure = (activityId) => {
     if (!byActivity[activityId]) {
@@ -1145,6 +1145,7 @@ function createRetargetingOutcomeSummary(logs = [], clicks = [], users = [], app
         clickCount: 0,
         clickedUsers: 0,
         repliedUsers: 0,
+        articleClickUsers: 0,
         applyClickUsers: 0,
         submittedUsers: 0,
         paidUsers: 0,
@@ -1211,6 +1212,12 @@ function createRetargetingOutcomeSummary(logs = [], clicks = [], users = [], app
     if (existing?.status === 'paid') continue;
     appsByUser.set(app.line_user_id, app);
   }
+  const dripClicksByUser = new Map();
+  for (const click of dripClicks || []) {
+    if (!click.line_user_id || !click.clicked_at) continue;
+    if (!dripClicksByUser.has(click.line_user_id)) dripClicksByUser.set(click.line_user_id, []);
+    dripClicksByUser.get(click.line_user_id).push(click.clicked_at);
+  }
 
   for (const [activityId, userIds] of Object.entries(userIdsByActivity)) {
     const summary = ensure(activityId);
@@ -1229,6 +1236,8 @@ function createRetargetingOutcomeSummary(logs = [], clicks = [], users = [], app
         afterActivityStart(user?.last_user_reply_at)
         || afterActivityStart(user?.last_interaction_at)
       ) summary.repliedUsers += 1;
+      // 回頭點排程文章＝被喚醒（跟 cron 的互動判定一致）
+      if ((dripClicksByUser.get(userId) || []).some((iso) => afterActivityStart(iso))) summary.articleClickUsers += 1;
       if (afterActivityStart(user?.q5_clicked_at)) summary.applyClickUsers += 1;
       if (app?.status && afterActivityStart(app.submitted_at)) summary.submittedUsers += 1;
       if (app?.status === 'paid' && afterActivityStart(app.paid_at || app.submitted_at)) summary.paidUsers += 1;
@@ -1315,6 +1324,7 @@ async function handleGetRetargetingDashboard() {
   const trackedUserIds = [...new Set((realLogs || []).map(getRetargetingUserIdFromLog).filter(Boolean))];
   let trackedUsers = [];
   let trackedApplications = [];
+  let trackedDripClicks = [];
   try {
     if (trackedUserIds.length > 0) {
       trackedUsers = await fetchRetargetingRowsByUsers(
@@ -1332,6 +1342,14 @@ async function handleGetRetargetingDashboard() {
           .in('line_user_id', ids)
           .order('submitted_at', { ascending: false })
       );
+      trackedDripClicks = await fetchRetargetingRowsByUsers(
+        trackedUserIds,
+        (ids) => supabase
+          .from('official_line_clicks')
+          .select('line_user_id, link_id, clicked_at')
+          .in('line_user_id', ids)
+          .like('link_id', 'drip_%')
+      );
     }
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -1345,7 +1363,7 @@ async function handleGetRetargetingDashboard() {
   const outcomeLogs = (realLogs || []).filter((log) => (
     Array.isArray(log.segments) && log.segments.includes(outcomeContext)
   ));
-  const activityOutcomes = createRetargetingOutcomeSummary(outcomeLogs, clicks, trackedUsers, trackedApplications);
+  const activityOutcomes = createRetargetingOutcomeSummary(outcomeLogs, clicks, trackedUsers, trackedApplications, trackedDripClicks);
 
   const { count: managerCount } = await supabase
     .from('official_line_users')
