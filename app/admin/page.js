@@ -5261,6 +5261,7 @@ function AudienceRetargetingPrototype() {
     return [
       { label: '點擊', value: `${outcome.clickCount ?? fallbackClicks} 次` },
       { label: '回覆', value: `${outcome.repliedUsers || 0} 人` },
+      { label: '回頭點文章', value: `${outcome.articleClickUsers || 0} 人` },
       { label: '進報名頁', value: `${outcome.applyClickUsers || 0} 人` },
       { label: '送單', value: `${outcome.submittedUsers || 0} 人` },
       { label: '付款', value: `${outcome.paidUsers || 0} 人` },
@@ -5777,7 +5778,7 @@ function AudienceRetargetingPrototype() {
                     <span>優先 {activity.priority || 1}｜{isCurrent ? '目前編輯活動' : '活動庫'}｜{rowStatus}</span>
                     <span>待發 {rowState.pending || 0}｜觀察中 {rowState.observing || 0}｜錯誤 {rowState.failed || 0}</span>
                     <span>已發 {rowSentCount}｜點擊 {rowClickCount}</span>
-                    <span>回覆 {outcome.repliedUsers || 0}｜報名頁 {outcome.applyClickUsers || 0}｜送單 {outcome.submittedUsers || 0}｜付款 {outcome.paidUsers || 0}</span>
+                    <span>回覆 {outcome.repliedUsers || 0}｜回頭點文章 {outcome.articleClickUsers || 0}｜報名頁 {outcome.applyClickUsers || 0}｜送單 {outcome.submittedUsers || 0}｜付款 {outcome.paidUsers || 0}</span>
                     <div style={styles.retargetingActivityActions}>
                       <button type="button" style={styles.btnSecondary} onClick={() => {
                         loadConfigToForm(activity, { audiences: audienceLibrary, templates: templateLibrary });

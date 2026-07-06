@@ -19,10 +19,22 @@ import { wrapLink } from '../../../../lib/tracking.js';
 import { sendScheduledPush } from '../../../../lib/push.js';
 import { normalizePublicUrl, isPublicHttpsUrl } from '../../../../lib/config.js';
 import {
+  appendCompletedRetargetingWindow,
+  buildRetargetingHaltState,
+  buildRetargetingSentState,
+  findInactiveLogWindows,
+  getNextRetargetingStep,
+  getRetargetingSkipLastWindowKey,
   getRetargetingStageObserveDays,
   getRetargetingStageTemplate,
+  isCompletedRetargetingWindow,
+  selectRetargetingWindow,
+  shouldSkipRetargetingDueToCooldown,
   shouldScheduleRetargetingStep,
 } from '../../../../lib/retargeting-stage-timing.js';
+
+// 狀態要等整輪跑完才寫回 DB；設上限避免中途被砍導致已發送但狀態沒存、下一輪重發
+export const maxDuration = 60;
 
 const ADMIN_TAG = '\u7ba1\u7406\u8005';
 const ENROLLED_TAG = '\u5df2\u5831\u540d\u6e1b\u91cd\u73ed';
@@ -124,7 +136,12 @@ function taipeiScheduledAt(delayDays, hhmm) {
   const y = taipeiNow.getUTCFullYear();
   const m = taipeiNow.getUTCMonth();
   const d = taipeiNow.getUTCDate() + Number(delayDays || 0);
-  return new Date(Date.UTC(y, m, d, hour - 8, minute, 0, 0)).toISOString();
+  let scheduled = new Date(Date.UTC(y, m, d, hour - 8, minute, 0, 0));
+  // 當天指定時間已過就排到隔天同一時間，不立即發送
+  if (scheduled.getTime() <= Date.now()) {
+    scheduled = new Date(scheduled.getTime() + 24 * 60 * 60 * 1000);
+  }
+  return scheduled.toISOString();
 }
 
 function isUsableRetargetingButton(button = {}) {
@@ -284,10 +301,6 @@ function normalizeRetargetingCycleFlows(config = {}) {
   }];
 }
 
-function getRetargetingCycleFlow(config = {}, cycle = 1) {
-  return normalizeRetargetingCycleFlows(config).find((flow) => Number(flow.cycle) === Number(cycle));
-}
-
 function getActiveRetargetingStageTemplates(config = {}) {
   if (config.repeatStrategy !== 'staged') {
     const first = getRetargetingStageTemplate(config, 1, 1);
@@ -373,7 +386,7 @@ function validateRetargetingFormalConfig(config = {}) {
 
 async function recordRetargetingObservation(userId, config, step, windowKey, context) {
   const { cycle, stage } = normalizeRetargetingStep(step);
-  const template = getRetargetingStageTemplate(config, cycle, stage) || getRetargetingStageTemplate(config, 1, 1);
+  const template = getRetargetingStageTemplate(config, cycle, stage);
   if (!template?.message) return false;
 
   const activityKey = getRetargetingActivityKey(config);
@@ -405,7 +418,7 @@ async function recordRetargetingObservation(userId, config, step, windowKey, con
 
 async function sendRetargetingMessage(userId, config, step, windowKey, context) {
   const { cycle, stage } = normalizeRetargetingStep(step);
-  const template = getRetargetingStageTemplate(config, cycle, stage) || getRetargetingStageTemplate(config, 1, 1);
+  const template = getRetargetingStageTemplate(config, cycle, stage);
   if (!template?.message) return { ok: false, error: 'template message missing' };
 
   const activityKey = getRetargetingActivityKey(config);
@@ -479,68 +492,11 @@ function hasRetargetingEngagement(user, clicks, appRecord, sinceIso, criteria = 
   return replied || clicked;
 }
 
-function getNextRetargetingStep(config, userState = {}, windowKey) {
-  const sentCount = userState?.sentCount || 0;
-  const cycleCount = Number(userState?.cycleCount || 0);
-  if (userState?.stopped) {
-    return { action: 'stop', reason: 'user_stopped' };
-  }
-  if (config.repeatStrategy === 'once' && (sentCount >= 1 || cycleCount >= 1)) {
-    return { action: 'skip', reason: 'already_sent_once' };
-  }
-  if (config.repeatStrategy === 'cooldown' && (sentCount >= 1 || cycleCount >= 1)) {
-    return { action: 'cooldown', reason: 'repeat_cooldown' };
-  }
-  if (config.repeatStrategy === 'staged') {
-    const sameWindow = userState.currentWindowKey === windowKey;
-    const cycle = sameWindow
-      ? Math.max(1, Number(userState.currentCycle || userState.cycleCount || 1))
-      : Math.max(1, Math.min(3, userState.lastAction === 'engaged' ? cycleCount + 1 : 1));
-    const flow = getRetargetingCycleFlow(config, cycle);
-    if (!flow?.enabled) {
-      return { action: config.thirdStageAction || 'cooldown', reason: 'cycle_disabled', cycle };
-    }
-    const nextStage = sameWindow
-      ? Math.max(1, Number(userState.stageInCycle || userState.lastStage || 0) + 1)
-      : 1;
-    const template = getRetargetingStageTemplate(config, cycle, nextStage);
-    if (template?.message) {
-      return {
-        action: 'send',
-        cycle,
-        stage: nextStage,
-        flowType: cycle > 1 ? 'requalification' : nextStage > 1 ? 'no_response' : 'initial',
-      };
-    }
-    return { action: flow.finalAction || config.thirdStageAction || 'cooldown', reason: 'no_more_stage', cycle };
-  }
-  return sentCount === 0
-    ? { action: 'send', cycle: 1, stage: 1, flowType: 'initial' }
-    : { action: 'skip', reason: 'already_sent' };
-}
-
-function isCompletedRetargetingWindow(userState = {}, windowKey) {
-  if (!windowKey) return false;
-  if (userState.stopped) return true;
-  if (Array.isArray(userState.completedWindowKeys) && userState.completedWindowKeys.includes(windowKey)) return true;
-  if (userState.completedWindowKey === windowKey) return true;
-  if (userState.lastAction && ['engaged', 'cooldown', 'manual', 'stop', 'skip'].includes(userState.lastAction)) {
-    return userState.lastWindowKey === windowKey;
-  }
-  return false;
-}
-
-function appendCompletedRetargetingWindow(userState = {}, windowKey) {
-  if (!windowKey) return userState.completedWindowKeys || [];
-  const keys = Array.isArray(userState.completedWindowKeys) ? userState.completedWindowKeys : [];
-  return [...new Set([...keys, windowKey])].slice(-12);
-}
-
 function markRetargetingSkip(state, userId, userState, config, windowKey, reason, extra = {}) {
   setRetargetingUserState(state, config, userId, {
     ...userState,
     activityId: config.activityId || userState.activityId,
-    lastWindowKey: windowKey || userState.lastWindowKey,
+    lastWindowKey: getRetargetingSkipLastWindowKey(userState, windowKey, reason),
     lastSkipReason: reason,
     lastSkipAt: new Date().toISOString(),
     ...extra,
@@ -669,19 +625,6 @@ function compactRetargetingLogs(logs = []) {
   }));
 }
 
-function retargetingWindowFromState(userState = {}) {
-  const windowKey = userState.pending?.windowKey || userState.currentWindowKey;
-  const logs = userState.pending?.windowLogs || userState.currentWindowLogs || userState.windowLogs || [];
-  const latestSentAt = userState.pending?.windowLatestSentAt || userState.currentWindowLatestSentAt || userState.windowLatestSentAt;
-  if (!windowKey) return null;
-  return {
-    windowKey,
-    recentLogs: logs,
-    latestSentAt: latestSentAt || logs.at(-1)?.sent_at || null,
-    fromState: true,
-  };
-}
-
 function retargetingWindowPayload(window = {}) {
   return {
     windowKey: window.windowKey,
@@ -701,32 +644,6 @@ function getAudienceArticleType(ruleId, conditions, enabled) {
 function filterLogsByArticleType(logs = [], stepTypeMap = new Map(), articleType = 'any') {
   if (!articleType || articleType === 'any') return logs;
   return logs.filter((log) => (stepTypeMap.get(Number(log.step_number)) || 'other') === articleType);
-}
-
-function findInactiveLogWindows(logs = [], size = 1, userClickSteps = new Set()) {
-  const windowSize = Math.max(1, Number(size) || 1);
-  if ((logs || []).length < windowSize) return [];
-  const windows = [];
-  for (let i = 0; i <= logs.length - windowSize; i++) {
-    const recentLogs = logs.slice(i, i + windowSize);
-    const allMissed = recentLogs.every((log) => !userClickSteps.has(Number(log.step_number)));
-    if (!allMissed) continue;
-    windows.push({
-      recentLogs,
-      windowKey: recentLogs.map((log) => log.step_number).join('-'),
-      latestSentAt: recentLogs.at(-1)?.sent_at || null,
-    });
-  }
-  return windows;
-}
-
-function selectRetargetingWindow(windows = [], userState = {}) {
-  const preferredKeys = [userState.pending?.windowKey, userState.currentWindowKey].filter(Boolean);
-  for (const key of preferredKeys) {
-    const matchedWindow = windows.find((window) => window.windowKey === key);
-    if (matchedWindow && !isCompletedRetargetingWindow(userState, key)) return matchedWindow;
-  }
-  return windows.find((window) => !isCompletedRetargetingWindow(userState, window.windowKey)) || null;
 }
 
 function evaluateRetargetingAudience(config, user, uniqueLogs, userClicks, appRecord, stepTypeMap, userState = {}) {
@@ -863,6 +780,20 @@ async function fetchRetargetingStepTypeMap() {
       step.article_type || 'other',
     ])),
   };
+}
+
+async function persistRetargetingState(stateKey, state) {
+  const { error } = await supabase
+    .from('official_settings')
+    .upsert({
+      key: stateKey,
+      value: JSON.stringify(state),
+      updated_at: new Date().toISOString(),
+    });
+  if (error) {
+    console.error('[Retargeting] state upsert failed:', error);
+    throw error;
+  }
 }
 
 async function processRetargeting() {
@@ -1068,36 +999,22 @@ async function processRetargeting() {
     const latestSentAt = audience.latestSentAt || recentLogs[recentLogs.length - 1]?.sent_at;
     const windowKey = audience.windowKey || recentLogs.map((log) => log.step_number).join('-') || 'audience-match';
     const windowPayload = retargetingWindowPayload({ recentLogs, windowKey, latestSentAt });
-    if (latestSentAt && new Date(latestSentAt) > new Date(daysAgoIso(config.checkDelayDays || 0))) {
-      markRetargetingSkip(state, userId, userState, config, windowKey, 'waiting_check_delay', {
-        nextCheckAfter: daysAfterIso(latestSentAt, config.checkDelayDays || 0),
-        ...windowPayload,
-      });
-      skipped++;
-      activitySkipped++;
-      continue;
-    }
 
     const pendingForWindow = userState.pending?.windowKey === windowKey ? userState.pending : null;
+    // 互動包含：再行銷訊息點擊/回覆 + 排程文章點擊（回頭點文章＝被喚醒）
     const engagedSinceLastSent = !!(
       userState.lastSentAt
       && userState.lastEngagementHandledForSentAt !== userState.lastSentAt
       && hasRetargetingEngagement(
         usersById[userId],
-        retargetingClicksByUser[userId] || [],
+        [...(retargetingClicksByUser[userId] || []), ...(clicksByUser[userId] || [])],
         appStatusByUser.get(userId),
         userState.lastSentAt,
         config.engagementCriteria
       )
     );
 
-    if (isCompletedRetargetingWindow(userState, windowKey)) {
-      markRetargetingSkip(state, userId, userState, config, windowKey, 'window_completed');
-      skipped++;
-      activitySkipped++;
-      continue;
-    }
-
+    // 互動檢查放在冷卻檢查之前：冷卻後遲來的互動代表變暖，解除冷卻、下次符合走下一輪（留活口）
     if (engagedSinceLastSent) {
       setRetargetingUserState(state, config, userId, {
         ...userState,
@@ -1116,6 +1033,46 @@ async function processRetargeting() {
         lastAction: 'engaged',
         updatedAt: new Date().toISOString(),
       });
+      skipped++;
+      activitySkipped++;
+      continue;
+    }
+
+    if (shouldSkipRetargetingDueToCooldown(config, userState, windowKey)) {
+      setRetargetingUserState(state, config, userId, {
+        ...userState,
+        activityId: config.activityId || userState.activityId,
+        lastWindowKey: windowKey,
+        completedWindowKey: windowKey,
+        completedWindowKeys: appendCompletedRetargetingWindow(userState, windowKey),
+        currentWindowKey: null,
+        currentWindowLogs: null,
+        currentWindowLatestSentAt: null,
+        pending: null,
+        nextCheckAfter: null,
+        nextScheduledAt: null,
+        lastAction: 'cooldown',
+        lastSkipReason: 'repeat_cooldown_after_no_response',
+        lastSkipAt: new Date().toISOString(),
+        ...windowPayload,
+        updatedAt: new Date().toISOString(),
+      });
+      skipped++;
+      activitySkipped++;
+      continue;
+    }
+    if (latestSentAt && new Date(latestSentAt) > new Date(daysAgoIso(config.checkDelayDays || 0))) {
+      markRetargetingSkip(state, userId, userState, config, windowKey, 'waiting_check_delay', {
+        nextCheckAfter: daysAfterIso(latestSentAt, config.checkDelayDays || 0),
+        ...windowPayload,
+      });
+      skipped++;
+      activitySkipped++;
+      continue;
+    }
+
+    if (isCompletedRetargetingWindow(userState, windowKey)) {
+      markRetargetingSkip(state, userId, userState, config, windowKey, 'window_completed');
       skipped++;
       activitySkipped++;
       continue;
@@ -1158,7 +1115,7 @@ async function processRetargeting() {
       continue;
     }
 
-    const next = pendingForWindow
+    let next = pendingForWindow
       ? {
           action: 'send',
           cycle: pendingForWindow.cycle || 1,
@@ -1166,25 +1123,21 @@ async function processRetargeting() {
           flowType: pendingForWindow.flowType,
         }
       : getNextRetargetingStep(config, userState, windowKey);
+    if (
+      pendingForWindow
+      && next.action === 'send'
+      && !getRetargetingStageTemplate(config, next.cycle, next.stage)?.message
+    ) {
+      // 排程等待期間模板被改掉／停用：不硬發錯的內容，重新判斷下一步
+      next = getNextRetargetingStep(config, userState, windowKey);
+    }
     if (next.action !== 'send') {
-      setRetargetingUserState(state, config, userId, {
-        ...userState,
-        activityId: config.activityId || userState.activityId,
-        lastWindowKey: windowKey,
-        completedWindowKey: windowKey,
-        completedWindowKeys: appendCompletedRetargetingWindow(userState, windowKey),
-        currentWindowKey: null,
-        currentWindowLogs: null,
-        currentWindowLatestSentAt: null,
-        stopped: next.action === 'stop' ? true : !!userState.stopped,
-        lastAction: next.action,
-        lastSkipReason: next.reason || next.action,
-        lastSkipAt: new Date().toISOString(),
-        nextCheckAfter: null,
-        nextScheduledAt: null,
-        ...windowPayload,
-        updatedAt: new Date().toISOString(),
-      });
+      setRetargetingUserState(
+        state,
+        config,
+        userId,
+        buildRetargetingHaltState(userState, config, next, windowPayload, new Date().toISOString())
+      );
       skipped++;
       activitySkipped++;
       continue;
@@ -1252,31 +1205,13 @@ async function processRetargeting() {
 
     const sendResult = await sendRetargetingMessage(userId, config, next, windowKey, context);
     if (sendResult.ok) {
-      const sentStageObserveDays = getRetargetingStageObserveDays(config, next.cycle || 1, next.stage || 1);
-      setRetargetingUserState(state, config, userId, {
-        ...userState,
-        activityId: config.activityId || userState.activityId,
-        sentCount: (userState.sentCount || 0) + 1,
-        cycleCount: Math.max(Number(userState.cycleCount || 0), Number(next.cycle || 1)),
-        currentCycle: Number(next.cycle || 1),
-        currentWindowKey: windowKey,
-        currentWindowLogs: windowPayload.windowLogs,
-        currentWindowLatestSentAt: windowPayload.windowLatestSentAt,
-        stageInCycle: Number(next.stage || 1),
-        lastCycle: Number(next.cycle || 1),
-        lastStage: next.stage,
-        lastFlowType: next.flowType,
-        lastSentAt: new Date().toISOString(),
-        lastEngagementHandledForSentAt: null,
-        observingUntil: daysAfterIso(new Date().toISOString(), sentStageObserveDays),
-        lastWindowKey: windowKey,
-        completedWindowKey: null,
-        pending: null,
-        nextCheckAfter: null,
-        nextScheduledAt: null,
-        lastError: null,
-        updatedAt: new Date().toISOString(),
-      });
+      const sentAt = new Date().toISOString();
+      setRetargetingUserState(
+        state,
+        config,
+        userId,
+        buildRetargetingSentState(userState, config, next, windowPayload, sentAt)
+      );
       reservedUserIds.add(userId);
       sent++;
       activitySent++;
@@ -1312,15 +1247,12 @@ async function processRetargeting() {
       pending: activityPending,
       observed: activityObserved,
     });
+
+    // 每跑完一個活動就先寫回狀態：中途 timeout 才不會讓已發送的紀錄消失導致下一輪重發
+    await persistRetargetingState(stateKey, state);
   }
 
-  await supabase
-    .from('official_settings')
-    .upsert({
-      key: stateKey,
-      value: JSON.stringify(state),
-      updated_at: new Date().toISOString(),
-    });
+  await persistRetargetingState(stateKey, state);
 
   return {
     processed,
