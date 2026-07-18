@@ -57,6 +57,7 @@ import {
   findRetargetingButtonReply,
   parseRetargetingSettings,
 } from '../../../lib/retargeting-button-replies.js';
+import { TRIAL_WANT_REPLY, TAG_WANT } from '../../../lib/trial-invite.js';
 // Phase 4.2 Q5 wire
 import { classifyQ5Intent } from '../../../lib/q5-classifier.js';
 import { pushQ5SoftInvite } from '../../../lib/q5-message.js';
@@ -168,6 +169,28 @@ async function handleEvent(event) {
     if (/^[A-Z2-9]{4}$/.test(text)) {
       const claimed = await handleCodeClaim(event, userId, text);
       if (claimed) return; // 代碼有效，已回覆
+    }
+
+    // 3天看餐體驗第二段（lib/trial-invite.js）：被邀請者回「想」→ 給阿算連結
+    // tag gate：只有帶「體驗邀請-auto-*」標籤的人命中；其他人打「想」原樣 fall through
+    // 重複打「想」→ 重發連結（冪等），標籤只上一次
+    if (text === '想') {
+      const inviteUser = await getUser(userId);
+      const inviteTags = inviteUser?.tags || [];
+      if (inviteTags.some((t) => String(t).startsWith('體驗邀請-auto'))) {
+        await recordInteraction(userId);
+        if (!inviteTags.includes(TAG_WANT)) {
+          const { error: wantTagError } = await supabase
+            .from('official_line_users')
+            .update({ tags: [...inviteTags, TAG_WANT] })
+            .eq('line_user_id', userId);
+          if (wantTagError) {
+            console.error('[TrialInvite] want tag update failed:', userId, wantTagError.message);
+          }
+        }
+        await replyMessage(event.replyToken, [textMessage(TRIAL_WANT_REPLY)]);
+        return;
+      }
     }
 
     const retargetingButtonReply = await matchRetargetingButtonReply(text, userId);

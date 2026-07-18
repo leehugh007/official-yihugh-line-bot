@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/sheet-sync",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/trial-invite",
+      "schedule": "0 3 * * *"
     }
   ]
 }
