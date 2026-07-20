@@ -171,13 +171,13 @@ async function handleEvent(event) {
       if (claimed) return; // 代碼有效，已回覆
     }
 
-    // 3天看餐體驗第二段（lib/trial-invite.js）：被邀請者回「想」→ 給阿算連結
-    // tag gate：只有帶「體驗邀請-auto-*」標籤的人命中；其他人打「想」原樣 fall through
-    // 重複打「想」→ 重發連結（冪等），標籤只上一次
+    // 3天幫你看體驗第二段（lib/trial-invite.js）：被邀請者回「想」→ 給阿算連結
+    // tag gate：帶「體驗邀請」系列標籤的人命中（auto-A/B 自動邀請 + pub-N 群發批次 + w1 手動含「看餐體驗邀請-w1」）
+    // 其他人打「想」原樣 fall through；重複打「想」→ 重發連結（冪等），標籤只上一次
     if (text === '想') {
       const inviteUser = await getUser(userId);
       const inviteTags = inviteUser?.tags || [];
-      if (inviteTags.some((t) => String(t).startsWith('體驗邀請-auto'))) {
+      if (inviteTags.some((t) => String(t).includes('體驗邀請'))) {
         await recordInteraction(userId);
         if (!inviteTags.includes(TAG_WANT)) {
           const { error: wantTagError } = await supabase
