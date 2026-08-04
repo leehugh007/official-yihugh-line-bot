@@ -1044,6 +1044,26 @@ async function handleQuizCodeClaim(event, userId, session) {
 
   const profile = await getProfile(userId);
   const report = buildPersonalizedReport(session, profile?.displayName || '');
+  // 2026-08-04 一休核准：代碼領取＝全鏈熱度最高點，零秒接棒三天體驗（原本要等隔天 11:00 自動線）
+  report.push(textMessage(`對了——你的類型報告只是起點。
+
+我有一個免費的「三天幫你看體驗」：我的 AI 助理阿算，看你 3 天實際吃的餐，找出你一直瘦不下來、瘦了又胖回去的「盲點」。
+
+想參加的話，回我一個「想」就好。`));
+  // 上 tag 讓「想」handler 接得住（quiz 段獨立標籤，指標可分流）
+  try {
+    const { data: tagRow } = await supabase
+      .from('official_line_users').select('tags').eq('line_user_id', userId).single();
+    const tags = tagRow?.tags || [];
+    if (!tags.some((t) => String(t).includes('體驗邀請'))) {
+      await supabase
+        .from('official_line_users')
+        .update({ tags: [...tags, '體驗邀請-quiz'] })
+        .eq('line_user_id', userId);
+    }
+  } catch (err) {
+    console.error('[Quiz Claim] trial invite tag failed (non-fatal):', err?.message);
+  }
   await replyMessage(event.replyToken, report);
   await notifyCrossToolUsage(userId, profile?.displayName, 'quiz', existingUser?.source);
   return true;
