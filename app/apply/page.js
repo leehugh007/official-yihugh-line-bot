@@ -683,6 +683,7 @@ export default function ApplyPage() {
             .then((res) => res.ok ? res.json() : null)
             .then((data) => {
               if (!cancelled && data?.pricing) setPricing(data.pricing);
+              if (!cancelled && data?.plan_texts) setPlanTexts(data.plan_texts);
             })
             .catch((e) => console.warn('[apply] visit failed:', e));
         }
@@ -713,6 +714,7 @@ export default function ApplyPage() {
   const [submitted, setSubmitted] = useState(false);
   // V3.2 Phase 4：超早鳥定價狀態（從 /api/apply/visit 回傳，含 cutoff_at + super_early_active + 4 個 price tiers）
   const [pricing, setPricing] = useState(null);
+  const [planTexts, setPlanTexts] = useState(null); // 2026-08-12 方案說明 settings 驅動
   const batchName = pricing?.batch?.name || '下一期班';
   const batchStartDate = pricing?.batch?.start_date || '';
 
@@ -1457,27 +1459,17 @@ export default function ApplyPage() {
             </>
           )}
           <p style={S.para}>
-            這是多數學員選的版本。代謝重建需要時間 —— 四週打基礎，八週讓身體習慣，
-            十二週讓它變成你的生活。
+            {planTexts?.p12_desc || '這是多數學員選的版本。代謝重建需要時間 —— 四週打基礎，八週讓身體習慣，十二週讓它變成你的生活。'}
           </p>
           <p style={{ ...S.para, marginTop: 16, fontWeight: 700 }}>你會拿到：</p>
           <ul style={S.planBulletList}>
-            <li style={S.planBullet}>
-              <span style={S.planCheckIcon}>✓</span>
-              <span>一休親自直播 12 堂 + 錄播課 24 堂</span>
-            </li>
-            <li style={S.planBullet}>
-              <span style={S.planCheckIcon}>✓</span>
-              <span>15 位國家高考營養師，每天幫你看餐</span>
-            </li>
-            <li style={S.planBullet}>
-              <span style={S.planCheckIcon}>✓</span>
-              <span>24 堂營養課 + 150+ 堂運動課</span>
-            </li>
-            <li style={S.planBullet}>
-              <span style={S.planCheckIcon}>✓</span>
-              <span>班級制（教練、助教、班長全程陪伴）</span>
-            </li>
+            {(planTexts?.p12_bullets || '一休親自直播 12 堂 + 錄播課 24 堂\n15 位國家高考營養師，每天幫你看餐\n24 堂營養課 + 150+ 堂運動課\n班級制（教練、助教、班長全程陪伴）')
+              .split('\n').filter(Boolean).map((line, i) => (
+                <li key={i} style={S.planBullet}>
+                  <span style={S.planCheckIcon}>✓</span>
+                  <span>{line}</span>
+                </li>
+              ))}
           </ul>
         </div>
 
@@ -1500,8 +1492,10 @@ export default function ApplyPage() {
           </label>
           <p style={S.planPrice}>NT$ 4,980</p>
           <p style={S.planMeta}>原價 $5,200</p>
-          <p style={S.para}>適合「想先看看方向對不對再決定」的人。</p>
-          <p style={S.para}>一休直播課 + 營養師看餐 + 運動課，體驗一個月。</p>
+          {(planTexts?.p4_desc || '適合「想先看看方向對不對再決定」的人。\n一休直播課 + 營養師看餐 + 運動課，體驗一個月。')
+            .split('\n').filter(Boolean).map((line, i) => (
+              <p key={i} style={S.para}>{line}</p>
+            ))}
         </div>
 
         {/* 方案 C — 雙人早鳥 anchor */}
@@ -1515,7 +1509,7 @@ export default function ApplyPage() {
             。找一個想一起改變的人，兩個人一起走完，比一個人容易得多。
           </p>
           <p style={S.para}>
-            內容跟 12 週完整版一樣，每人都有自己的直播 / 營養師看餐 / 運動課 / 班級。
+            {planTexts?.duo_desc || '內容跟 12 週完整版一樣，每人都有自己的直播 / 營養師看餐 / 運動課 / 班級。'}
           </p>
           <a style={S.btnDuo} href={DUO_CONTACT_URL}>
             回 LINE 找 fifi 團報 →

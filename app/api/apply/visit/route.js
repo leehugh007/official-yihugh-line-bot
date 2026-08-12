@@ -21,6 +21,7 @@ import { NextResponse } from 'next/server';
 import supabase from '../../../../lib/supabase.js';
 import { verifyQ5ApplySig } from '../../../../lib/q5-apply-url.js';
 import { getPricingState } from '../../../../lib/pricing.js';
+import { getSettingTyped } from '../../../../lib/official-settings.js';
 
 const BODY_KEYS = ['userid', 'source', 'trigger', 'kv', 'ts', 'sig'];
 const FROM_ALLOWED = new Set(['msg3', 'msg4']);
@@ -111,10 +112,19 @@ export async function POST(request) {
     // V3.2 Phase 3：回傳 pricing state 給 landing UI 顯示三段價錨點 + 倒數計時
     const pricing = await getPricingState();
 
+    // 2026-08-12 一休：方案說明後台可編輯（settings 驅動，defaults=原文案）
+    const plan_texts = {
+      p12_desc: await getSettingTyped('apply_plan12_desc'),
+      p12_bullets: await getSettingTyped('apply_plan12_bullets'),
+      p4_desc: await getSettingTyped('apply_plan4_desc'),
+      duo_desc: await getSettingTyped('apply_plan_duo_desc'),
+    };
+
     return NextResponse.json({
       ok: true,
       stage: updates.path_stage || user.path_stage,
       pricing,
+      plan_texts,
     });
   } catch (err) {
     console.error('[apply/visit] exception:', err);

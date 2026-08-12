@@ -2435,6 +2435,11 @@ const SETTING_LABELS = {
     label: '/apply 點擊後未填表追問文案',
     desc: '用戶點進 /apply 但未送出表單，cron 於設定時間後推送一次。第一版為純文字追問，不含 Quick Reply 按鈕',
   },
+  // === /apply 方案說明（2026-08-12 一休：可編輯化；換行=分行/分點）===
+  apply_plan12_desc: { label: '報名頁：12 週方案說明', desc: '12 週完整版卡片的說明段落' },
+  apply_plan12_bullets: { label: '報名頁：12 週「你會拿到」清單', desc: '一行一個項目（換行分隔），會自動加 ✓' },
+  apply_plan4_desc: { label: '報名頁：4 週體驗版說明', desc: '一行一段（換行分隔）' },
+  apply_plan_duo_desc: { label: '報名頁：雙人團報內容說明', desc: '雙人卡片的內容段（「限定 5 組」那段是版型不在此）' },
   // === /apply 頁設定 ===
   apply_url_base: {
     label: '/apply 頁 URL base',
