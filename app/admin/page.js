@@ -2558,6 +2558,13 @@ function PricingTab({ settings, onUpdated }) {
 
   const [superPicker, setSuperPicker] = useState(toLocalDateTimeInput(super_cutoff_at));
   const [regularPicker, setRegularPicker] = useState(toLocalDateTimeInput(regular_cutoff_at));
+  // 2026-08-12 一休：價格可編輯（之後要調價）
+  const [priceInputs, setPriceInputs] = useState({
+    price_12weeks_super: String(prices.super),
+    price_12weeks_regular: String(prices.regular),
+    price_12weeks_anchor: String(prices.anchor),
+    price_4weeks_trial: String(prices.trial),
+  });
   const [saving, setSaving] = useState(null);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -2571,6 +2578,35 @@ function PricingTab({ settings, onUpdated }) {
     setSuperPicker(toLocalDateTimeInput(super_cutoff_at));
     setRegularPicker(toLocalDateTimeInput(regular_cutoff_at));
   }, [super_cutoff_at, regular_cutoff_at]);
+
+  useEffect(() => {
+    setPriceInputs({
+      price_12weeks_super: String(prices.super),
+      price_12weeks_regular: String(prices.regular),
+      price_12weeks_anchor: String(prices.anchor),
+      price_4weeks_trial: String(prices.trial),
+    });
+  }, [prices.super, prices.regular, prices.anchor, prices.trial]);
+
+  async function savePrices() {
+    setSaving('prices'); setError(null); setResult(null);
+    try {
+      const entries = Object.entries(priceInputs).map(([k, v]) => [k, parseInt(v, 10)]);
+      for (const [, v] of entries) {
+        if (!Number.isInteger(v) || v <= 0) throw new Error('價格必須是正整數');
+      }
+      for (const [key, v] of entries) {
+        const data = await apiPost({ action: 'update_setting', key, value: String(v) });
+        if (!data.ok) throw new Error(data.error || `${key} 儲存失敗`);
+        if (onUpdated) onUpdated(key, String(v));
+      }
+      setResult('✅ 價格已更新——只影響之後進 /apply 的人，已提交訂單的 final_price snapshot 不變');
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setSaving(null);
+    }
+  }
 
   useEffect(() => {
     setBatchName(settings.program_batch_name || '下一期班');
@@ -2827,6 +2863,39 @@ function PricingTab({ settings, onUpdated }) {
             ⏹ 立刻關閉
           </button>
         </div>
+      </div>
+
+      {/* 2026-08-12 一休：調整價格（原本只能看不能改） */}
+      <div style={{ marginTop: 20, padding: 16, border: '1px solid #d1d5db', borderRadius: 8, background: '#fff' }}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>💰 調整價格</div>
+        <p style={{ color: '#94a3b8', fontSize: 13, margin: '0 0 12px' }}>
+          改完立即影響之後進 /apply 的人；已提交訂單的 final_price snapshot 不變。
+        </p>
+        {[
+          ['price_12weeks_super', '超早鳥（12 週）'],
+          ['price_12weeks_regular', '一般早鳥（12 週）'],
+          ['price_12weeks_anchor', '原價（12 週）'],
+          ['price_4weeks_trial', '4 週體驗版'],
+        ].map(([key, label]) => (
+          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span style={{ width: 160, fontSize: 14 }}>{label}</span>
+            <span style={{ color: '#94a3b8' }}>NT$</span>
+            <input
+              type="number"
+              min="1"
+              value={priceInputs[key]}
+              onChange={(e) => setPriceInputs((prev) => ({ ...prev, [key]: e.target.value }))}
+              style={{ width: 120, padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}
+            />
+          </div>
+        ))}
+        <button
+          onClick={savePrices}
+          disabled={!!saving}
+          style={btnPrimary(!!saving)}
+        >
+          {saving === 'prices' ? '儲存中…' : '✅ 儲存價格'}
+        </button>
       </div>
 
       {error && (
