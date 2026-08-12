@@ -807,7 +807,7 @@ export default function AdminPage() {
         <div style={styles.section}>
           <h2 style={styles.sectionTitle}>💰 V3.2 三段價控制</h2>
           <p style={styles.sectionDesc}>
-            超早鳥 → 一般早鳥 → 原價 三段切換。改 cutoff 立即影響之後進 /apply 的人，已提交訂單 final_price snapshot 不變。
+            早鳥 → 原價 切換（超早鳥已於 2026-08-12 取消）。改 cutoff 立即影響之後進 /apply 的人，已提交訂單 final_price snapshot 不變。
           </p>
           <PricingTab
             settings={settings}
@@ -2532,9 +2532,9 @@ function diffDisplayHHMM(isoStr) {
 }
 
 const TIER_META = {
-  super: { emoji: '🔥', name: '超早鳥優惠中', color: '#dc2626' },
-  regular: { emoji: '🌱', name: '一般早鳥優惠中', color: '#0b6e39' },
-  anchor: { emoji: '⏸', name: '兩段早鳥皆已結束（原價真實成交）', color: '#92400e' },
+  super: { emoji: '🔥', name: '超早鳥優惠中（已取消，不應出現）', color: '#dc2626' },
+  regular: { emoji: '🌱', name: '早鳥優惠中', color: '#0b6e39' },
+  anchor: { emoji: '⏸', name: '早鳥已結束（原價真實成交）', color: '#92400e' },
 };
 
 function PricingTab({ settings, onUpdated }) {
@@ -2560,7 +2560,6 @@ function PricingTab({ settings, onUpdated }) {
   const [regularPicker, setRegularPicker] = useState(toLocalDateTimeInput(regular_cutoff_at));
   // 2026-08-12 一休：價格可編輯（之後要調價）
   const [priceInputs, setPriceInputs] = useState({
-    price_12weeks_super: String(prices.super),
     price_12weeks_regular: String(prices.regular),
     price_12weeks_anchor: String(prices.anchor),
     price_4weeks_trial: String(prices.trial),
@@ -2581,12 +2580,11 @@ function PricingTab({ settings, onUpdated }) {
 
   useEffect(() => {
     setPriceInputs({
-      price_12weeks_super: String(prices.super),
       price_12weeks_regular: String(prices.regular),
       price_12weeks_anchor: String(prices.anchor),
       price_4weeks_trial: String(prices.trial),
     });
-  }, [prices.super, prices.regular, prices.anchor, prices.trial]);
+  }, [prices.regular, prices.anchor, prices.trial]);
 
   async function savePrices() {
     setSaving('prices'); setError(null); setResult(null);
@@ -2731,15 +2729,13 @@ function PricingTab({ settings, onUpdated }) {
           目前狀態：{tierMeta.emoji} {tierMeta.name}
         </div>
         <div style={{ fontSize: 14, lineHeight: 1.7 }}>
-          <div>超早鳥截止：<b>{toTaiwanDisplay(super_cutoff_at)}</b>（{diffDisplayHHMM(super_cutoff_at)}）</div>
           <div>一般早鳥截止：<b>{toTaiwanDisplay(regular_cutoff_at)}</b>（{diffDisplayHHMM(regular_cutoff_at)}）</div>
           <hr style={{ margin: '12px 0', border: 'none', borderTop: '1px solid #d1d5db' }} />
           <div style={{ fontSize: 13, color: '#374151' }}>
             定價（12 週方案實際成交價）：
             <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-              <li>超早鳥：NT$ {prices.super.toLocaleString()}（NOW &lt; super_cutoff）</li>
-              <li>一般早鳥：NT$ {prices.regular.toLocaleString()}（super_cutoff ≤ NOW &lt; regular_cutoff）</li>
-              <li>原價：NT$ {prices.anchor.toLocaleString()}（NOW ≥ regular_cutoff，5/24 後真實成交）</li>
+              <li>早鳥優惠：NT$ {prices.regular.toLocaleString()}（NOW &lt; regular_cutoff）</li>
+              <li>原價：NT$ {prices.anchor.toLocaleString()}（NOW ≥ regular_cutoff）</li>
               <li>4 週體驗版：NT$ {prices.trial.toLocaleString()}</li>
             </ul>
           </div>
@@ -2793,41 +2789,7 @@ function PricingTab({ settings, onUpdated }) {
         </button>
       </div>
 
-      {/* 超早鳥區 */}
-      <div style={cardStyle(super_active)}>
-        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 15 }}>
-          🔥 超早鳥截止日 {super_active && '（活躍中）'}
-        </div>
-        <input
-          type="datetime-local"
-          value={superPicker}
-          onChange={(e) => setSuperPicker(e.target.value)}
-          style={{
-            width: '100%',
-            padding: '10px 12px',
-            fontSize: 14,
-            border: '1px solid #ccc',
-            borderRadius: 6,
-            marginBottom: 10,
-          }}
-        />
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={() => handleApply('super_early_bird_cutoff_at', superPicker, '超早鳥')}
-            disabled={!!saving || !superPicker}
-            style={btnPrimary(!!saving || !superPicker)}
-          >
-            {saving === 'super_early_bird_cutoff_at' ? '儲存中…' : '✅ 套用'}
-          </button>
-          <button
-            onClick={() => handleCloseNow('super_early_bird_cutoff_at', '超早鳥')}
-            disabled={!!saving}
-            style={btnDanger(!!saving)}
-          >
-            ⏹ 立刻關閉
-          </button>
-        </div>
-      </div>
+      {/* 超早鳥已取消（2026-08-12 一休）——引擎保留但不再提供控制項 */}
 
       {/* 一般早鳥區 */}
       <div style={cardStyle(regular_active)}>
@@ -2872,8 +2834,7 @@ function PricingTab({ settings, onUpdated }) {
           改完立即影響之後進 /apply 的人；已提交訂單的 final_price snapshot 不變。
         </p>
         {[
-          ['price_12weeks_super', '超早鳥（12 週）'],
-          ['price_12weeks_regular', '一般早鳥（12 週）'],
+          ['price_12weeks_regular', '早鳥優惠（12 週）'],
           ['price_12weeks_anchor', '原價（12 週）'],
           ['price_4weeks_trial', '4 週體驗版'],
         ].map(([key, label]) => (

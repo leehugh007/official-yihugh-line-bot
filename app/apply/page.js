@@ -576,8 +576,8 @@ function Plan12WeeksPrice({ pricing }) {
     );
   }
 
-  const mainPrice = tier === 'super' ? prices.super : prices.regular;
-  const isSuper = tier === 'super';
+  // 2026-08-12 一休：超早鳥取消，只留早鳥/原價/4週（引擎不動，UI 不再呈現 super）
+  const mainPrice = prices.regular;
 
   return (
     <>
@@ -585,23 +585,11 @@ function Plan12WeeksPrice({ pricing }) {
       <p style={{ margin: '12px 0 4px', fontSize: 16, color: '#999', textDecoration: 'line-through' }}>
         原價 NT$ {prices.anchor.toLocaleString()}
       </p>
-      {/* 超早鳥階段：把一般早鳥也劃線顯示，凸顯三層折扣對比 */}
-      {isSuper && (
-        <p style={{ margin: '0 0 4px', fontSize: 14, color: '#999', textDecoration: 'line-through' }}>
-          一般早鳥 NT$ {prices.regular.toLocaleString()}
-        </p>
-      )}
-      <p
-        style={{
-          ...S.planPrice,
-          color: isSuper ? '#dc2626' : '#0b6e39',
-          margin: '4px 0 6px',
-        }}
-      >
+      <p style={{ ...S.planPrice, color: '#0b6e39', margin: '4px 0 6px' }}>
         NT$ {mainPrice.toLocaleString()}
       </p>
-      <p style={{ ...S.planMeta, color: isSuper ? '#dc2626' : '#0b6e39', fontWeight: 700 }}>
-        {isSuper ? '🔥 超早鳥優惠中' : '🌱 一般早鳥優惠中'}
+      <p style={{ ...S.planMeta, color: '#0b6e39', fontWeight: 700 }}>
+        🌱 早鳥優惠中
         {active_cutoff_at && (
           <>
             {' · '}
@@ -609,11 +597,6 @@ function Plan12WeeksPrice({ pricing }) {
           </>
         )}
       </p>
-      {!isSuper && (
-        <p style={{ ...S.planMeta, fontSize: 12, color: '#999', marginTop: 4 }}>
-          ⏱ 超早鳥已截止
-        </p>
-      )}
     </>
   );
 }
