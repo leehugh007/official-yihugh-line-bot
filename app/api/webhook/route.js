@@ -57,7 +57,7 @@ import {
   findRetargetingButtonReply,
   parseRetargetingSettings,
 } from '../../../lib/retargeting-button-replies.js';
-import { TRIAL_WANT_REPLY, TAG_WANT } from '../../../lib/trial-invite.js';
+import { TRIAL_WANT_REPLY, TAG_WANT, TAG_INVITED_DIRECT, buildInviteN } from '../../../lib/trial-invite.js';
 // Phase 4.2 Q5 wire
 import { classifyQ5Intent } from '../../../lib/q5-classifier.js';
 import { pushQ5SoftInvite } from '../../../lib/q5-message.js';
@@ -881,6 +881,37 @@ async function handleFollow(event, userId) {
     if (rule) {
       const reportMessages = await rule.handler(userId);
       await pushMessage(userId, reportMessages);
+    }
+  }
+
+  // 2026-08-22 一休拍板：直接加入（source=direct，非測驗/代碼來）的新好友，歡迎後立刻附三天體驗邀請
+  // 配合 FB 私訊新門（LINE 追蹤連結 lin.ee/6YA9d3f）：她留言「幫我看」→ 私訊 → 直接加 LINE → 第一句就給她要的東西
+  // 加法區塊：不動上面 quiz/type 任何分支；失敗只記 log 不影響 follow 主流程
+  if (source === 'direct') {
+    try {
+      // kill switch：official_settings.trial_invite_on_follow = false 就整段跳過（不用重新部署）
+      const onFollow = await getSettingTyped('trial_invite_on_follow');
+      if (onFollow) {
+        // 先查 tag 再推：已被邀過的人（解除封鎖重加、舊用戶）不重發；select 失敗就整段跳過，絕不覆寫既有 tags
+        const { data: tagRow, error: tagErr } = await supabase
+          .from('official_line_users').select('tags').eq('line_user_id', userId).single();
+        const tags = tagRow?.tags || [];
+        if (!tagErr && !tags.some((t) => String(t).includes('體驗邀請'))) {
+          // 歡迎訊息已自我介紹 → 邀請用 withGreeting:false 的「對了——」接續版
+          const sent = await pushMessage(userId, [
+            { type: 'text', text: buildInviteN({ display_name: displayName }, { withGreeting: false }) },
+          ]);
+          // push 成功才貼 tag：沒送到就不標，cron 受眾 N 之後還會補邀，漏斗數字也不被污染
+          if (sent) {
+            await supabase
+              .from('official_line_users')
+              .update({ tags: [...tags, TAG_INVITED_DIRECT] })
+              .eq('line_user_id', userId);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Follow] direct trial invite failed (non-fatal):', err?.message);
     }
   }
 }
