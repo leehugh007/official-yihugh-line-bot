@@ -1034,6 +1034,15 @@ async function handleSugarCodeClaim(event, userId, session) {
 // quiz/protein/blood_sugar 三種代碼共用（1c）；messages<2 視為錯誤回覆不附
 async function attachTrialInvite(messages, userId) {
   if (!Array.isArray(messages) || messages.length < 2) return;
+  // 2026-08-23：follow 直加即邀上線後，「先加 LINE 再輸代碼」的人幾分鐘前才在 follow 收過邀請 → 這裡不再附第二則
+  // 只擋 TAG_INVITED_DIRECT（不擋 cron auto-A/B/N 等舊邀請：他們現在才領代碼是新的熱點，照舊附邀請）
+  try {
+    const { data: pre } = await supabase
+      .from('official_line_users').select('tags').eq('line_user_id', userId).single();
+    if ((pre?.tags || []).includes(TAG_INVITED_DIRECT)) return;
+  } catch (err) {
+    console.error('[CodeClaim] trial invite pre-check failed (non-fatal, continue):', err?.message);
+  }
   messages.push(textMessage(`對了——你的報告只是起點。
 
 我有一個免費的「三天幫你看體驗」：我的 AI 助理阿算，看你 3 天實際吃的餐，找出你一直瘦不下來、瘦了又胖回去的「盲點」。
